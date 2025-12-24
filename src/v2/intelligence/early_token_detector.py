@@ -1,0 +1,64 @@
+import os
+import json
+import re
+from datetime import datetime, timezone, timezone
+from dotenv import load_dotenv
+from src.v2.utils.logger import get_logger
+from src.v2.core.retry_manager import retry_on_failure
+from src.v2.utils.token_utils import clean_token_symbol
+
+load_dotenv()
+logger = get_logger("early_token_detector")
+
+# Fichiers d'entrée et sortie
+TELEGRAM_MESSAGES_FILE = "src/v2/data/social/telegram_messages.json"
+EARLY_TOKEN_FILE = "src/v2/data/intelligence/early_tokens.json"
+
+# Configuration simple : regex de détection de tokens potentiels
+TOKEN_REGEX = re.compile(r"\b[A-Z0-9]{3,10}\b")
+
+
+@retry_on_failure(retries=3, delay=10, alert_name="early_token_detector")
+def detect_early_tokens():
+    if not os.path.exists(TELEGRAM_MESSAGES_FILE):
+        logger.warning(f"{TELEGRAM_MESSAGES_FILE} introuvable.")
+        return
+
+    with open(TELEGRAM_MESSAGES_FILE, "r") as f:
+        messages = json.load(f)
+
+    potential_tokens = {}
+
+    for group, msgs in messages.items():
+        for msg in msgs:
+            text = msg.get("text", "")
+            date = msg.get("date", "")
+            found = TOKEN_REGEX.findall(text)
+
+            for token in found:
+                cleaned = clean_token_symbol(token)
+                if cleaned and cleaned.upper() not in potential_tokens:
+                    potential_tokens[cleaned.upper()] = {
+                        "symbol": cleaned.upper(),
+                        "mentioned_in": [group],
+                        "first_seen": date,
+                        "source": "telegram"
+                    }
+                elif cleaned.upper() in potential_tokens:
+                    if group not in potential_tokens[cleaned.upper()]["mentioned_in"]:
+                        potential_tokens[cleaned.upper()]["mentioned_in"].append(group)
+
+    if not potential_tokens:
+        logger.info("Aucun nouveau token détecté.")
+        return
+
+    # Sauvegarde
+    os.makedirs(os.path.dirname(EARLY_TOKEN_FILE), exist_ok=True)
+    with open(EARLY_TOKEN_FILE, "w") as f:
+        json.dump(list(potential_tokens.values()), f, indent=2)
+
+    logger.info(f"{len(potential_tokens)} nouveaux tokens détectés et enregistrés dans {EARLY_TOKEN_FILE}")
+
+
+if __name__ == "__main__":
+    detect_early_tokens()

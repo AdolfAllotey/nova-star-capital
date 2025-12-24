@@ -1,0 +1,61 @@
+
+import os
+import pandas as pd
+from datetime import datetime, timezone, timezone
+
+BACKTEST_DIR = "data/v2/backtests"
+os.makedirs(BACKTEST_DIR, exist_ok=True)
+
+def run_backtest(strategy_name: str, historical_data: pd.DataFrame, parameters: dict):
+    """
+    Simule une stratégie d’investissement sur des données historiques.
+
+    Args:
+        strategy_name (str): Nom de la stratégie testée.
+        historical_data (pd.DataFrame): Données avec au minimum les colonnes ['date', 'token', 'price'].
+        parameters (dict): Paramètres propres à la stratégie.
+
+    Returns:
+        pd.DataFrame: Résultats du backtest avec PnL par jour/token.
+    """
+    results = []
+
+    for token in historical_data['token'].unique():
+        df_token = historical_data[historical_data['token'] == token].copy()
+        df_token.sort_values("date", inplace=True)
+        pnl = 0
+
+        for i in range(1, len(df_token)):
+            buy_price = df_token.iloc[i - 1]["price"]
+            sell_price = df_token.iloc[i]["price"]
+            quantity = parameters.get("qty", 1)
+            daily_pnl = (sell_price - buy_price) * quantity
+            results.append({
+                "date": df_token.iloc[i]["date"],
+                "token": token,
+                "strategy": strategy_name,
+                "pnl": daily_pnl
+            })
+
+    df_results = pd.DataFrame(results)
+    return df_results
+
+def save_backtest_results(df: pd.DataFrame, strategy_name: str):
+    today = datetime.now().strftime("%Y-%m-%d")
+    path = os.path.join(BACKTEST_DIR, f"{strategy_name}_backtest_{today}.csv")
+    df.to_csv(path, index=False)
+    return path
+
+# Exemple local
+if __name__ == "__main__":
+    # Exemple de données fictives
+    data = {
+        "date": ["2024-01-01", "2024-01-02", "2024-01-01", "2024-01-02"],
+        "token": ["BTC", "BTC", "ETH", "ETH"],
+        "price": [40000, 41000, 2000, 2050]
+    }
+    df = pd.DataFrame(data)
+    params = {"qty": 1}
+    results = run_backtest("buy_hold", df, params)
+    path = save_backtest_results(results, "buy_hold")
+    print(f"✅ Résultats sauvegardés : {path}")

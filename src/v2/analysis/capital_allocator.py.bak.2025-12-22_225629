@@ -1,0 +1,318 @@
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import Any, Dict, Tuple
+
+from src.v2.utils.logger import get_logger
+from src.v2.utils.file_utils import (
+    get_data_dir,
+    load_json_file,
+    save_json_file,
+)
+
+logger = get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# Constantes globales & chemins
+# ---------------------------------------------------------------------------
+
+DATA_DIR = Path(get_data_dir()).resolve()
+ROOT_DIR = DATA_DIR.parent
+
+TRADING_DIR = DATA_DIR / "trading"
+ANALYSIS_DIR = DATA_DIR / "analysis"
+
+CAPITAL_CONFIG_PATH = TRADING_DIR / "capital_config.json"
+CAPITAL_ALLOCATION_PATH = TRADING_DIR / "capital_allocation.json"
+
+# Market / emotional regime (si disponibles)
+MARKET_REGIME_PATH = ANALYSIS_DIR / "market_regime_detector.json"
+EMOTIONAL_REGIME_PATH = ANALYSIS_DIR / "emotional_regime_light.json"
+
+# Strategy selector (S2.5)
+STRATEGY_WEIGHTS_PATH = TRADING_DIR / "strategy_weights.json"
+
+# Defaults cohérents avec tes logs actuels
+DEFAULT_TOTAL_BUDGET: float = 1000.0
+DEFAULT_TRADING_RATIO: float = 0.45
+DEFAULT_MAX_POSITIONS: int = 50
+
+# Stratégies supportées par le selector (S2.5)
+DEFAULT_STRATEGY_WEIGHTS: Dict[str, float] = {
+    "momentum": 1.0 / 3.0,
+    "sniper": 1.0 / 3.0,
+    "whale": 1.0 / 3.0,
+}
+
+
+# ---------------------------------------------------------------------------
+# Helpers de config / context
+# ---------------------------------------------------------------------------
+
+def load_capital_config() -> Dict[str, Any]:
+    """
+    Charge la configuration de capital depuis capital_config.json,
+    avec des valeurs par défaut si le fichier est absent ou incomplet.
+    """
+    raw = load_json_file(CAPITAL_CONFIG_PATH, default={})
+
+    total_budget = float(raw.get("total_budget", DEFAULT_TOTAL_BUDGET))
+    trading_ratio = float(raw.get("trading_ratio", DEFAULT_TRADING_RATIO))
+    max_positions = int(raw.get("max_positions", DEFAULT_MAX_POSITIONS))
+
+    # Sécurités simples
+    if total_budget <= 0:
+        logger.warning(
+            "[capital_allocator] total_budget <= 0 dans %s → fallback %.2f",
+            CAPITAL_CONFIG_PATH,
+            DEFAULT_TOTAL_BUDGET,
+        )
+        total_budget = DEFAULT_TOTAL_BUDGET
+
+    if not (0.0 < trading_ratio <= 1.0):
+        logger.warning(
+            "[capital_allocator] trading_ratio invalide dans %s → fallback %.2f",
+            CAPITAL_CONFIG_PATH,
+            DEFAULT_TRADING_RATIO,
+        )
+        trading_ratio = DEFAULT_TRADING_RATIO
+
+    if max_positions <= 0:
+        logger.warning(
+            "[capital_allocator] max_positions <= 0 dans %s → fallback %d",
+            CAPITAL_CONFIG_PATH,
+            DEFAULT_MAX_POSITIONS,
+        )
+        max_positions = DEFAULT_MAX_POSITIONS
+
+    cfg = {
+        "total_budget": total_budget,
+        "trading_ratio": trading_ratio,
+        "max_positions": max_positions,
+    }
+
+    logger.info(
+        "[capital_allocator] Config capital: total_budget=%.2f, trading_ratio=%.2f, max_positions=%d",
+        total_budget,
+        trading_ratio,
+        max_positions,
+    )
+
+    return cfg
+
+
+def load_market_regime() -> str:
+    """
+    Charge le régime de marché depuis market_regime_detector.json si présent.
+    Fallback: 'neutral'.
+    """
+    data = load_json_file(MARKET_REGIME_PATH, default={})
+    regime = (
+        data.get("global_regime")
+        or data.get("regime")
+        or "neutral"
+    )
+    regime = str(regime)
+    logger.info("[capital_allocator] Market regime chargé: %s", regime)
+    return regime
+
+
+def load_emotional_regime() -> Tuple[str, str]:
+    """
+    Charge le régime émotionnel (si disponible) depuis emotional_regime_light.json.
+    Retourne (regime, recommended_action).
+    Fallback: ('calm', 'normal').
+    """
+    data = load_json_file(EMOTIONAL_REGIME_PATH, default={})
+    regime = str(data.get("regime", "calm"))
+    rec = str(data.get("recommended_action", "normal"))
+
+    logger.info(
+        "[capital_allocator] Emotional regime chargé: regime=%s, recommended_action=%s",
+        regime,
+        rec,
+    )
+    return regime, rec
+
+
+def map_emotional_action_to_trading_action(rec: str) -> str:
+    """
+    Traduit la recommandation émotionnelle en 'action' trading globale.
+    On garde quelque chose de simple pour rester compatible avec les logs existants.
+    """
+    rec = (rec or "").lower()
+
+    if rec in {"pause", "halt"}:
+        return "pause"
+    if rec in {"reduce", "cut"}:
+        return "reduce"
+    if rec in {"cautious", "careful"}:
+        return "cautious"
+
+    # Par défaut : trading normal
+    return "normal"
+
+
+# ---------------------------------------------------------------------------
+# Strategy Selector (S2.5) – lecture des poids
+# ---------------------------------------------------------------------------
+
+def load_strategy_weights() -> Dict[str, float]:
+    """
+    Charge les poids de stratégies depuis strategy_weights.json (produit par strategy_selector.py).
+    Si le fichier est absent ou invalide → fallback poids égaux (DEFAULT_STRATEGY_WEIGHTS).
+    """
+    payload = load_json_file(STRATEGY_WEIGHTS_PATH, default={})
+
+    weights: Dict[str, float] = {}
+
+    # Format attendu :
+    # {
+    #   "as_of": "...",
+    #   "lookback_days": 30,
+    #   "strategies": [
+    #       {"name": "momentum", "weight": 0.5, "score": ..., "n_trades": ...},
+    #       ...
+    #   ]
+    # }
+    if isinstance(payload, dict) and isinstance(payload.get("strategies"), list):
+        for item in payload["strategies"]:
+            name = str(item.get("name", "")).strip().lower()
+            if not name:
+                continue
+            try:
+                w = float(item.get("weight", 0.0))
+            except Exception:
+                continue
+            if w > 0:
+                weights[name] = w
+
+        total = sum(weights.values())
+        if total > 0:
+            # Normalisation de sécurité
+            weights = {k: v / total for k, v in weights.items()}
+
+    if not weights:
+        logger.warning(
+            "[capital_allocator] Aucune stratégie valide trouvée dans %s → utilisation des poids par défaut.",
+            STRATEGY_WEIGHTS_PATH,
+        )
+        weights = DEFAULT_STRATEGY_WEIGHTS.copy()
+    else:
+        logger.info(
+            "[capital_allocator] Poids de stratégie chargés depuis %s: %s",
+            STRATEGY_WEIGHTS_PATH,
+            weights,
+        )
+
+    # Assure qu'on a bien toutes les stratégies connues, même à 0
+    for strat, _default_w in DEFAULT_STRATEGY_WEIGHTS.items():
+        weights.setdefault(strat, 0.0)
+
+    return weights
+
+
+# ---------------------------------------------------------------------------
+# Fonction principale d'allocation de capital
+# ---------------------------------------------------------------------------
+
+def compute_capital_allocation() -> Dict[str, Any]:
+    """
+    Calcule l'allocation de capital globale NSC (mode hedge-fund light).
+
+    - Charge la config de capital (total_budget, trading_ratio, max_positions)
+    - Lit le market regime et l'emotional regime (si dispo)
+    - Calcule trading_budget et capital_per_trade
+    - Intègre les poids de stratégies (Strategy Selector S2.5) → strategy_budgets
+    - Sauvegarde le résultat dans capital_allocation.json
+    """
+    logger.info(
+        "[capital_allocator] ROOT_DIR=%s, DATA_DIR=%s",
+        ROOT_DIR,
+        DATA_DIR,
+    )
+
+    # 1) Config de base
+    cfg = load_capital_config()
+    total_budget = cfg["total_budget"]
+    trading_ratio = cfg["trading_ratio"]
+    max_positions = cfg["max_positions"]
+
+    # 2) Régimes
+    regime = load_market_regime()
+    emotional_regime, emotional_rec = load_emotional_regime()
+    action = map_emotional_action_to_trading_action(emotional_rec)
+
+    # 3) Budgets globaux
+    trading_budget = float(total_budget * trading_ratio)
+    capital_per_trade = float(trading_budget / max_positions) if max_positions > 0 else 0.0
+
+    # 4) Strategy Selector – budgets par stratégie (S2.5)
+    strategy_weights = load_strategy_weights()
+    strategy_budgets: Dict[str, float] = {
+        strat: float(trading_budget * w)
+        for strat, w in strategy_weights.items()
+    }
+
+    logger.info(
+        "[capital_allocator] Allocation: regime=%s, emotional_regime=%s, action=%s, "
+        "total=%.2f, trading=%.2f, capital_per_trade=%.2f, max_positions=%d, "
+        "strategy_weights=%s",
+        regime,
+        emotional_regime,
+        action,
+        total_budget,
+        trading_budget,
+        capital_per_trade,
+        max_positions,
+        strategy_weights,
+    )
+
+    # 5) Construction du payload final
+    allocation: Dict[str, Any] = {
+        "regime": regime,
+        "emotional_regime": emotional_regime,
+        "action": action,
+
+        "total_budget": float(total_budget),
+        "trading_budget": float(trading_budget),
+        "trading_ratio": float(trading_ratio),
+        "capital_per_trade": float(capital_per_trade),
+        "max_positions": int(max_positions),
+
+        # S2.5 – Strategy Selector
+        "strategy_weights": strategy_weights,
+        "strategy_budgets": strategy_budgets,
+
+        # Pour trace / debug
+        "config_source": str(CAPITAL_CONFIG_PATH),
+        "market_regime_source": str(MARKET_REGIME_PATH),
+        "emotional_regime_source": str(EMOTIONAL_REGIME_PATH),
+        "strategy_weights_source": str(STRATEGY_WEIGHTS_PATH),
+    }
+
+    # 6) Sauvegarde
+    save_json_file(CAPITAL_ALLOCATION_PATH, allocation)
+    logger.info(
+        "[capital_allocator] Allocation sauvegardée dans %s",
+        CAPITAL_ALLOCATION_PATH,
+    )
+
+    return allocation
+
+
+# ---------------------------------------------------------------------------
+# Entrée CLI
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    try:
+        compute_capital_allocation()
+    except Exception:
+        logger.exception("[capital_allocator] Erreur lors du calcul de l'allocation de capital")
+        raise
+
+
+if __name__ == "__main__":
+    main()

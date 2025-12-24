@@ -1,0 +1,23 @@
+# v2/api/security.py
+import os
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+# Schéma Bearer pour que Swagger affiche "Authorize"
+bearer_scheme = HTTPBearer(auto_error=False)
+
+def require_bearer(creds: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
+    # Bypass dev optionnel
+    if os.getenv("API_DISABLE_AUTH", "").lower() in {"1", "true", "yes"}:
+        return
+
+    token_expected = os.getenv("NSC_API_TOKEN", "")
+    if not token_expected:
+        raise HTTPException(500, "Server misconfigured: NSC_API_TOKEN missing")
+
+    if not creds or (creds.scheme or "").lower() != "bearer":
+        raise HTTPException(401, "Missing Bearer token")
+
+    if creds.credentials != token_expected:
+        raise HTTPException(403, "Invalid token")
+

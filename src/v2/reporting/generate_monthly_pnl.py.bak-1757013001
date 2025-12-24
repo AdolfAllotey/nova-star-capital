@@ -1,0 +1,50 @@
+import os
+import json
+from collections import defaultdict
+from datetime import datetime, timezone
+from src.v2.utils.file_utils import load_json_file, save_json_file
+from src.v2.utils.logger import get_logger
+
+logger = get_logger("generate_monthly_pnl")
+
+TRADE_SIM_PATH = "src/v2/data/reports/trade_simulation.json"
+OUTPUT_PATH = "src/v2/data/reports/monthly_pnl.json"
+
+def generate_monthly_pnl():
+    try:
+        trades = load_json_file(TRADE_SIM_PATH)
+        if not isinstance(trades, list) or len(trades) == 0:
+            logger.warning("❌ Aucune donnée de trade valide trouvée.")
+            return
+
+        monthly_pnl = defaultdict(float)
+
+        for trade in trades:
+            date_str = trade.get("date") or trade.get("timestamp")
+            pnl = trade.get("pnl")
+
+            if not date_str or pnl is None:
+                continue
+
+            try:
+                date_obj = datetime.fromisoformat(date_str)
+            except ValueError:
+                logger.warning(f"⚠️ Format de date invalide ignoré : {date_str}")
+                continue
+
+            month_key = date_obj.strftime("%Y-%m")
+            monthly_pnl[month_key] += float(pnl)
+
+        if not monthly_pnl:
+            logger.warning("❌ Aucun PnL mensuel calculé.")
+            return
+
+        monthly_pnl_sorted = dict(sorted(monthly_pnl.items()))
+        save_json_file(monthly_pnl_sorted, OUTPUT_PATH)
+        logger.info(f"✅ PnL mensuel généré avec succès : {OUTPUT_PATH}")
+
+    except Exception as e:
+        logger.exception(f"❌ Erreur lors de la génération du PnL mensuel : {e}")
+
+if __name__ == "__main__":
+    generate_monthly_pnl()

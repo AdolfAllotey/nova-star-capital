@@ -1,0 +1,215 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import smtplib
+import sys
+from datetime import UTC, datetime
+from email.message import EmailMessage
+from pathlib import Path
+from typing import Optional, Tuple
+
+# ---------------------------
+# Logging (util maison si dispo)
+# ---------------------------
+try:
+    from src.v2.utils.logging_utils import get_logger
+    log = get_logger("send_reports")
+except Exception:
+    import logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s"
+    )
+    log = logging.getLogger("send_reports")
+
+# ---------------------------
+# Telegram (util maison)
+# ---------------------------
+try:
+    from src.v2.utils.telegram_utils import send_telegram_message
+except Exception as e:
+    send_telegram_message = None
+    log.warning("send_telegram_message indisponible: %s", e)
+
+# ---------------------------
+# Config & chemins
+# ---------------------------
+BASE = Path(os.getenv("BOT_BASE_DIR", "/root/Bot_crypto_ultra")).resolve()
+DATA_DIR = BASE / "src" / "v2" / "data"
+SOCIAL_DIR = DATA_DIR / "social"
+STATE_DIR = BASE / "state"
+LOGS_DIR = BASE / "src" / "v2" / "logs"
+STATE_DIR.mkdir(parents=True, exist_ok=True)
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+TELEGRAM_DATA = SOCIAL_DIR / "telegram_data.json"
+
+# ---------------------------
+# Helpers
+# ---------------------------
+def _read_json_safe(p: Path) -> Optional[object]:
+    if not p.is_file():
+        return None
+    try:
+        with p.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        log.warning("Lecture JSON échouée (%s): %s", p, e)
+        return None
+
+def _build_text_report() -> str:
+    """Rapport court: nombre de groupes/messages (Telegram)."""
+    data = _read_json_safe(TELEGRAM_DATA)
+    groups = 0
+    msgs = 0
+    last_dt: Optional[str] = None
+
+    if isinstance(data, list):
+        groups = len(data)
+        for g in data:
+            arr = g.get("messages", []) if isinstance(g, dict) else []
+            msgs += len(arr)
+            # Retrouver une date max pour l'info
+            for m in arr:
+                d = m.get("date")
+                if d:
+                    last_dt = max(last_dt, d) if last_dt else d
+
+    lines = []
+    lines.append("📊 Rapport quotidien Nova Star")
+    lines.append(f"- Groupes Telegram scannés : {groups}")
+    lines.append(f"- Messages agrégés         : {msgs}")
+    if last_dt:
+        lines.append(f"- Dernière activité        : {last_dt}")
+    lines.append("")
+    lines.append("— Bot_crypto_ultra")
+    return "\n".join(lines).strip()
+
+def _hash_today(content: str) -> Tuple[Path, str]:
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
+    h = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    stamp_file = STATE_DIR / f"last_report_hash_{today}.txt"
+    return stamp_file, h
+
+# ---------------------------
+# Email
+# ---------------------------
+def _get_env_bool(name: str, default: bool = False) -> bool:
+    val = os.getenv(name, "").strip().lower()
+    if not val:
+        return default
+    return val in ("1", "true", "yes", "on")
+
+def _send_email(subject: str, body_text: str) -> bool:
+    """Envoi d'email via SMTP (STARTTLS/SSL). Renvoie True si succès."""
+    enabled = _get_env_bool("EMAIL_ENABLED", False)
+    if not enabled:
+        log.info("✉️ Email: désactivé (EMAIL_ENABLED != 1).")
+        return False
+
+    host = os.getenv("SMTP_HOST", "").strip()
+    user = os.getenv("SMTP_USER", "").strip()
+    password = os.getenv("SMTP_PASS", os.getenv("SMTP_PASSWORD", "")).strip()
+    port = int(os.getenv("SMTP_PORT", "587"))
+    use_ssl = _get_env_bool("SMTP_SSL", False)
+    starttls = _get_env_bool("SMTP_STARTTLS", True)  # par défaut STARTTLS sur 587
+    sender = os.getenv("EMAIL_FROM", user or "").strip()
+    to_raw = os.getenv("EMAIL_TO", "").strip()
+
+    if not (host and port and sender and to_raw):
+        log.warning("✉️ Email: config incomplète (SMTP_HOST/PORT/EMAIL_FROM/EMAIL_TO).")
+        return False
+
+    recipients = [x.strip() for x in to_raw.split(",") if x.strip()]
+    if not recipients:
+        log.warning("✉️ Email: aucun destinataire.")
+        return False
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = ", ".join(recipients)
+    msg.set_content(body_text)
+
+    try:
+        if use_ssl:
+            # SMTPS (465)
+            with smtplib.SMTP_SSL(host=host, port=port, timeout=30) as s:
+                if user and password:
+                    s.login(user, password)
+                s.send_message(msg)
+        else:
+            # SMTP (587 avec STARTTLS par défaut)
+            with smtplib.SMTP(host=host, port=port, timeout=30) as s:
+                s.ehlo()
+                if starttls:
+                    s.starttls()
+                    s.ehlo()
+                if user and password:
+                    s.login(user, password)
+                s.send_message(msg)
+        return True
+    except Exception as e:
+        log.warning("✉️ Email: envoi échoué: %s", e)
+        return False
+
+# ---------------------------
+# Entrée principale
+# ---------------------------
+def main() -> int:
+    log.info("📤 Préparation de l'envoi du rapport...")
+
+    text = _build_text_report()
+    log.info("🧾 Longueur du message : %d", len(text))
+
+    # Anti-doublon dans la journée
+    stamp_file, current_hash = _hash_today(text)
+    old_hash = stamp_file.read_text().strip() if stamp_file.is_file() else ""
+    if old_hash == current_hash:
+        log.info("⏱️ Throttle 'report': contenu identique aujourd'hui — envoi annulé.")
+        return 0
+
+    # 1) Telegram
+    sent_tg = False
+    if send_telegram_message:
+        try:
+            sent_tg = send_telegram_message(text)
+            log.info("📝 Telegram envoyé = %s", bool(sent_tg))
+        except TypeError as e:
+            # Au cas où la signature change
+            try:
+                sent_tg = send_telegram_message(text)  # réessaie simple
+                log.info("📝 Telegram envoyé (fallback) = %s", bool(sent_tg))
+            except Exception as e2:
+                log.warning("⚠️ Envoi Telegram a échoué (fallback): %s", e2)
+        except Exception as e:
+            log.warning("⚠️ Envoi Telegram a échoué: %s", e)
+    else:
+        log.info("ℹ️ Telegram indisponible — étape sautée.")
+
+    # 2) Email
+    subject = f"[Nova Star] Rapport du {datetime.now(UTC).strftime('%Y-%m-%d')}"
+    sent_mail = _send_email(subject, text)
+    if sent_mail:
+        log.info("✉️ Email envoyé = True")
+    else:
+        log.info("✉️ Email envoyé = False")
+
+    # Succès s’il y a au moins un canal OK
+    if sent_tg or sent_mail:
+        # Mémoriser le hash du jour (anti-doublon)
+        try:
+            stamp_file.write_text(current_hash)
+        except Exception as e:
+            log.warning("Impossible d'écrire le hash du jour: %s", e)
+        log.info("✅ Envoi du rapport terminé.")
+        return 0
+    else:
+        log.warning("⚠️ Aucun canal n'a confirmé l'envoi.")
+        return 1
+
+if __name__ == "__main__":
+    sys.exit(main())

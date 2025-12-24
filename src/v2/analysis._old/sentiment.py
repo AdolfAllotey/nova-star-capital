@@ -1,0 +1,70 @@
+from __future__ import annotations
+import os, json
+from datetime import datetime, timezone, UTC
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+
+def _load_json(path: str):
+    if os.path.isfile(path):
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    return None
+
+def _collect_texts(telegram, reddit, max_items=2000):
+    texts = []
+    # Telegram
+    if isinstance(telegram, list):
+        for g in telegram:
+            for m in g.get("messages", []):
+                t = m.get("text") or m.get("message") or ""
+                if isinstance(t, str) and t.strip():
+                    texts.append(("telegram", t.strip()))
+    # Reddit
+    if isinstance(reddit, list):
+        for bucket in reddit:
+            for p in bucket.get("posts", []):
+                t = (p.get("title") or "") + " " + (p.get("selftext") or "")
+                t = t.strip()
+                if t:
+                    texts.append(("reddit", t))
+    return texts[:max_items]
+
+def run():
+    base_social = os.getenv("NOVA_SOCIAL_DIR", os.path.join(os.path.dirname(__file__), "..", "data", "social"))
+    tele_path = os.path.join(base_social, "telegram_data.json")
+    reddit_path = os.path.join(base_social, "reddit_data.json")
+
+    telegram = _load_json(tele_path) or []
+    reddit = _load_json(reddit_path) or []
+
+    texts = _collect_texts(telegram, reddit)
+    sid = SentimentIntensityAnalyzer()
+    scores = []
+    for src, t in texts:
+        vs = sid.polarity_scores(t)
+        vs["source"] = src
+        scores.append(vs)
+
+    if scores:
+        avg_comp = sum(s["compound"] for s in scores) / len(scores)
+        avg_pos = sum(s["pos"] for s in scores) / len(scores)
+        avg_neg = sum(s["neg"] for s in scores) / len(scores)
+    else:
+        avg_comp = avg_pos = avg_neg = 0.0
+
+    out_dir = os.getenv("NOVA_ANALYSIS_DIR", os.path.join(os.path.dirname(__file__), "..", "data", "analysis"))
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, f"sentiment_{datetime.now(UTC).strftime('%Y-%m-%d')}.json")
+    out = {
+        "ts": datetime.now(UTC).isoformat(),
+        "n_texts": len(texts),
+        "avg_compound": avg_comp,
+        "avg_pos": avg_pos,
+        "avg_neg": avg_neg,
+        "by_source": {
+            "telegram": sum(1 for s in scores if s["source"]=="telegram"),
+            "reddit":   sum(1 for s in scores if s["source"]=="reddit"),
+        }
+    }
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(out, f, ensure_ascii=False, indent=2)
+    print(f"[sentiment] écrit: {out_path} (n={len(texts)})")

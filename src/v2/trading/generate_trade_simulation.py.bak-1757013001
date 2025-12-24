@@ -1,0 +1,95 @@
+# src/v2/trading/generate_trade_simulation.py
+from __future__ import annotations
+
+import os
+from datetime import datetime, timezone, timezone
+
+from src.v2.utils.logger import get_logger
+from src.v2.utils.file_utils import (
+    ensure_directory_exists,
+    load_json_file,
+    save_json_file,
+)
+from src.v2.utils.exchange_router import get_exchange_for_token
+
+# --- Chemins de sortie / entrée ---
+DATA_DIR = "src/v2/data"
+SIMULATION_DIR = os.path.join(DATA_DIR, "simulation")
+TRADES_OUT = os.path.join(SIMULATION_DIR, "trade_simulation.json")
+SELECTED_TOKENS_FILE = os.path.join(DATA_DIR, "selected_tokens.json")
+
+# --- Logger ---
+logger = get_logger("generate_trade_simulation")
+
+
+def _load_selected_tokens() -> list[str]:
+    """
+    Charge la liste des tokens à simuler depuis selected_tokens.json.
+    Retourne [] si le fichier est manquant ou mal formé, en loggant l’info.
+    """
+    try:
+        tokens = load_json_file(SELECTED_TOKENS_FILE)
+        if isinstance(tokens, list):
+            tokens = [t for t in tokens if isinstance(t, str) and t.strip()]
+            logger.info("🔍 Tokens sélectionnés : %s", tokens)
+            return tokens
+        else:
+            logger.warning("⚠️ Format inattendu dans %s (attendu: liste).", SELECTED_TOKENS_FILE)
+            return []
+    except FileNotFoundError:
+        logger.warning("⚠️ Fichier introuvable : %s", SELECTED_TOKENS_FILE)
+        return []
+    except Exception as e:
+        logger.exception("❌ Erreur lors du chargement de %s : %s", SELECTED_TOKENS_FILE, e)
+        return []
+
+
+def simulate_trades() -> None:
+    """
+    Simule un ordre 'buy' de 1000 unités pour chaque token sélectionné et sauvegarde le tout
+    dans src/v2/data/simulation/trade_simulation.json.
+    """
+    logger.info("🔄 Démarrage de la simulation des trades")
+
+    # Assure l’existence du dossier de sortie
+    ensure_directory_exists(SIMULATION_DIR)
+
+    tokens = _load_selected_tokens()
+    if not tokens:
+        logger.warning("⚠️ Aucun token sélectionné. Fin de la simulation.")
+        # Écrit un JSON vide pour que le reste du pipeline ne casse pas
+        try:
+            save_json_file(TRADES_OUT, [])
+            logger.info("✅ 0 trade simulé sauvegardé dans %s", TRADES_OUT)
+        except Exception as e:
+            logger.exception("❌ Échec d'écriture du fichier vide %s : %s", TRADES_OUT, e)
+        return
+
+    trades = []
+    for token in tokens:
+        try:
+            exchange = get_exchange_for_token(token)
+            logger.info("💰 Simulation trade pour %s sur %s", token, exchange)
+
+            trade = {
+                "token": token,
+                "exchange": exchange,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "amount": 1000,
+                "action": "buy",
+                "status": "simulated",
+            }
+            trades.append(trade)
+        except Exception as e:
+            logger.exception("❌ Erreur lors de la simulation du token %s : %s", token, e)
+
+    # Sauvegarde
+    try:
+        save_json_file(TRADES_OUT, trades)
+        logger.info("✅ %d trades simulés sauvegardés dans %s", len(trades), TRADES_OUT)
+    except Exception as e:
+        logger.exception("❌ Erreur lors de la sauvegarde des trades simulés : %s", e)
+
+
+if __name__ == "__main__":
+    simulate_trades()

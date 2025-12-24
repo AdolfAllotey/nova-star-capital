@@ -1,0 +1,6 @@
+{
+    "Base": {"min_score": 70, "min_sentiment": 0.2},
+    "SentimentOnly": {"min_sentiment": 0.4},
+    "Strict": {"min_score": 80, "min_sentiment": 0.5},
+    "AntiDrawdown": {"min_score": 70, "min_sentiment": 0.3, "max_drawdown": -0.1}
+  }

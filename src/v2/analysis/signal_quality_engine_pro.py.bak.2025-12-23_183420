@@ -1,0 +1,354 @@
+# src/v2/analysis/signal_quality_engine_pro.py
+
+import os
+import datetime as dt
+import statistics as stats
+from typing import Any, Dict, List
+
+# ============================================================
+# Logger - tentative d'utilisation du logger centralisé NSC,
+# sinon fallback sur le logger standard Python.
+# ============================================================
+try:
+    from src.v2.utils.logging_utils import get_logger  # si ton module existe à cet endroit
+except ModuleNotFoundError:
+    import logging
+
+    def get_logger(name: str):
+        """
+        Fallback minimal si le module logging_utils n'est pas disponible.
+        Utilise le logging standard Python.
+        """
+        logger = logging.getLogger(name)
+        if not logger.handlers:
+            logging.basicConfig(
+                level=logging.INFO,
+                format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+            )
+        return logger
+
+from src.v2.utils.file_utils import load_json_file, save_json_file
+
+# ============================================================
+# MessageBus – on essaie d'abord l'import relatif (comme les
+# autres moteurs), puis l'absolu. Si rien ne marche, on désactive
+# la publication d'events mais on garde le JSON.
+# ============================================================
+MessageBus = None  # type: ignore[name-defined]
+
+try:
+    # import relatif (depuis src.v2.analysis vers src.v2.monitoring)
+    from ..monitoring.message_bus import MessageBus as _MB  # type: ignore[import]
+    MessageBus = _MB
+except Exception:
+    try:
+        # fallback absolu
+        from src.v2.monitoring.message_bus import MessageBus as _MB2  # type: ignore[import]
+        MessageBus = _MB2
+    except Exception:
+        # On loguera plus bas si on ne peut vraiment pas publier d'events
+        MessageBus = None  # type: ignore[assignment]
+
+logger = get_logger(__name__)
+
+DATA_DIR = os.getenv("NSC_DATA_DIR", "data")
+ANALYSIS_DIR = os.path.join(DATA_DIR, "analysis")
+TELEMETRY_DIR = os.path.join(DATA_DIR, "telemetry")
+
+
+def now_utc_iso() -> str:
+    """
+    Retourne un timestamp ISO8601 en UTC (aware), ex: 2025-12-11T19:45:00Z
+    Utilise datetime.now(timezone.utc) pour éviter le DeprecationWarning sur utcnow().
+    """
+    return (
+        dt.datetime.now(dt.timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def load_signal_components() -> List[Dict[str, Any]]:
+    """
+    Charge la liste des composants de qualité de signal.
+
+    Format attendu (liste de dict) dans:
+        data/analysis/signal_quality_components.json
+
+    Exemple d'élément:
+    {
+        "id": "momentum_engine",
+        "signal_id": "BTCUSDT-2025-12-11T19:30",
+        "score": 0-100,
+        "quality_bucket": "high|medium|low",
+        "confirmed_by": 2,      # nb d'autres moteurs confirmant le signal
+        "contradicted_by": 0,
+        "status": "valid|rejected"
+    }
+    """
+    path = os.path.join(ANALYSIS_DIR, "signal_quality_components.json")
+    data = load_json_file(path, default=[])
+
+    if not isinstance(data, list):
+        logger.warning(
+            "[signal_quality_engine_pro] Format inattendu pour %s (type=%s), "
+            "utilisation d'une liste vide",
+            path,
+            type(data).__name__,
+        )
+        return []
+
+    logger.info(
+        "[signal_quality_engine_pro] %d composant(s) de qualité de signal chargé(s) depuis %s",
+        len(data),
+        path,
+    )
+    return data
+
+
+def compute_quality_metrics(components: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Calcule les métriques globales de qualité de signal à partir des composants.
+
+    Renvoie un dict "metrics" utilisé ensuite pour dériver score, flag et regime.
+    """
+    if not components:
+        # Mode neutre / défaut quand aucun signal n'est disponible
+        return {
+            "nb_signals_total": 0,
+            "nb_signals_valid": 0,
+            "nb_signals_rejected": 0,
+            "valid_ratio": 0.0,
+            "avg_signal_score": 50.0,
+            "median_signal_score": 50.0,
+            "max_signal_score": 50.0,
+            "nb_signals_high_quality": 0,
+            "nb_signals_medium_quality": 0,
+            "nb_signals_low_quality": 0,
+            "confirmation_ratio": 0.0,
+            "contradiction_ratio": 0.0,
+        }
+
+    scores: List[float] = []
+    total_signals = len(components)
+
+    nb_valid = 0
+    nb_rejected = 0
+
+    nb_high = 0
+    nb_medium = 0
+    nb_low = 0
+
+    total_confirmations = 0
+    total_contradictions = 0
+
+    for comp in components:
+        score = float(comp.get("score", 50.0))
+        scores.append(score)
+
+        status = comp.get("status", "valid")
+        if status == "valid":
+            nb_valid += 1
+        else:
+            nb_rejected += 1
+
+        bucket = comp.get("quality_bucket")
+        if bucket == "high":
+            nb_high += 1
+        elif bucket == "medium":
+            nb_medium += 1
+        elif bucket == "low":
+            nb_low += 1
+
+        total_confirmations += int(comp.get("confirmed_by", 0))
+        total_contradictions += int(comp.get("contradicted_by", 0))
+
+    avg_score = stats.mean(scores) if scores else 50.0
+    median_score = stats.median(scores) if scores else 50.0
+    max_score = max(scores) if scores else 50.0
+
+    valid_ratio = nb_valid / total_signals if total_signals > 0 else 0.0
+    confirmation_ratio = (
+        total_confirmations / total_signals if total_signals > 0 else 0.0
+    )
+    contradiction_ratio = (
+        total_contradictions / total_signals if total_signals > 0 else 0.0
+    )
+
+    return {
+        "nb_signals_total": total_signals,
+        "nb_signals_valid": nb_valid,
+        "nb_signals_rejected": nb_rejected,
+        "valid_ratio": valid_ratio,
+        "avg_signal_score": avg_score,
+        "median_signal_score": median_score,
+        "max_signal_score": max_score,
+        "nb_signals_high_quality": nb_high,
+        "nb_signals_medium_quality": nb_medium,
+        "nb_signals_low_quality": nb_low,
+        "confirmation_ratio": confirmation_ratio,
+        "contradiction_ratio": contradiction_ratio,
+    }
+
+
+def derive_flag_and_regime(score: float, metrics: Dict[str, Any]) -> Dict[str, str]:
+    """
+    Mapping score + métriques -> regime + quality_flag.
+
+    Cas particulier important :
+    - S'il n'y a AUCUN signal (nb_signals_total = 0),
+      on considère que la qualité n'est pas "mauvaise" mais juste
+      "aucune opportunité". On renvoie donc un régime spécifique
+      'no_signals' avec un flag 'ok'.
+    """
+    nb_total = metrics.get("nb_signals_total", 0)
+    valid_ratio = metrics.get("valid_ratio", 0.0)
+    contradiction_ratio = metrics.get("contradiction_ratio", 0.0)
+
+    if nb_total == 0:
+        # 0 signal ≠ signaux de mauvaise qualité.
+        # C'est un état neutre : pas d'opportunité à saisir.
+        return {"regime": "no_signals", "quality_flag": "ok"}
+
+    # Règles simples mais robustes pour un premier niveau Pro
+    if score >= 70 and valid_ratio >= 0.6 and contradiction_ratio <= 0.2:
+        regime = "high_quality"
+        quality_flag = "ok"
+    elif score <= 40 or valid_ratio <= 0.3 or contradiction_ratio >= 0.4:
+        regime = "low_quality"
+        quality_flag = "danger"
+    else:
+        regime = "mixed"
+        quality_flag = "caution"
+
+    return {"regime": regime, "quality_flag": quality_flag}
+
+
+def map_flag_to_severity(flag: str) -> str:
+    """
+    Map NSC quality_flag -> severity pour le Message Bus.
+    """
+    if flag == "ok":
+        return "info"
+    if flag == "caution":
+        return "warning"
+    return "error"  # pour "danger"
+
+
+def build_reasons(
+    score: float,
+    metrics: Dict[str, Any],
+    regime: str,
+    quality_flag: str,
+) -> List[str]:
+    """
+    Construit une liste de raisons lisibles pour le JSON + UI + logs.
+    """
+    reasons = [
+        (
+            "Score moyen des signaux = "
+            f"{metrics.get('avg_signal_score', 0.0):.2f} "
+            f"(score global = {score:.2f})."
+        ),
+        (
+            f"{metrics.get('nb_signals_high_quality', 0)} signaux de haute qualité, "
+            f"{metrics.get('nb_signals_medium_quality', 0)} moyens, "
+            f"{metrics.get('nb_signals_low_quality', 0)} faibles."
+        ),
+        (
+            "Taux de signaux valides = "
+            f"{metrics.get('valid_ratio', 0.0) * 100:.1f} %, "
+            "taux de contradiction = "
+            f"{metrics.get('contradiction_ratio', 0.0) * 100:.1f} %."
+        ),
+        f"Régime de qualité = {regime}, flag = {quality_flag}.",
+    ]
+    return reasons
+
+
+def run_signal_quality_engine(env: str = "PREPROD") -> Dict[str, Any]:
+    """
+    Point d'entrée principal du moteur Signal Quality Engine Pro.
+
+    1. Charge les composants
+    2. Calcule les métriques
+    3. Dérive score / regime / flag
+    4. Sauvegarde le JSON d'analyse
+    5. Publie un event dans le Message Bus (si disponible)
+    """
+    logger.info("[signal_quality_engine_pro] DATA_DIR=%s, env=%s", DATA_DIR, env)
+
+    components = load_signal_components()
+    metrics = compute_quality_metrics(components)
+
+    # On prend comme score global la moyenne des scores de signaux
+    score = float(metrics.get("avg_signal_score", 50.0))
+    score = round(score, 2)
+
+    mapping = derive_flag_and_regime(score, metrics)
+    regime = mapping["regime"]
+    quality_flag = mapping["quality_flag"]
+
+    result = {
+        "timestamp": now_utc_iso(),
+        "env": env,
+        "scope": "global",
+        "regime": regime,
+        "quality_flag": quality_flag,
+        "score": score,
+        "metrics": metrics,
+        "reasons": build_reasons(score, metrics, regime, quality_flag),
+    }
+
+    # Sauvegarde JSON
+    os.makedirs(ANALYSIS_DIR, exist_ok=True)
+    out_path = os.path.join(ANALYSIS_DIR, "signal_quality_engine_pro.json")
+    save_json_file(out_path, result)
+    logger.info(
+        "[signal_quality_engine_pro] signal_quality_engine_pro.json sauvegardé "
+        "(regime=%s, quality_flag=%s, score=%.2f)",
+        regime,
+        quality_flag,
+        score,
+    )
+
+    # Publication Message Bus (si disponible)
+    if MessageBus is None:
+        logger.warning(
+            "[signal_quality_engine_pro] MessageBus introuvable – aucun event "
+            "signal.quality.state ne sera publié."
+        )
+    else:
+        os.makedirs(TELEMETRY_DIR, exist_ok=True)
+        bus_path = os.path.join(TELEMETRY_DIR, "event_bus.jsonl")
+        bus = MessageBus(events_path=bus_path)
+
+        severity = map_flag_to_severity(quality_flag)
+        event_payload = {
+            "env": env,
+            "regime": regime,
+            "quality_flag": quality_flag,
+            "score": score,
+            "metrics": metrics,
+        }
+
+        bus.publish(
+            event_type="signal.quality.state",
+            source="signal_quality_engine_pro",
+            severity=severity,
+            payload=event_payload,
+        )
+        logger.info(
+            "[signal_quality_engine_pro] Event signal.quality.state publié "
+            "(severity=%s, score=%.2f)",
+            severity,
+            score,
+        )
+
+    return result
+
+
+if __name__ == "__main__":
+    env = os.getenv("NSC_ENV", "PREPROD")
+    run_signal_quality_engine(env=env)

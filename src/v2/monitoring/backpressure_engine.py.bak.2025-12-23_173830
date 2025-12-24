@@ -1,0 +1,128 @@
+"""
+Backpressure Engine (lite)
+
+Objectif :
+- Lire les métriques système + logs light
+- Déterminer un mode de backpressure : "normal", "caution", "safe", "emergency"
+- Sauvegarder le résultat dans telemetry/backpressure_state.json
+"""
+
+import os
+from typing import Dict, Any, List
+
+from src.v2.utils.logger import get_logger
+from src.v2.utils.file_utils import (
+    get_data_dir,
+    load_json_file,
+    save_json_file,
+)
+
+logger = get_logger(__name__)
+
+
+def _load_system_metrics(data_dir: str) -> Dict[str, Any]:
+    path = os.path.join(data_dir, "telemetry", "system_metrics.json")
+    metrics = load_json_file(path, default={})
+    if not isinstance(metrics, dict):
+        logger.warning(
+            "[backpressure_engine] system_metrics.json n'est pas un dict, utilisation d'un défaut."
+        )
+        metrics = {}
+    return metrics
+
+
+def _load_logs_overview(data_dir: str) -> Dict[str, Any]:
+    path = os.path.join(data_dir, "analysis", "logs_overview_light.json")
+    overview = load_json_file(path, default={})
+    if not isinstance(overview, dict):
+        logger.warning(
+            "[backpressure_engine] logs_overview_light.json n'est pas un dict, utilisation d'un défaut."
+        )
+        overview = {}
+    return overview
+
+
+def _compute_backpressure_state(
+    system_metrics: Dict[str, Any],
+    logs_overview: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Règles simplifiées pour la V2 préprod :
+    - mode = "emergency" si nb_steps_error >= 2
+    - mode = "safe" si nb_steps_error == 1 ou logs_overview.has_errors == True
+    - sinon mode = "normal"
+    """
+
+    reasons: List[str] = []
+
+    nb_steps_error = system_metrics.get("nb_steps_error", 0) or 0
+    total_duration = system_metrics.get("total_duration_sec", 0.0) or 0.0
+
+    has_errors = False
+    steps_error = []
+    if isinstance(logs_overview.get("has_errors"), bool):
+        has_errors = logs_overview.get("has_errors", False)
+    if isinstance(logs_overview.get("steps_error"), list):
+        steps_error = logs_overview.get("steps_error", [])
+
+    mode = "normal"
+
+    # Règle 1 : erreurs multiples → emergency
+    if nb_steps_error >= 2:
+        mode = "emergency"
+        reasons.append(f"{nb_steps_error} étapes en erreur dans la boucle quotidienne.")
+
+    # Règle 2 : erreurs uniques ou has_errors True → safe
+    elif nb_steps_error == 1 or has_errors:
+        mode = "safe"
+        if nb_steps_error == 1:
+            reasons.append("Une étape en erreur dans la boucle quotidienne.")
+        if has_errors:
+            reasons.append("logs_overview_light signale des erreurs.")
+
+    # Règle 3 : boucle trop lente → caution
+    # (seuillage très large, juste pour info en préprod)
+    if total_duration > 2.0:
+        if mode == "normal":
+            mode = "caution"
+        reasons.append(f"Durée totale de la boucle élevée: {total_duration:.3f} s.")
+
+    # Si aucune raison explicite, en ajouter une générique
+    if not reasons:
+        reasons.append("Aucune anomalie détectée (mode normal).")
+
+    backpressure_state = {
+        "mode": mode,
+        "reasons": reasons,
+        "metrics": {
+            "nb_steps_error": nb_steps_error,
+            "total_duration_sec": total_duration,
+        },
+        "logs": {
+            "has_errors": has_errors,
+            "steps_error": steps_error,
+        },
+    }
+
+    return backpressure_state
+
+
+def main() -> None:
+    data_dir = get_data_dir()
+
+    system_metrics = _load_system_metrics(data_dir)
+    logs_overview = _load_logs_overview(data_dir)
+
+    state = _compute_backpressure_state(system_metrics, logs_overview)
+
+    out_path = os.path.join(data_dir, "telemetry", "backpressure_state.json")
+    save_json_file(out_path, state)
+    logger.info(
+        "[backpressure_engine] backpressure_state.json sauvegardé (%s, reasons=%s)",
+        state.get("mode"),
+        "; ".join(state.get("reasons", [])),
+    )
+
+
+if __name__ == "__main__":
+    main()

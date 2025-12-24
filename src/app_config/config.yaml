@@ -1,0 +1,18 @@
+wallets:
+  eth: "0x0000000000000000000000000000000000000000"
+  bsc: "0x0000000000000000000000000000000000000000"
+
+exchange:
+  name: binance
+  symbol: "BTC/USDT"
+  timeframe: "1h"
+  paper: true
+
+strategy:
+  name: ema
+  fast_ema: 50
+  slow_ema: 200
+
+risk:
+  max_daily_loss_percent: 10
+  max_trade_risk_percent: 2

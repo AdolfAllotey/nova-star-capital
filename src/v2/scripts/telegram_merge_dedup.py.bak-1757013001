@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+import json, csv, sys, re, shutil
+from pathlib import Path
+from datetime import datetime, timezone, timezone
+
+DATA_DIR   = Path("/root/Bot_crypto_ultra/src/v2/data/social")
+SRC_JSON   = DATA_DIR / "telegram_data.json"
+OUT_JSON   = DATA_DIR / "telegram_data_merged.json"
+OUT_CSV    = DATA_DIR / "telegram_messages_dedup.csv"
+BACKUP     = DATA_DIR / ("telegram_data.backup-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + ".json")
+
+def parse_dt(s):
+    if not s:
+        return None
+    # accepte "2025-08-22T02:41:07+00:00" ou variantes
+    try:
+        return datetime.fromisoformat(s.replace("Z","+00:00"))
+    except Exception:
+        pass
+    # fallback très large
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
+        except Exception:
+            continue
+    return None
+
+def first_nonempty(*vals, default="unknown"):
+    for v in vals:
+        if v:
+            return v
+    return default
+
+def normalize_group(raw):
+    if not raw: return "unknown"
+    g = str(raw).strip()
+    if g.startswith("@"): g = g[1:]
+    return g
+
+def extract_tags(text):
+    if not text: return []
+    return re.findall(r"#([A-Z0-9_]+)", text.upper())
+
+def main():
+    if not SRC_JSON.exists():
+        print(f"⚠ Introuvable: {SRC_JSON}", file=sys.stderr)
+        sys.exit(1)
+
+    # sauvegarde de sécurité
+    shutil.copy2(SRC_JSON, BACKUP)
+
+    raw = json.loads(SRC_JSON.read_text(encoding="utf-8"))
+
+    # Le fichier peut être une liste de blocs [{group,title,messages:[...]}]
+    # ou déjà une liste plate. On uniformise en messages plats enrichis du group.
+    flat = []
+    if isinstance(raw, list):
+        for block in raw:
+            group = normalize_group(first_nonempty(block.get("group"), block.get("title")))
+            messages = block.get("messages")
+            if isinstance(messages, list):
+                for m in messages:
+                    mm = dict(m)
+                    mm["_group"] = group
+                    flat.append(mm)
+            else:
+                # certain fichiers ont déjà des messages plats
+                if isinstance(block, dict) and {"id","date","message"} & set(block.keys()):
+                    bb = dict(block)
+                    bb["_group"] = group
+                    flat.append(bb)
+    else:
+        print("⚠ Format inattendu (attendu: liste). Aucune modif.", file=sys.stderr)
+        sys.exit(1)
+
+    total_in = len(flat)
+
+    # déduplication par (group,id) ou sinon (sender_id,id)
+    seen = set()
+    dedup = []
+    for m in flat:
+        gid = m.get("id")
+        grp = normalize_group(m.get("_group"))
+        key = None
+        if gid is not None:
+            key = (grp, gid)
+        else:
+            sid = m.get("sender_id")
+            if sid is not None and m.get("id") is not None:
+                key = (sid, m.get("id"))
+            else:
+                # dernier recours: hash de (grp, message, date)
+                key = (grp, m.get("message"), m.get("date"))
+        if key not in seen:
+            seen.add(key)
+            dedup.append(m)
+
+    # tri par date décroissante
+    dedup.sort(key=lambda x: (parse_dt(x.get("date")) or datetime.min.replace(tzinfo=timezone.utc)), reverse=True)
+
+    # ré-écriture en format "blocs" (un seul bloc appelé "merged") pour compat UI
+    merged = [{
+        "group": "merged",
+        "messages": dedup
+    }]
+
+    OUT_JSON.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # export CSV compact
+    fields = ["date","_group","id","sender_id","views","forwards","replies","tags","message"]
+    with OUT_CSV.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        for m in dedup:
+            row = {
+                "date": m.get("date"),
+                "_group": m.get("_group"),
+                "id": m.get("id"),
+                "sender_id": m.get("sender_id"),
+                "views": m.get("views"),
+                "forwards": m.get("forwards"),
+                "replies": m.get("replies"),
+                "tags": ",".join(extract_tags(m.get("message") or "")),
+                "message": (m.get("message") or "").replace("\n"," ").strip()
+            }
+            w.writerow(row)
+
+    print(f"✅ Entrées initiales : {total_in}")
+    print(f"✅ Après dédup      : {len(dedup)}")
+    print(f"💾 Sauvegarde       : {BACKUP.name}")
+    print(f"📝 JSON fusionné    : {OUT_JSON.name}")
+    print(f"📄 CSV aperçu       : {OUT_CSV.name}")
+
+if __name__ == "__main__":
+    main()

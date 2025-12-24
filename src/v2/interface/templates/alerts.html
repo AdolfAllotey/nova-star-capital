@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Alertes - Bot Crypto Ultra{% endblock %}
+{% block content %}
+<h1>Alertes récentes</h1>
+<ul>
+  {% for alert in alerts %}
+    <li>[{{ alert.date }}] ({{ alert.type }}) : {{ alert.message }}</li>
+  {% else %}
+    <li>Aucune alerte.</li>
+  {% endfor %}
+</ul>
+{% endblock %}

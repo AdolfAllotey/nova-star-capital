@@ -1,0 +1,105 @@
+import os
+import json
+import csv
+from glob import glob
+from datetime import datetime, timezone
+from statistics import mean
+from src.v2.utils.logger import get_logger
+
+logger = get_logger("backtest_engine")
+
+SIMULATION_FOLDER = "src/v2/data/simulation/"
+
+def load_all_simulations():
+    files = sorted(glob(os.path.join(SIMULATION_FOLDER, "*.json")))
+    all_days = []
+
+    for f in files:
+        with open(f, "r") as infile:
+            try:
+                data = json.load(infile)
+                all_days.append(data)
+            except Exception as e:
+                logger.warning(f"Fichier invalide : {f} | Erreur : {e}")
+    return all_days
+
+def apply_strategy(day_data, strategy: dict) -> list:
+    """
+    Applique une stratégie à un jour de simulation.
+    Exemple de strategy :
+    {"min_score": 70, "min_sentiment": 0.3, "max_drawdown": -0.1}
+    """
+    selected = []
+    for token in day_data.get("tokens", []):
+        if token.get("score", 0) < strategy.get("min_score", 0):
+            continue
+        if token.get("sentiment", 0) < strategy.get("min_sentiment", 0):
+            continue
+        if token.get("gain_pct", 0) < strategy.get("max_drawdown", -1):
+            continue
+        selected.append(token)
+    return selected
+
+def evaluate_strategy(strategy: dict):
+    """
+    Applique la stratégie sur toutes les journées de simulation.
+    Renvoie les indicateurs de performance.
+    """
+    days = load_all_simulations()
+    all_gains = []
+
+    for day in days:
+        tokens = apply_strategy(day, strategy)
+        gains = [t["gain_pct"] for t in tokens]
+        all_gains.extend(gains)
+
+    if not all_gains:
+        return {"trades": 0, "avg_return": 0, "win_rate": 0, "total_return": 0}
+
+    win_rate = sum(1 for g in all_gains if g > 0) / len(all_gains)
+    avg_return = mean(all_gains)
+    total_return = sum(all_gains)
+
+    return {
+        "trades": len(all_gains),
+        "avg_return": round(avg_return, 3),
+        "win_rate": round(win_rate * 100, 2),
+        "total_return": round(total_return, 2)
+    }
+
+def backtest_strategies(strategies: dict):
+    """
+    Applique plusieurs stratégies et retourne un dictionnaire de résultats.
+    """
+    results = {}
+    for name, strat in strategies.items():
+        logger.info(f"⏳ Backtest stratégie : {name}")
+        res = evaluate_strategy(strat)
+        results[name] = res
+        logger.info(f"{name} → {res}")
+    return results
+
+def export_results_to_csv(results: dict, filename: str = None):
+    """
+    Exporte les résultats du backtest vers un fichier CSV.
+    """
+    if not filename:
+        date_str = datetime.now().strftime("%Y-%m-%d_%H-%M")
+        filename = f"src/v2/data/scores/backtest_results_{date_str}.csv"
+
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
+
+    with open(filename, mode="w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["Strategy", "Trades", "Average Return", "Win Rate (%)", "Total Return"])
+
+        for strategy, data in results.items():
+            writer.writerow([
+                strategy,
+                data.get("trades", 0),
+                data.get("avg_return", 0),
+                data.get("win_rate", 0),
+                data.get("total_return", 0)
+            ])
+
+    logger.info(f"Résultats exportés vers : {filename}")

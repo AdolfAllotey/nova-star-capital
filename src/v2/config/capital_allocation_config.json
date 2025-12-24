@@ -1,0 +1,36 @@
+{
+    "thresholds": [
+      {
+        "min_balance": 0,
+        "allocations": {
+          "trading": 1.0,
+          "taxes": 0.0,
+          "security": 0.0
+        }
+      },
+      {
+        "min_balance": 10000,
+        "allocations": {
+          "trading": 0.9,
+          "taxes": 0.05,
+          "security": 0.05
+        }
+      },
+      {
+        "min_balance": 20000,
+        "allocations": {
+          "trading": 0.8,
+          "taxes": 0.1,
+          "security": 0.1
+        }
+      },
+      {
+        "min_balance": 50000,
+        "allocations": {
+          "trading": 0.7,
+          "taxes": 0.15,
+          "security": 0.15
+        }
+      }
+    ]
+  }

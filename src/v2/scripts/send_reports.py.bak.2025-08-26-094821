@@ -1,0 +1,171 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+from __future__ import annotations
+
+import os
+import sys
+import json
+import hashlib
+from pathlib import Path
+from datetime import datetime, UTC
+
+# ------------------------------------------------------------
+# Logging robuste (util maison si dispo, sinon basicConfig)
+# ------------------------------------------------------------
+def _bootstrap_logger():
+    try:
+        from src.v2.utils.logging_utils import get_logger  # util maison
+        return get_logger("send_reports")
+    except Exception:
+        import logging
+        LOG_DIR = Path(__file__).resolve().parents[2] / "logs"
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        log_file = LOG_DIR / f"send_reports_{datetime.now(UTC).strftime('%Y-%m-%d')}.log"
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s - %(levelname)s - %(message)s",
+            handlers=[
+                logging.FileHandler(str(log_file), encoding="utf-8"),
+                logging.StreamHandler(sys.stdout),
+            ],
+        )
+        return logging.getLogger("send_reports")
+
+log = _bootstrap_logger()
+
+# ------------------------------------------------------------
+# Envoi Telegram
+# ------------------------------------------------------------
+_send_telegram = None
+try:
+    # Signature possible (selon ta version):
+    #   send_telegram_message(text, parse_mode=None, disable_web_page_preview=True, ...)
+    from src.v2.utils.telegram_utils import send_telegram_message as _send_telegram
+except Exception as e:
+    log.warning(f"send_reports: util telegram indisponible: {e}")
+
+# ------------------------------------------------------------
+# Constantes & chemins
+# ------------------------------------------------------------
+BASE_DIR   = Path(__file__).resolve().parents[2]             # .../src/v2/scripts -> repo root
+DATA_DIR   = BASE_DIR / "data"
+SOCIAL_DIR = DATA_DIR / "social"
+STATE_DIR  = BASE_DIR / "state"
+STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+TELEGRAM_JSON = SOCIAL_DIR / "telegram_data.json"
+
+# ------------------------------------------------------------
+# Anti-doublon journalier (hash du contenu)
+# ------------------------------------------------------------
+def should_skip_duplicate(message_text: str) -> bool:
+    """
+    True si le contenu du rapport du jour est identique au dernier contenu
+    enregistré aujourd'hui (anti-spam).
+    """
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
+    hash_path = STATE_DIR / f"last_report_hash_{today}.txt"
+    h = hashlib.sha256((message_text or "").encode("utf-8")).hexdigest()
+
+    try:
+        if hash_path.is_file():
+            prev = hash_path.read_text(encoding="utf-8").strip()
+            if prev == h:
+                log.info("⏱️ Throttle 'report': contenu identique aujourd'hui — envoi annulé.")
+                return True
+        hash_path.write_text(h, encoding="utf-8")
+    except Exception as e:
+        log.warning(f"Anti-doublon: problème d'accès au state: {e}")
+
+    return False
+
+# ------------------------------------------------------------
+# Lecture utilitaires
+# ------------------------------------------------------------
+def _safe_load_json(path: Path):
+    try:
+        if path.is_file():
+            with path.open("r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception as e:
+        log.warning(f"Lecture JSON échouée ({path}): {e}")
+    return None
+
+def _count_telegram():
+    data = _safe_load_json(TELEGRAM_JSON) or []
+    groups = len(data)
+    total_msgs = 0
+    empty_msgs = 0
+    for ch in data:
+        msgs = ch.get("messages", []) if isinstance(ch, dict) else []
+        total_msgs += len(msgs)
+        for m in msgs:
+            txt = (m or {}).get("message")
+            if not txt or (isinstance(txt, str) and txt.strip() == ""):
+                empty_msgs += 1
+    return groups, total_msgs, empty_msgs
+
+# ------------------------------------------------------------
+# Construction du message
+# ------------------------------------------------------------
+def build_message() -> str:
+    now_str = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
+    g_count, msg_count, empty_msgs = _count_telegram()
+
+    lines = []
+    lines.append("🛰️ *Nova Star — Rapport automatique*")
+    lines.append(f"🕒 {now_str}")
+    lines.append("")
+    lines.append("**📡 Telegram**")
+    lines.append(f"• Groupes scannés : *{g_count}*")
+    lines.append(f"• Messages stockés : *{msg_count}*")
+    if empty_msgs:
+        lines.append(f"• Messages vides : *{empty_msgs}*")
+    lines.append("")
+    lines.append("_Fin du rapport._")
+    return "\n".join(lines)
+
+# ------------------------------------------------------------
+# Programme principal
+# ------------------------------------------------------------
+def main() -> int:
+    log.info("📤 Préparation de l'envoi du rapport...")
+
+    text = build_message()
+    log.info(f"🧾 Longueur du message : {len(text)}")
+
+    # Anti-doublon quotidien
+    if should_skip_duplicate(text):
+        return 0  # succès pour le wrapper
+
+    if _send_telegram is None:
+        log.warning("⚠️ Envoi Telegram indisponible (util manquant).")
+        return 0
+
+    # Envoi Telegram avec fallback de signature
+    try:
+        try:
+            # version qui supporte throttle_key
+            ok = _send_telegram(
+                text,
+                parse_mode="Markdown",
+                disable_web_page_preview=True,
+                throttle_key="report",
+            )
+        except TypeError:
+            # version sans throttle_key
+            ok = _send_telegram(
+                text,
+                parse_mode="Markdown",
+                disable_web_page_preview=True,
+            )
+        log.info(f"📝 Telegram envoyé = {bool(ok)}")
+    except Exception as e:
+        log.warning(f"⚠️ Envoi Telegram a échoué: {e}")
+        return 1
+
+    log.info("✅ Envoi du rapport terminé.")
+    return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())

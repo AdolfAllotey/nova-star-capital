@@ -1,0 +1,6 @@
+2025-07-11 20:05:22,996 — INFO — 🛡️ Analyse des risques...
+2025-07-11 20:05:22,996 — WARNING — ❌ Fichier de risques non trouvé.
+2025-07-11 20:05:22,996 — INFO — ✅ Aucun risque critique détecté aujourd'hui.
+2025-07-11 20:27:43,539 — INFO — 🛡️ Analyse des risques en cours...
+2025-07-11 20:27:43,539 — WARNING — ❌ Fichier de risques introuvable : data/v2/simulation/risk_flags.json
+2025-07-11 20:27:43,539 — INFO — ✅ Aucun risque critique détecté aujourd’hui.

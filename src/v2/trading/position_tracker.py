@@ -1,0 +1,62 @@
+
+import os
+import json
+from datetime import datetime, timezone, timezone
+import pandas as pd
+
+def load_simulated_trades(simulation_folder="src/v2/data/simulation"):
+    today = datetime.now().strftime('%Y-%m-%d')
+    file_path = os.path.join(simulation_folder, f"{today}_simulated_trades.json")
+
+    if not os.path.exists(file_path):
+        print(f"❌ Fichier de simulation introuvable : {file_path}")
+        return []
+
+    with open(file_path, 'r') as f:
+        trades = json.load(f)
+    return trades
+
+def summarize_positions(trades):
+    """
+    Calcule le PnL global, le nombre de trades gagnants/perdants, etc.
+    """
+    total_pnl = sum(t['pnl'] for t in trades)
+    nb_trades = len(trades)
+    nb_tp = sum(1 for t in trades if t['outcome'] == 'tp')
+    nb_sl = sum(1 for t in trades if t['outcome'] == 'sl')
+    nb_neutral = nb_trades - nb_tp - nb_sl
+
+    summary = {
+        "total_pnl": round(total_pnl, 2),
+        "nb_trades": nb_trades,
+        "nb_tp": nb_tp,
+        "nb_sl": nb_sl,
+        "nb_neutral": nb_neutral,
+        "roi_pct": round((total_pnl / (nb_trades * 100)) * 100, 2) if nb_trades > 0 else 0
+    }
+    return summary
+
+def save_summary(summary, trades, output_folder="src/v2/data/simulation"):
+    today = datetime.now().strftime('%Y-%m-%d')
+    df = pd.DataFrame(trades)
+    df['date'] = today
+
+    # Sauvegarde CSV
+    csv_path = os.path.join(output_folder, f"{today}_positions.csv")
+    df.to_csv(csv_path, index=False)
+
+    # Sauvegarde résumé JSON
+    json_path = os.path.join(output_folder, f"{today}_summary.json")
+    with open(json_path, "w") as f:
+        json.dump(summary, f, indent=2)
+
+    print(f"📊 Résumé sauvegardé : {json_path}")
+    return summary
+
+def track_positions():
+    trades = load_simulated_trades()
+    if not trades:
+        return None
+    summary = summarize_positions(trades)
+    save_summary(summary, trades)
+    return summary

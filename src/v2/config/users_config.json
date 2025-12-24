@@ -1,0 +1,30 @@
+{
+  "users": [
+    {
+      "id": "user1",
+      "name": "Alice",
+      "capital": 10000,
+      "strategy": "aggressive",
+      "risk_level": "high",
+      "preferred_tokens": [
+        "BTC",
+        "SOL",
+        "DOGE"
+      ],
+      "active": true
+    },
+    {
+      "id": "user2",
+      "name": "Bob",
+      "capital": 5000,
+      "strategy": "conservative",
+      "risk_level": "low",
+      "preferred_tokens": [
+        "ETH",
+        "BNB",
+        "USDC"
+      ],
+      "active": true
+    }
+  ]
+}

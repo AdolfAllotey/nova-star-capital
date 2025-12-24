@@ -1,0 +1,50 @@
+import os
+from datetime import datetime, timezone, timezone
+from src.v2.utils.telegram_utils import send_telegram_message
+from src.v2.utils.logger import get_logger
+
+logger = get_logger("error_notifier")
+
+LOG_FOLDER = "src/v2/logs/"
+KEYWORDS = ["error", "exception", "critical", "fail", "traceback"]
+ALERT_ON_DETECTION = True
+MAX_ERRORS_REPORTED = 10
+
+def monitor_errors():
+    if not os.path.exists(LOG_FOLDER):
+        logger.warning(f"📂 Dossier de logs introuvable : {LOG_FOLDER}")
+        return
+
+    error_messages = []
+
+    for filename in os.listdir(LOG_FOLDER):
+        if not filename.endswith(".log"):
+            continue
+
+        file_path = os.path.join(LOG_FOLDER, filename)
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except Exception as e:
+            logger.warning(f"❌ Erreur de lecture fichier {filename} : {e}")
+            continue
+
+        for line in lines[-50:]:  # Vérifie uniquement les dernières lignes
+            if any(keyword.lower() in line.lower() for keyword in KEYWORDS):
+                error_messages.append(f"{filename}: {line.strip()}")
+
+    if error_messages and ALERT_ON_DETECTION:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        msg = f"🚨 *Erreurs détectées* ({timestamp})\n\n"
+        msg += "\n".join(error_messages[:MAX_ERRORS_REPORTED])
+
+        try:
+            send_telegram_message(msg, parse_mode="Markdown")
+            logger.info(f"[ALERTE] {len(error_messages)} erreur(s) détectée(s) – alerte envoyée.")
+        except Exception as e:
+            logger.error(f"❌ Erreur lors de l’envoi Telegram : {e}")
+    else:
+        logger.info("✅ Aucun message d'erreur détecté dans les logs récents.")
+
+if __name__ == "__main__":
+    monitor_errors()

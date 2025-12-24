@@ -1,0 +1,195 @@
+# src/v2/api/server.py
+from __future__ import annotations
+
+import os
+import time
+import logging
+from typing import Any, Dict
+
+import uvicorn
+import httpx
+from fastapi import FastAPI, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, PlainTextResponse
+
+# --- Routers applicatifs ---
+# Ils doivent exister dans le repo :
+#   - src/v2/api/ohlcv.py     -> router = APIRouter(prefix="/ohlcv")
+#   - src/v2/api/strategy.py  -> router = APIRouter(prefix="/strategy")
+#   - src/v2/api/legacy_ohlcv.py -> legacy_router = APIRouter(prefix="/internal/ohlcv") (410 Gone)
+from . import ohlcv
+from . import strategy
+from . import legacy_ohlcv
+
+log = logging.getLogger("server")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s - %(message)s")
+
+
+# ------------------------------------------------------------------------------
+# Readiness handler (vérifie l'OHLCV backend mock)
+# ------------------------------------------------------------------------------
+async def readiness_handler() -> JSONResponse:
+    """
+    Ping le backend OHLCV (mode mock) pour valider l'état 'ready'.
+    """
+    url = os.getenv("OHLCV_URL", "http://127.0.0.1:8000/api/ohlcv/ohlcv")
+    params = {"symbol": "BTCUSDT", "tf": "1h", "limit": "1", "mock": "1"}
+    try:
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
+            r = await client.get(url, params=params)
+        ok = (r.status_code == 200)
+        return JSONResponse({"ready": ok, "ohlcv_status": r.status_code})
+    except Exception as e:
+        return JSONResponse({"ready": False, "error": str(e)}, status_code=503)
+
+
+def _build_app() -> FastAPI:
+    env = os.getenv("NSC_ENV", os.getenv("ENV", "preprod"))
+    version = os.getenv("NSC_VERSION", "1.0.0")
+
+    app = FastAPI(
+        title="Nova Star Capital API",
+        version=version,
+        docs_url="/docs",
+        redoc_url="/redoc",
+        openapi_url="/openapi.json",
+    )
+
+    # ---------------- Metrics in-memory ----------------
+    app.state.metrics: Dict[str, Any] = {
+        "requests_total": 0,
+        "errors_5xx": 0,
+        "last_latency_ms": 0.0,
+        "started_at": time.time(),
+        "app": "nsc-api",
+        "env": env,
+    }
+
+    @app.middleware("http")
+    async def metrics_middleware(request: Request, call_next):
+        t0 = time.perf_counter()
+        try:
+            response = await call_next(request)
+        except Exception:
+            app.state.metrics["requests_total"] += 1
+            app.state.metrics["errors_5xx"] += 1
+            app.state.metrics["last_latency_ms"] = (time.perf_counter() - t0) * 1000.0
+            raise
+        else:
+            app.state.metrics["requests_total"] += 1
+            if 500 <= response.status_code < 600:
+                app.state.metrics["errors_5xx"] += 1
+            app.state.metrics["last_latency_ms"] = (time.perf_counter() - t0) * 1000.0
+            return response
+
+    # CORS léger (élargis si besoin)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=os.getenv("CORS_ALLOW_ORIGINS", "http://localhost,http://127.0.0.1").split(","),
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["*"],
+    )
+
+    # ---------------- Health ----------------
+    @app.get("/health")
+    async def health():
+        return {
+            "status": "ok",
+            "version": version,
+            "env": env,
+            "host": os.uname().nodename,
+            "platform": f"{os.uname().sysname}-{os.uname().release}-{os.uname().machine}",
+            "python": os.getenv("PYTHON_VERSION", f"{os.sys.version_info.major}.{os.sys.version_info.minor}.{os.sys.version_info.micro}"),
+            "uptime_s": round(time.time() - app.state.metrics["started_at"], 2),
+        }
+
+    # ---------------- Readiness ----------------
+    @app.get("/ready")
+    async def ready():
+        return await readiness_handler()
+
+    # ---------------- Config (petit echo utile) ----------------
+    @app.get("/config")
+    async def config():
+        return {
+            "env": env,
+            "version": version,
+            "ohlcv_url": os.getenv("OHLCV_URL", "http://127.0.0.1:8000/api/ohlcv/ohlcv"),
+        }
+
+    # ---------------- Metrics JSON ----------------
+    @app.get("/metrics")
+    async def metrics_json():
+        m = app.state.metrics
+        return JSONResponse(
+            {
+                "requests_total": m["requests_total"],
+                "errors_5xx": m["errors_5xx"],
+                "last_latency_ms": m["last_latency_ms"],
+                "started_at": m["started_at"],
+            }
+        )
+
+    # ---------------- Metrics Prometheus ----------------
+    @app.get("/metrics.prom")
+    async def metrics_prom():
+        m = app.state.metrics
+        uptime = time.time() - m["started_at"]
+        app_label = m["app"]
+        env_label = m["env"]
+
+        lines = []
+        lines.append('# HELP nsc_requests_total Total HTTP requests since start')
+        lines.append('# TYPE nsc_requests_total counter')
+        lines.append(f'nsc_requests_total{{app="{app_label}",env="{env_label}"}} {m["requests_total"]}')
+
+        lines.append('# HELP nsc_errors_5xx Total 5xx responses since start')
+        lines.append('# TYPE nsc_errors_5xx counter')
+        lines.append(f'nsc_errors_5xx{{app="{app_label}",env="{env_label}"}} {m["errors_5xx"]}')
+
+        lines.append('# HELP nsc_last_latency_ms Last observed request latency in ms')
+        lines.append('# TYPE nsc_last_latency_ms gauge')
+        lines.append(f'nsc_last_latency_ms{{app="{app_label}",env="{env_label}"}} {m["last_latency_ms"]:.6f}')
+
+        lines.append('# HELP nsc_uptime_seconds Process uptime seconds')
+        lines.append('# TYPE nsc_uptime_seconds gauge')
+        lines.append(f'nsc_uptime_seconds{{app="{app_label}",env="{env_label}"}} {uptime:.0f}')
+
+        body = "\n".join(lines) + "\n"
+        return PlainTextResponse(content=body, media_type="text/plain; version=0.0.4")
+
+    # ---------------- Montage des routers ----------------
+    # API v2
+    app.include_router(ohlcv.router, prefix="/api/ohlcv", tags=["ohlcv"])        # -> /api/ohlcv/ohlcv
+    app.include_router(strategy.router, prefix="/api/strategy", tags=["strategy"])
+    # Route legacy (410) pour /internal/ohlcv
+    app.include_router(legacy_ohlcv.legacy_router)  # -> /internal/ohlcv
+
+    # ---------------- Logs de démarrage/arrêt ----------------
+    @app.on_event("startup")
+    async def _on_startup():
+        log.info(
+            "NSC API starting | version=%s env=%s git=%s host=%s python=%s",
+            version,
+            env,
+            os.getenv("GIT_SHA", "unknown"),
+            os.uname().nodename,
+            f"{os.sys.version_info.major}.{os.sys.version_info.minor}.{os.sys.version_info.micro}",
+        )
+
+    @app.on_event("shutdown")
+    async def _on_shutdown():
+        uptime = round(time.time() - app.state.metrics["started_at"], 1)
+        log.info("NSC API stopping | uptime_s=%s", uptime)
+
+    return app
+
+
+# Instance globale pour Uvicorn / systemd
+app = _build_app()
+
+
+if __name__ == "__main__":
+    # Exécution directe (utile en dev). En prod, systemd lance uvicorn avec ce module.
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))

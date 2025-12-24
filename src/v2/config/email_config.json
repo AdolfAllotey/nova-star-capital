@@ -1,0 +1,7 @@
+{
+    "smtp_server": "smtp.gmail.com",
+    "smtp_port": 587,
+    "sender_email": "tonemail@example.com",
+    "receiver_email": "destinataire@example.com",
+    "password": "mot_de_passe_application"
+  }

@@ -1,0 +1,210 @@
+from __future__ import annotations
+import json, csv, datetime, argparse
+from pathlib import Path
+from typing import Any, Dict
+from zoneinfo import ZoneInfo
+
+# --- Paths ---
+ROOT = Path(__file__).resolve().parents[3]  # /root/Bot_crypto_ultra
+DATA = ROOT / "src" / "v2" / "data"
+
+ANALYSIS   = DATA / "analysis"
+TRADING    = DATA / "trading"
+RISK       = DATA / "risk"
+REPORTING  = DATA / "reporting"
+SOCIAL     = DATA / "social"
+INTEL      = DATA / "intelligence"
+REPORTS    = DATA / "reports"
+
+# Entrées
+F_SENTIMENT   = ANALYSIS / "sentiment_summary.json"
+F_TRADES_CSV  = TRADING / "trades.csv"
+F_WORST       = RISK / "worst_trades.json"
+F_PNL_CSV     = REPORTING / "monthly_pnl.csv"
+F_TG_JSON     = SOCIAL / "telegram_data.json"
+F_REDDIT_JSON = SOCIAL / "reddit_data.json"
+
+# Sorties
+F_JSON = REPORTS / "daily_report.json"
+F_MD   = REPORTS / "daily_report.md"
+
+# --- Helpers ---
+def load_json(path: Path) -> Any:
+    if path.is_file():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+    return None
+
+def load_csv_pnl(path: Path) -> Dict[str, float]:
+    """Retourne cumul, MTD et today selon Europe/Paris."""
+    cumul = 0.0
+    today_val = 0.0
+    month_val = 0.0
+    if not path.is_file():
+        return {"cumul": 0.0, "mtd": 0.0, "today": 0.0}
+
+    tz = ZoneInfo("Europe/Paris")
+    today = datetime.datetime.now(tz).date()
+    mkey = f"{today.year}-{today.month:02d}"
+
+    with path.open(newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            try:
+                d = datetime.date.fromisoformat(row["date"])
+                v = float(row["pnl_usd"])
+                cumul += v
+                if d == today:
+                    today_val += v
+                if d.strftime("%Y-%m") == mkey:
+                    month_val += v
+            except Exception:
+                continue
+    return {"cumul": float(cumul), "mtd": float(month_val), "today": float(today_val)}
+
+def count_social(path: Path) -> int:
+    data = load_json(path)
+    if not data:
+        return 0
+    if isinstance(data, list):
+        return len(data)
+    if isinstance(data, dict):
+        # s’adapte aux structures {messages:[...]} ou {items:[...]}
+        for key in ("messages", "items", "posts"):
+            if isinstance(data.get(key), list):
+                return len(data[key])
+        # fallback rudimentaire
+        return len(data)
+    return 0
+
+# --- ANSI helpers ---
+class C:
+    R = "\x1b[31m"
+    G = "\x1b[32m"
+    Y = "\x1b[33m"
+    B = "\x1b[34m"
+    M = "\x1b[35m"
+    C = "\x1b[36m"
+    W = "\x1b[37m"
+    DIM = "\x1b[2m"
+    BOLD = "\x1b[1m"
+    RESET = "\x1b[0m"
+
+def fmt_money(v: float) -> str:
+    sign = "+" if v >= 0 else "-"
+    return f"{sign}{abs(v):.2f} USD"
+
+def color_money(v: float) -> str:
+    col = C.G if v >= 0 else C.R
+    return f"{col}{fmt_money(v)}{C.RESET}"
+
+def print_ansi_summary(now: datetime.datetime, tg: int, rd: int, sent_score, sent_time,
+                       n_trades: int, n_worst: int, pnl: Dict[str, float]) -> None:
+    print(
+        f"{C.BOLD}{C.M}🌌 Rapport quotidien — {now.date()}{C.RESET}\n"
+        f"{C.DIM}Généré à : {now.strftime('%H:%M (%Z)')}{C.RESET}\n"
+        f"{C.DIM}{'-'*60}{C.RESET}\n"
+        f"{C.BOLD}{C.C}🛰️ Social (48h){C.RESET}\n"
+        f"  Telegram : {C.BOLD}{tg}{C.RESET}  |  Reddit : {C.BOLD}{rd}{C.RESET}\n"
+        f"{C.DIM}{'-'*60}{C.RESET}\n"
+        f"{C.BOLD}{C.Y}🧠 Sentiment{C.RESET}\n"
+        f"  Score    : {C.BOLD}{sent_score if sent_score is not None else 'n/a'}{C.RESET}\n"
+        f"  Calculé  : {sent_time or 'n/a'}\n"
+        f"{C.DIM}{'-'*60}{C.RESET}\n"
+        f"{C.BOLD}{C.B}📊 Trades{C.RESET}\n"
+        f"  Total (48h)   : {C.BOLD}{n_trades}{C.RESET}\n"
+        f"  ⚠️  Pires     : {C.BOLD}{n_worst}{C.RESET}\n"
+        f"{C.DIM}{'-'*60}{C.RESET}\n"
+        f"{C.BOLD}{C.G}💹 PnL (USD){C.RESET}\n"
+        f"  Aujourd’hui   : {color_money(pnl['today'])}\n"
+        f"  Mois (MTD)    : {color_money(pnl['mtd'])}\n"
+        f"  Cumul         : {color_money(pnl['cumul'])}\n"
+    )
+
+# --- Main ---
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Nova Star — enrich report")
+    parser.add_argument("--ansi", action="store_true", help="Afficher un résumé colorisé en console")
+    args = parser.parse_args()
+
+    tz = ZoneInfo("Europe/Paris")
+    now = datetime.datetime.now(tz)
+
+    # Social
+    n_tg = count_social(F_TG_JSON)
+    n_rd = count_social(F_REDDIT_JSON)
+
+    # Sentiment
+    sent = load_json(F_SENTIMENT)
+    sent_score = sent.get("score") if isinstance(sent, dict) else None
+    sent_time = sent.get("generated_at") if isinstance(sent, dict) else None
+
+    # Trades
+    n_trades = 0
+    if F_TRADES_CSV.is_file():
+        with F_TRADES_CSV.open(encoding="utf-8") as f:
+            n_trades = sum(1 for _ in csv.DictReader(f))
+
+    worst = load_json(F_WORST)
+    n_worst = len(worst) if isinstance(worst, list) else 0
+
+    # PnL
+    pnl = load_csv_pnl(F_PNL_CSV)
+
+    # Assemble JSON
+    report = {
+        "generated_at": now.isoformat(),
+        "social": {"telegram": n_tg, "reddit": n_rd},
+        "sentiment": {"score": sent_score, "generated_at": sent_time},
+        "trades": {"count": n_trades, "worst_count": n_worst},
+        "pnl_usd": pnl,
+    }
+    REPORTS.mkdir(parents=True, exist_ok=True)
+    F_JSON.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    # Markdown (visuel)
+    md = f"""# 🌌 Rapport quotidien — {now.date()}
+
+📅 **Généré à** : {now.strftime("%H:%M (%Z)")}
+
+---
+
+## 🛰️ Activité Social (48h)
+- **Telegram** : {n_tg} msgs
+- **Reddit** : {n_rd} posts
+
+---
+
+## 🧠 Sentiment
+- **Score** : `{sent_score if sent_score is not None else "n/a"}`
+- **Calculé** : {sent_time or "n/a"}
+
+---
+
+## 📊 Trades
+- **Total (48h)** : {n_trades} opérations
+- **⚠️ Pires trades** : {n_worst} détectés
+
+---
+
+## 💹 PnL (USD)
+- **Aujourd’hui** : `{pnl['today']:+.2f} USD`
+- **Mois (MTD)** : `{pnl['mtd']:+.2f} USD`
+- **Cumul** : `{pnl['cumul']:+.2f} USD`
+
+---
+
+✨ _Nova Star_ 🚀
+"""
+    F_MD.write_text(md, encoding="utf-8")
+
+    # Optionnel : résumé ANSI en console (pour exécutions manuelles)
+    if args.ansi:
+        print_ansi_summary(now, n_tg, n_rd, sent_score, sent_time, n_trades, n_worst, pnl)
+
+    # Petit JSON de sortie pour piping/outillage
+    print(json.dumps({"updated": str(F_JSON), "markdown": str(F_MD)}, ensure_ascii=False))
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,67 @@
+import os, time, json
+from datetime import datetime, timezone
+from src.v2.utils.logger import get_logger
+from src.v2.utils.telegram_utils import send_telegram_message
+
+LOGGER = get_logger("healthcheck")
+
+STATE_DIR = "src/v2/data/state"
+STATE_PATH = f"{STATE_DIR}/health_state.json"
+
+MUTE_HEALTH_ALERTS = os.getenv("MUTE_HEALTH_ALERTS", "0") == "1"
+ALERT_REMIND_EVERY_SEC = int(os.getenv("HEALTH_REMIND_SEC", "21600"))  # 6h
+
+def _now_utc_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+def _load_state():
+    try:
+        with open(STATE_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {"last_status":"unknown","last_alert_ts":0}
+
+def _save_state(st):
+    os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
+    with open(STATE_PATH, "w", encoding="utf-8") as f:
+        json.dump(st, f)
+
+def _send(msg: str):
+    try:
+        ok = send_telegram_message(msg)
+        LOGGER.info(f"Health telegram: {ok}")
+    except Exception as e:
+        LOGGER.warning(f"Health telegram error: {e}")
+
+def run_healthcheck():
+    # 1) Évaluer un état simple (adapte tes checks ici)
+    status = "ok"
+    details = []
+
+    for p in ["src/v2/data/reports/daily_report.json", "src/v2/data/trade_simulation.json"]:
+        if not os.path.exists(p):
+            details.append(f"missing:{p}")
+            status = "degraded"
+
+    # 2) Politique d'alerte: changement d'état OU rappel si dégradé
+    st = _load_state()
+    now = int(time.time())
+
+    if MUTE_HEALTH_ALERTS:
+        LOGGER.info("MUTE_HEALTH_ALERTS=1 — pas d'alerte envoyée.")
+        st["last_status"] = status
+        _save_state(st)
+        return
+
+    changed = (status != st.get("last_status"))
+    remind_due = (now - int(st.get("last_alert_ts", 0)) >= ALERT_REMIND_EVERY_SEC)
+
+    if changed or (status != "ok" and remind_due):
+        text = f"🩺 Healthcheck: {status.upper()} @ { _now_utc_iso() }"
+        if details:
+            text += "\n" + " • " + "\n • ".join(details)
+        _send(text)
+        st["last_alert_ts"] = now
+
+    st["last_status"] = status
+    _save_state(st)

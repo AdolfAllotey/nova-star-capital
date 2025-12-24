@@ -1,0 +1,58 @@
+# src/v2/monitoring/kol_tracker.py
+
+import json
+import os
+from datetime import datetime, timezone
+from src.v2.utils.logger import get_logger
+from src.v2.utils.file_utils import load_selected_tokens
+
+logger = get_logger("kol_tracker")
+
+INPUT_FILE = "src/v2/data/social/kol_signals.json"
+OUTPUT_FILE = "src/v2/data/social/kol_filtered_tokens.json"
+
+# Seuils de validation
+MIN_MENTION_COUNT = 5
+MIN_MARKETCAP = 35000  # En dollars
+MAX_WALLET_SHARE = 0.05  # Max % détenu par un wallet
+
+def is_green_flag(token_data):
+    try:
+        return (
+            token_data.get("mentions", 0) >= MIN_MENTION_COUNT and
+            token_data.get("marketcap", 0) >= MIN_MARKETCAP and
+            token_data.get("top_wallet_share", 1) <= MAX_WALLET_SHARE and
+            token_data.get("buy_volume", 0) > token_data.get("sell_volume", 0)
+        )
+    except Exception as e:
+        logger.error(f"Erreur d'analyse pour un token : {e}")
+        return False
+
+def analyze_kol_tokens():
+    logger.info("🔍 Analyse des tokens suivis par les KOLs...")
+
+    try:
+        with open(INPUT_FILE, "r") as f:
+            kol_data = json.load(f)
+    except FileNotFoundError:
+        logger.warning(f"Fichier introuvable : {INPUT_FILE}")
+        return []
+    except json.JSONDecodeError as e:
+        logger.error(f"Erreur de lecture JSON : {e}")
+        return []
+
+    filtered = [token for token in kol_data if is_green_flag(token)]
+
+    if filtered:
+        os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
+        with open(OUTPUT_FILE, "w") as f:
+            json.dump(filtered, f, indent=4)
+        logger.info(f"✅ {len(filtered)} tokens filtrés enregistrés dans {OUTPUT_FILE}")
+    else:
+        logger.info("❌ Aucun token KOL ne remplit les critères.")
+
+    return filtered
+
+
+if __name__ == "__main__":
+    analyze_kol_tokens()

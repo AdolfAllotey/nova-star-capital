@@ -1,0 +1,50 @@
+# src/v2/core/strategy_router.py
+
+import os
+from datetime import datetime, timezone
+
+from src.v2.strategies.crypto_strategy import execute_crypto_strategy
+from src.v2.strategies.stock_strategy import execute_stock_strategy
+from src.v2.strategies.options_strategy import execute_options_strategy
+
+from src.v2.utils.config_loader import load_user_config
+from src.v2.utils.logger import log_message
+
+
+def route_strategies(user_profile: str = "default"):
+    """
+    Route les stratégies à exécuter en fonction du profil utilisateur et des modules activés.
+
+    Args:
+        user_profile (str): Nom du profil à utiliser (par défaut "default").
+    """
+    config = load_user_config(user_profile)
+    activated_modules = config.get("activated_modules", [])
+
+    log_message(f"🧠 Routage des stratégies pour le profil '{user_profile}'")
+    log_message(f"🔌 Modules activés : {', '.join(activated_modules)}")
+
+    results = {}
+
+    if "crypto" in activated_modules:
+        log_message("🚀 Exécution de la stratégie crypto...")
+        results["crypto"] = execute_crypto_strategy(config)
+
+    if "stocks" in activated_modules:
+        log_message("📈 Exécution de la stratégie actions...")
+        results["stocks"] = execute_stock_strategy(config)
+
+    if "options" in activated_modules:
+        log_message("🛡️ Exécution de la stratégie options...")
+        results["options"] = execute_options_strategy(config)
+
+    if not results:
+        log_message("⚠️ Aucun module actif. Vérifiez la configuration.")
+
+    return results
+
+
+if __name__ == "__main__":
+    # Test rapide
+    output = route_strategies()
+    print("Résultats du routage :", output)

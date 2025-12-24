@@ -1,0 +1,39 @@
+# src/v2/interface/report_archiver.py
+
+import os
+import shutil
+from datetime import datetime, timezone
+
+ARCHIVE_FOLDER = "data/v2/reports/archive"
+os.makedirs(ARCHIVE_FOLDER, exist_ok=True)
+
+def archive_report(report_path):
+    """
+    Archive une version du rapport généré avec un horodatage.
+
+    Args:
+        report_path (str): Chemin du rapport à archiver (HTML ou TXT).
+    Returns:
+        str: Chemin du fichier archivé.
+    """
+    if not os.path.exists(report_path):
+        raise FileNotFoundError(f"❌ Rapport non trouvé : {report_path}")
+
+    filename = os.path.basename(report_path)
+    name, ext = os.path.splitext(filename)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    archived_filename = f"{name}_{timestamp}{ext}"
+    archived_path = os.path.join(ARCHIVE_FOLDER, archived_filename)
+
+    shutil.copy(report_path, archived_path)
+    print(f"📁 Rapport archivé : {archived_path}")
+    return archived_path
+
+# Exemple d'appel
+if __name__ == "__main__":
+    # Exemple avec un fichier fictif
+    fake_report_path = "data/v2/reports/performance_dashboard.html"
+    try:
+        archive_report(fake_report_path)
+    except FileNotFoundError:
+        print("⚠️ Fichier de test non trouvé (normal si vous n’avez pas encore généré de rapport).")

@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+import os, json, sys
+from datetime import datetime, UTC
+
+# Logger safe : utilise notre util, sinon fallback basicConfig
+try:
+    from src.v2.utils.logging_utils import get_logger
+    log = get_logger("send_reports")
+except Exception:
+    import logging
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+    log = logging.getLogger("send_reports")
+
+# Envoi Telegram via util maison
+try:
+    from src.v2.utils.telegram_utils import send_telegram_message
+except Exception as e:
+    print(f"❌ Impossible d'importer send_telegram_message: {e}", file=sys.stderr)
+    sys.exit(1)
+
+
+DATA_PATH = "src/v2/data/social/telegram_data.json"
+
+
+def _load_data(path: str):
+    if not os.path.isfile(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        log.error(f"Erreur lecture JSON {path}: {e}")
+        return []
+
+
+def _human(n: int) -> str:
+    return f"{n:,}".replace(",", " ")
+
+
+def _build_report() -> str:
+    data = _load_data(DATA_PATH)
+    groups = len(data)
+    total_msgs = sum(len(g.get("messages", [])) for g in data)
+
+    # Dernière date globale
+    last_dt = None
+    for g in data:
+        for m in g.get("messages", []):
+            d = m.get("date")
+            if not d: 
+                continue
+            try:
+                dt = datetime.fromisoformat(d.replace("Z","+00:00"))
+                if (last_dt is None) or (dt > last_dt):
+                    last_dt = dt
+            except Exception:
+                pass
+
+    # Top 5 par nb de messages
+    rows = []
+    for g in data:
+        name = g.get("name") or g.get("username") or str(g.get("id"))
+        rows.append((name, len(g.get("messages", []))))
+    rows.sort(key=lambda x: (-x[1], x[0] or ""))
+    top = rows[:5]
+
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
+    last_txt = last_dt.strftime("%Y-%m-%d %H:%M UTC") if last_dt else "n/a"
+
+    lines = [
+        "📊 *Daily Telegram Scrape*",
+        f"Date: {now}",
+        "",
+        f"• Groupes: {_human(groups)}",
+        f"• Messages: {_human(total_msgs)}",
+        f"• Dernière activité: {last_txt}",
+        "",
+        "Top 5 (par messages):",
+    ]
+    for name, cnt in top:
+        lines.append(f"  • {name}: {_human(cnt)}")
+
+    return "\n".join(lines)
+
+
+def send_reports() -> int:
+    """Construit et envoie le rapport. Retourne 0 si OK, 1 sinon."""
+    log.info("📤 Préparation de l'envoi du rapport...")
+    msg = _build_report()
+    log.info(f"🧾 Longueur du message : {len(msg)}")
+
+    # Envoi Telegram
+    ok_tg = False
+    try:
+        ok_tg = send_telegram_message(msg, parse_mode="Markdown")
+        log.info(f"📝 Telegram envoyé = {ok_tg}")
+    except Exception as e:
+        log.warning(f"⚠️ Envoi Telegram échoué: {e}")
+        ok_tg = False
+
+    if ok_tg:
+        log.info("✅ Envoi du rapport terminé.")
+        return 0
+    else:
+        log.warning("⚠️ Envoi du rapport non confirmé.")
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(send_reports())

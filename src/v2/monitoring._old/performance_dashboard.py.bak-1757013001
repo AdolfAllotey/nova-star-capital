@@ -1,0 +1,51 @@
+# src/v2/monitoring/performance_dashboard.py
+
+import os
+import pandas as pd
+from datetime import datetime, timezone
+
+DASHBOARD_PATH = "data/v2/reports/performance_dashboard.html"
+os.makedirs(os.path.dirname(DASHBOARD_PATH), exist_ok=True)
+
+def generate_performance_dashboard(perf_data):
+    """
+    Génère un tableau de bord HTML des performances par stratégie et sous-compte.
+
+    Args:
+        perf_data (dict): Dictionnaire des performances, ex :
+            {
+                "crypto": {"pnl": 1200, "roi_pct": 6.2},
+                "stocks": {"pnl": -300, "roi_pct": -1.5},
+                "options": {"pnl": 700, "roi_pct": 3.8}
+            }
+
+    Returns:
+        str: Chemin du fichier HTML généré.
+    """
+    rows = []
+    for strategy, data in perf_data.items():
+        pnl = data.get("pnl", 0)
+        roi = data.get("roi_pct", 0)
+        rows.append({"Stratégie": strategy.capitalize(), "PnL (€)": pnl, "ROI (%)": roi})
+
+    df = pd.DataFrame(rows)
+    html = df.to_html(index=False, float_format="%.2f")
+
+    # Ajouter un en-tête avec la date
+    today = datetime.now().strftime("%Y-%m-%d")
+    full_html = f"<h2>📊 Performance Dashboard - {today}</h2>" + html
+
+    with open(DASHBOARD_PATH, "w") as f:
+        f.write(full_html)
+
+    print(f"✅ Dashboard généré : {DASHBOARD_PATH}")
+    return DASHBOARD_PATH
+
+# Exemple d’appel
+if __name__ == "__main__":
+    sample_data = {
+        "crypto": {"pnl": 1500, "roi_pct": 7.2},
+        "stocks": {"pnl": -200, "roi_pct": -1.0},
+        "options": {"pnl": 600, "roi_pct": 3.0}
+    }
+    generate_performance_dashboard(sample_data)

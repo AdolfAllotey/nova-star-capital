@@ -1,0 +1,298 @@
+# src/v2/trading/position_sizing_institutionnel.py
+
+import os
+
+# Si True, on exige un risk_engine_pro par symbole (comportement actuel "skip").
+# Par défaut False pour permettre un fallback neutre en préprod.
+STRICT_REQUIRE_RISK = os.getenv("NSC_SIZING_REQUIRE_RISK", "0").strip() == "1"
+from pathlib import Path
+from typing import Any, Dict, List
+
+from src.v2.utils.logger import get_logger
+from src.v2.utils.file_utils import load_json_file, save_json_file
+
+logger = get_logger(__name__)
+
+# Détection DATA_DIR (comme les autres modules "pro")
+ROOT_DIR = Path(__file__).resolve().parents[3]
+DATA_DIR = Path(os.getenv("NSC_DATA_DIR", ROOT_DIR / "data"))
+
+# Majors : on évite de bloquer totalement un buy momentum juste parce que weak_signals est en "weak_avoid"
+MAJORS = {"bitcoin", "ethereum", "solana", "bnb"}
+
+
+def _build_index(items: List[Dict[str, Any]], key: str) -> Dict[str, Dict[str, Any]]:
+    """Indexe une liste de dicts par une clé (ex: symbol)."""
+    out: Dict[str, Dict[str, Any]] = {}
+    for it in items:
+        k = it.get(key)
+        if not k:
+            continue
+        out[str(k)] = it
+    return out
+
+
+def _load_signals(data_dir: Path) -> List[Dict[str, Any]]:
+    """
+    Charge les signaux à dimensionner.
+    On privilégie analysis/signal_candidates.json (signal_voting).
+    """
+    candidates_path = data_dir / "analysis" / "signal_candidates.json"
+    signals = load_json_file(candidates_path, default=[])
+    if not isinstance(signals, list):
+        logger.warning(
+            "[position_sizing] signal_candidates.json n'est pas une liste, fallback []"
+        )
+        return []
+    if not signals:
+        logger.info("[position_sizing] Aucun signal trouvé dans %s", candidates_path)
+    else:
+        logger.info(
+            "[position_sizing] %d signaux chargés depuis %s",
+            len(signals),
+            candidates_path,
+        )
+    return signals
+
+
+def _load_risk_engine(data_dir: Path) -> Dict[str, Dict[str, Any]]:
+    """Charge le résultat de risk_engine_pro.json et indexe par symbol."""
+    risk_path = data_dir / "analysis" / "risk_engine_pro.json"
+    risk_data = load_json_file(
+        risk_path,
+        default={"assets": []},
+    )
+    assets = risk_data.get("assets", [])
+    if not isinstance(assets, list):
+        logger.warning(
+            "[position_sizing] risk_engine_pro.json ne contient pas une liste 'assets'"
+        )
+        return {}
+    logger.info(
+        "[position_sizing] Risk engine chargé: %d assets (global_flag=%s)",
+        len(assets),
+        risk_data.get("global_flag"),
+    )
+    return _build_index(assets, "symbol")
+
+
+def _load_weak_signals(data_dir: Path) -> Dict[str, Dict[str, Any]]:
+    """
+    Charge weak_signals_engine_pro.json (si dispo) et indexe par symbol.
+    """
+    weak_path = data_dir / "analysis" / "weak_signals_engine_pro.json"
+    weak_data = load_json_file(
+        weak_path,
+        default={"assets": []},
+    )
+    assets = weak_data.get("assets", [])
+    if not isinstance(assets, list):
+        logger.warning(
+            "[position_sizing] weak_signals_engine_pro.json ne contient pas une liste 'assets'"
+        )
+        return {}
+    logger.info(
+        "[position_sizing] Weak signals pro chargé: %d assets (global_flag=%s)",
+        len(assets),
+        weak_data.get("stats", {}).get("global_flag"),
+    )
+    return _build_index(assets, "symbol")
+
+
+def _compute_size_multiplier(
+    risk_item: Dict[str, Any],
+    weak_item: Dict[str, Any] | None,
+) -> Dict[str, Any]:
+    """
+    Calcule le multiplicateur de taille final en combinant :
+    - risk_engine_pro (risk_flag, size_multiplier)
+    - weak_signals_engine_pro (weak_watch / weak_avoid)
+    """
+    risk_flag = risk_item.get("risk_flag", "caution")
+    base_mult = float(risk_item.get("size_multiplier", 1.0))
+    hard_veto = bool(risk_item.get("flags", {}).get("hard_veto", False))
+    soft_veto = bool(risk_item.get("flags", {}).get("soft_veto", False))
+
+    weak_kind = None
+    if weak_item:
+        weak_kind = weak_item.get("kind")
+
+    # Majors override : weak_avoid ne bloque pas (réduit seulement)
+    majors = {"bitcoin", "ethereum", "solana"}
+    symbol = str(risk_item.get("symbol") or risk_item.get("inputs", {}).get("symbol") or "").strip()
+    if symbol in majors and weak_kind == "weak_avoid":
+        notes.append("Majors override: weak_avoid -> weak_watch (no hard block)")
+        weak_kind = "weak_watch"
+
+    notes: List[str] = []
+
+    # Soft risk flags: caution → réduction douce
+    if str(risk_flag).lower() in ("caution", "warn", "warning"):
+        notes.append("risk_flag=caution -> reduce")
+        base_mult = min(base_mult, 0.5)
+        soft_veto = True
+
+    # 1) Hard veto risk engine → taille 0
+    if hard_veto:
+        notes.append("Hard veto (risk engine)")
+        return {
+            "final_mult": 0.0,
+            "hard_veto": True,
+            "soft_veto": True,
+            "weak_kind": weak_kind,
+            "notes": notes,
+        }
+
+    # 2) Base sur risk_engine_pro
+    final_mult = base_mult
+    notes.append(f"Risk flag={risk_flag}, base_mult={base_mult:.2f}")
+
+    if soft_veto:
+        notes.append("Soft veto (risk engine)")
+
+    # 3) Weak signals pro
+    if weak_kind == "weak_avoid":
+        # Institutionnellement, on coupe la taille
+        notes.append("weak_avoid → taille coupée")
+        final_mult = 0.0
+        soft_veto = True
+    elif weak_kind == "weak_watch":
+        # On réduit la taille mais on ne coupe pas totalement
+        notes.append("weak_watch → taille réduite (×0.5)")
+        final_mult *= 0.5
+
+    # Clamp raisonnable
+    final_mult = max(0.0, min(final_mult, 1.5))
+
+    return {
+        "final_mult": final_mult,
+        "hard_veto": hard_veto,
+        "soft_veto": soft_veto,
+        "weak_kind": weak_kind,
+        "notes": notes,
+    }
+
+
+def build_sized_signals() -> list[dict[str, Any]]:
+    """
+    Construit la liste des signaux dimensionnés (sized_signals.json) à partir de :
+    - signal_candidates.json (signaux bruts)
+    - risk_engine_pro.json (risk_score, size_multiplier, flags)
+    - weak_signals_engine_pro.json (weak_watch / weak_avoid)
+    """
+    data_dir = DATA_DIR
+    logger.info("[position_sizing] DATA_DIR=%s", data_dir)
+
+    signals = _load_signals(data_dir)
+    if not signals:
+        logger.warning("[position_sizing] Aucun signal à dimensionner.")
+        return []
+
+    risk_index = _load_risk_engine(data_dir)
+    weak_index = _load_weak_signals(data_dir)
+
+    sized: List[Dict[str, Any]] = []
+
+    for sig in signals:
+        symbol = str(sig.get("symbol") or sig.get("asset") or "").strip().lower()
+        if not symbol:
+            logger.warning("[position_sizing] Signal sans 'symbol': %s", sig)
+            continue
+
+        # On récupère weak AVANT risk fallback pour pouvoir dériver un flag
+        weak_item = weak_index.get(symbol)
+        risk_item = risk_index.get(symbol)
+
+        # Fallback si risk_engine_pro manque (préprod), sauf si STRICT
+        if not risk_item:
+            if STRICT_REQUIRE_RISK:
+                logger.warning("[position_sizing] Aucun risk_engine_pro pour %s, skip.", symbol)
+                continue
+
+            fallback_flag = "caution"
+            if isinstance(weak_item, dict):
+                fallback_flag = weak_item.get("risk_flag") or fallback_flag
+
+            risk_item = {
+                "symbol": symbol,
+                "risk_flag": fallback_flag,
+                "risk_score": None,
+                "size_multiplier": 1.0,
+                "flags": {"hard_veto": False, "soft_veto": False},
+                "inputs": {"fallback_risk_engine_missing": True},
+            }
+            logger.info(
+                "[position_sizing] fallback_risk_engine_missing=%s -> sizing autorisé (risk_flag=%s)",
+                symbol,
+                risk_item.get("risk_flag"),
+            )
+
+        # Override majors: weak_avoid -> weak_watch (activable/désactivable)
+        allow_major_override = os.getenv("NSC_MAJORS_ALLOW_WEAK_AVOID", "1").strip() == "1"
+        if allow_major_override and isinstance(weak_item, dict) and weak_item.get("kind") == "weak_avoid" and symbol in MAJORS:
+            logger.info("[position_sizing] Majors override: weak_avoid -> weak_watch (symbol=%s)", symbol)
+            weak_item = dict(weak_item)
+            weak_item["kind"] = "weak_watch"
+
+        mult_info = _compute_size_multiplier(risk_item, weak_item)
+
+        base_weight = float(sig.get("weight", 1.0))
+        final_weight = base_weight * float(mult_info.get("final_mult", 1.0))
+        if final_weight <= 0:
+            # keep minimal log (pas de TRACE)
+            logger.info("[position_sizing] DROP final_weight<=0 symbol=%s notes=%s", symbol, mult_info.get("notes"))
+            continue
+
+        sized_signal = {
+            "symbol": symbol,
+            "side": sig.get("side", "buy"),
+            "strategy": sig.get("strategy", "momentum"),
+            "base_weight": base_weight,
+            "risk_score": risk_item.get("risk_score"),
+            "risk_flag": risk_item.get("risk_flag"),
+            "size_multiplier_risk": risk_item.get("size_multiplier", 1.0),
+            "weak_kind": mult_info.get("weak_kind"),
+            "hard_veto": bool(mult_info.get("hard_veto")),
+            "soft_veto": bool(mult_info.get("soft_veto")),
+            "final_size_multiplier": float(mult_info.get("final_mult", 1.0)),
+            "final_weight": final_weight,
+            "notes": mult_info.get("notes", []),
+            "meta_score_pro": (risk_item.get("inputs", {}) or {}).get("meta_score_pro") or risk_item.get("meta_score_pro"),
+            "flow_direction": (risk_item.get("inputs", {}) or {}).get("flow_direction"),
+        }
+
+        sized.append(sized_signal)
+        "[position_sizing] %d signaux dimensionnés construits (sur %d signaux bruts).",
+        len(sized),
+        len(signals),
+    )
+    logger.info("[position_sizing][TRACE2] sized_len=%d", len(sized))
+    return sized
+
+
+def main() -> None:
+    """Point d'entrée CLI."""
+    data_dir = DATA_DIR
+    trading_dir = data_dir / "trading"
+    trading_dir.mkdir(parents=True, exist_ok=True)
+
+    sized = build_sized_signals()
+
+    out_path = trading_dir / "sized_signals.json"
+    try:
+        # Toujours écraser sized_signals.json (même si vide) pour éviter les signaux stale
+        save_json_file(str(out_path), sized)
+    except Exception:
+        logger.exception("[position_sizing] Échec save_json_file -> fallback write_text")
+        import json as _json
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(_json.dumps(sized, indent=2, ensure_ascii=False), encoding="utf-8")
+    logger.info(
+        "[position_sizing] sized_signals.json sauvegardé (%s, n=%d).",
+        out_path,
+        len(sized),
+    )
+
+
+if __name__ == "__main__":
+    main()

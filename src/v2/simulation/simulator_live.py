@@ -1,0 +1,63 @@
+# src/v2/simulation/simulator_live.py
+
+import os
+import json
+from datetime import datetime, timezone, timezone
+from random import uniform
+from src.v2.utils.file_utils import load_selected_tokens
+from src.v2.utils.logger import get_logger
+
+logger = get_logger("simulator_live")
+
+SIMULATION_FOLDER = "src/v2/data/simulation/live"
+os.makedirs(SIMULATION_FOLDER, exist_ok=True)
+
+def simulate_live_trade(token):
+    """
+    Simule un trade "live" pour un token donné.
+    """
+    entry_price = round(uniform(0.9, 1.1), 4)
+    variation_pct = round(uniform(-0.15, 0.25), 4)
+    exit_price = round(entry_price * (1 + variation_pct), 4)
+    amount_invested = round(uniform(50, 200), 2)
+    profit_loss = round((exit_price - entry_price) * amount_invested / entry_price, 2)
+
+    return {
+        "token": token,
+        "entry_price": entry_price,
+        "exit_price": exit_price,
+        "variation_pct": variation_pct,
+        "amount_invested": amount_invested,
+        "profit_loss": profit_loss
+    }
+
+def simulate_live_trades():
+    """
+    Simule des trades sur les tokens sélectionnés en mode live.
+    """
+    logger.info("▶️ Lancement de la simulation live")
+    try:
+        selected_tokens = load_selected_tokens()
+        results = [simulate_live_trade(token) for token in selected_tokens]
+
+        now = datetime.now()
+        timestamp = now.strftime("%Y-%m-%d_%H-%M")
+        filename = f"{SIMULATION_FOLDER}/{timestamp}.json"
+
+        report = {
+            "timestamp": now.isoformat(),
+            "is_live": True,
+            "trades": results,
+            "total_pnl": round(sum(t["profit_loss"] for t in results), 2)
+        }
+
+        with open(filename, "w") as f:
+            json.dump(report, f, indent=4)
+
+        logger.info(f"✅ Simulation live enregistrée dans {filename}")
+
+    except Exception as e:
+        logger.error(f"❌ Erreur dans simulate_live_trades : {e}")
+
+if __name__ == "__main__":
+    simulate_live_trades()

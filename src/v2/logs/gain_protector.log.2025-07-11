@@ -1,0 +1,7 @@
+2025-07-11 20:05:22,996 — INFO — 🛡️ Démarrage du module de sécurisation des gains.
+2025-07-11 20:05:22,996 — INFO — Gain cumulé actuel : 0 €
+2025-07-11 20:05:22,996 — INFO — Gain inférieur au seuil. Aucune action nécessaire.
+2025-07-11 20:27:43,540 — INFO — 🛡️ Démarrage du module de sécurisation des gains...
+2025-07-11 20:27:43,540 — WARNING — ⚠️ Fichier de performance non trouvé : data/v2/performance/global_gains.json
+2025-07-11 20:27:43,540 — INFO — 💹 Gain cumulé actuel : 0 €
+2025-07-11 20:27:43,540 — INFO — 📉 Gain en dessous du seuil — aucune action requise.

@@ -1,0 +1,65 @@
+# src/v2/main_fake.py
+
+import os
+from datetime import datetime, timezone, timezone
+from dotenv import load_dotenv
+from src.v2.utils.logger import get_logger
+from src.v2.monitoring.risk_controller import analyze_risk
+from src.v2.monitoring.error_notifier import monitor_errors
+from src.v2.monitoring.gain_protector import secure_gains
+from src.v2.monitoring.kol_tracker import track_kols
+from src.v2.monitoring.whale_tracker import run_whale_tracker
+from src.v2.monitoring.airdrop_scanner import scan_for_airdrops
+from src.v2.intelligence.llm_analyzer import generate_summary
+from src.v2.trading.trade_simulator import run_trade_simulation
+from src.v2.reporting.report_generator import generate_and_send_report
+
+# ✅ DATE FORCÉE POUR TEST
+FAKE_DATE = "2025-07-10"  # à modifier pour simuler différents jours
+os.environ["FAKE_DATE"] = FAKE_DATE
+
+load_dotenv("src/v2/.env")
+logger = get_logger("main_fake")
+
+def main():
+    try:
+        logger.info(f"🚀 Démarrage du pipeline V2 pour la date simulée {FAKE_DATE}...")
+
+        logger.info("👥 Analyse des KOLs...")
+        track_kols()
+
+        logger.info("🐋 Détection des trades whale...")
+        run_whale_tracker()
+
+        logger.info("🏱 Scan des airdrops...")
+        scan_for_airdrops()
+
+        logger.info("📈 Simulation des trades...")
+        simulated_trades = run_trade_simulation()
+
+        if simulated_trades:
+            logger.info("🧠 Analyse LLM...")
+            summary = generate_summary(simulated_trades)
+            logger.info("\n" + summary)
+        else:
+            logger.warning("⚠️ Aucune simulation à analyser.")
+
+        logger.info("🛡 Analyse des risques...")
+        analyze_risk()
+
+        logger.info("💰 Protection des gains...")
+        secure_gains()
+
+        logger.info("📤 Génération et envoi du rapport...")
+        generate_and_send_report()
+
+        logger.info("📡 Surveillance des erreurs...")
+        monitor_errors()
+
+        logger.info("✅ Pipeline de test terminé avec succès.")
+
+    except Exception as e:
+        logger.exception(f"❌ Erreur critique dans le pipeline de test : {e}")
+
+if __name__ == "__main__":
+    main()

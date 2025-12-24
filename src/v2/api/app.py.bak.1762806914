@@ -1,0 +1,261 @@
+# /opt/nsc/app/src/v2/api/app.py
+
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pathlib import Path
+import json
+import datetime
+
+APP_NAME = "Nova Star Capital"
+APP_VERSION = "2.0"
+DATA_ROOT = Path("/opt/nsc/app/data")
+
+app = FastAPI(title=f"{APP_NAME} API", version=APP_VERSION)
+
+# CORS large pour l’UI Vite locale (port 5173) et variantes
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+        "http://127.0.0.1",
+        "http://localhost",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ---------- Helpers ----------
+def _utcnow_iso() -> str:
+    return datetime.datetime.utcnow().isoformat() + "Z"
+
+
+def read_json(path: Path):
+    """
+    Lecture JSON safe. Retourne (data, exists, size_bytes, mtime_iso)
+    """
+    if not path.exists():
+        return None, False, 0, None
+    try:
+        raw = path.read_text(encoding="utf-8")
+        data = json.loads(raw) if raw.strip() else None
+        stat = path.stat()
+        mtime = datetime.datetime.utcfromtimestamp(stat.st_mtime).isoformat() + "Z"
+        return data, True, stat.st_size, mtime
+    except Exception as e:
+        return {"_error": str(e)}, True, path.stat().st_size, None
+
+
+def normalize_items(data):
+    """
+    Convertit des structures diverses vers une liste d’items + updated_at si présent.
+    - Accepte:
+      * list (...)
+      * {items:[...]}
+      * {positions:[...]}
+      * {months:[...]}
+      * {trades:[...]}
+    Renvoie dict: {"updated_at": <str|None>, "items": [...]}
+    """
+    updated_at = None
+    items = []
+
+    if isinstance(data, dict):
+        # Cherche un champ de date plausible
+        updated_at = data.get("updated_at") or data.get("last_updated") or data.get("as_of")
+
+        # Priorité aux collections connues
+        for key in ("items", "positions", "months", "trades"):
+            if isinstance(data.get(key), list):
+                items = data.get(key, [])
+                break
+        else:
+            # Fallback: si dict non vide, retourne les valeurs
+            # (mais l’UI préfère des listes d’objets)
+            if isinstance(data.get("data"), list):
+                items = data.get("data")
+            elif isinstance(data.get("list"), list):
+                items = data.get("list")
+            else:
+                # dernier recours: rien
+                items = []
+    elif isinstance(data, list):
+        items = data
+    else:
+        items = []
+
+    return {"updated_at": updated_at, "items": items}
+
+
+def file_report(name: str, path: Path):
+    """
+    Pour /metrics: infos de base + compteur d’items si possible.
+    """
+    data, exists, size, mtime = read_json(path)
+    norm = normalize_items(data) if data is not None else {"items": []}
+    return {
+        "path": str(path),
+        "exists": exists,
+        "size_bytes": size,
+        "mtime": mtime,
+        "items": len(norm.get("items") or []),
+    }
+
+
+# ---------- Index & Santé ----------
+@app.get("/")
+def root():
+    return {
+        "project": APP_NAME,
+        "version": APP_VERSION,
+        "message": "Backend API is running",
+        "available_routes": [
+            "/status",
+            "/metrics",
+            "/market/regime",
+            "/market/top-movers",
+            "/profitability/monthly",
+            "/worst-trades",
+            "/open-positions",
+            "/ico/candidates",
+            "/ico/screened",
+            "/ico/scored",
+            "/ico/allocation",
+        ],
+    }
+
+
+@app.get("/status")
+def status():
+    return {"ok": True, "time": _utcnow_iso()}
+
+
+# ---------- Market ----------
+@app.get("/market/regime")
+def market_regime():
+    f = DATA_ROOT / "market" / "market_regime.json"
+    data, exists, *_ = read_json(f)
+    if not exists or data is None:
+        # valeur par défaut
+        return {
+            "mode": "neutral",
+            "score": 0.0,
+            "updated_at": _utcnow_iso(),
+            "source": "default",
+        }
+    try:
+        mode = str((data or {}).get("mode", "neutral")).lower()
+        score = float((data or {}).get("score", 0.0))
+        score = max(-1.0, min(1.0, score))
+        return {
+            "mode": mode,
+            "score": score,
+            "updated_at": data.get("updated_at"),
+            "source": data.get("source", "file"),
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/market/top-movers")
+def market_top_movers():
+    f = DATA_ROOT / "market" / "top_movers.json"
+    data, exists, *_ = read_json(f)
+    if not exists or data is None:
+        return {"updated_at": None, "items": []}
+    return normalize_items(data)
+
+
+# ---------- Profitability ----------
+@app.get("/profitability/monthly")
+def profitability_monthly():
+    # fichier historique de PnL mensuel (ex: monthly_pnl.json)
+    f = DATA_ROOT / "profit" / "monthly_pnl.json"
+    data, exists, *_ = read_json(f)
+    if not exists or data is None:
+        return {"updated_at": None, "items": []}
+    return normalize_items(data)
+
+
+# ---------- Risk / Worst Trades ----------
+@app.get("/worst-trades")
+def worst_trades():
+    f = DATA_ROOT / "risk" / "worst_trades.json"
+    data, exists, *_ = read_json(f)
+    if not exists or data is None:
+        return {"updated_at": None, "items": []}
+    return normalize_items(data)
+
+
+# ---------- Trading / Open Positions ----------
+@app.get("/open-positions")
+def open_positions():
+    f = DATA_ROOT / "trading" / "open_positions.json"
+    data, exists, *_ = read_json(f)
+    if not exists or data is None:
+        return {"updated_at": None, "items": []}
+    return normalize_items(data)
+
+
+# ---------- ICO ----------
+@app.get("/ico/candidates")
+def ico_candidates():
+    f = DATA_ROOT / "ico" / "ico_candidates.json"
+    data, exists, *_ = read_json(f)
+    if not exists or data is None:
+        return {"updated_at": None, "items": []}
+    return normalize_items(data)
+
+
+@app.get("/ico/screened")
+def ico_screened():
+    f = DATA_ROOT / "ico" / "ico_screened.json"
+    data, exists, *_ = read_json(f)
+    if not exists or data is None:
+        return {"updated_at": None, "items": []}
+    return normalize_items(data)
+
+
+@app.get("/ico/scored")
+def ico_scored():
+    f = DATA_ROOT / "ico" / "ico_scored.json"
+    data, exists, *_ = read_json(f)
+    if not exists or data is None:
+        return {"updated_at": None, "items": []}
+    return normalize_items(data)
+
+
+@app.get("/ico/allocation")
+def ico_allocation():
+    f = DATA_ROOT / "ico" / "ico_allocation.json"
+    data, exists, *_ = read_json(f)
+    if not exists or data is None:
+        return {"updated_at": None, "items": []}
+    return normalize_items(data)
+
+
+# ---------- Metrics ----------
+@app.get("/metrics")
+def metrics():
+    files = {
+        "market.top_movers": DATA_ROOT / "market" / "top_movers.json",
+        "market.regime": DATA_ROOT / "market" / "market_regime.json",
+        "profit.monthly_pnl": DATA_ROOT / "profit" / "monthly_pnl.json",
+        "risk.worst_trades": DATA_ROOT / "risk" / "worst_trades.json",
+        "trading.open_positions": DATA_ROOT / "trading" / "open_positions.json",
+        "ico.candidates": DATA_ROOT / "ico" / "ico_candidates.json",
+        "ico.screened": DATA_ROOT / "ico" / "ico_screened.json",
+        "ico.scored": DATA_ROOT / "ico" / "ico_scored.json",
+        "ico.allocation": DATA_ROOT / "ico" / "ico_allocation.json",
+    }
+    report = {k: file_report(k, p) for k, p in files.items()}
+    return {"service": APP_NAME, "version": APP_VERSION, "files": report}
+
+
+# ---------- Main (optionnel local) ----------
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=True)

@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""
+Envoi du rapport quotidien (Telegram + email facultatif).
+
+- Ne dépend pas des utilitaires internes fragiles.
+- Sortie process:
+    * code 0  = au moins un canal (Telegram ou email) a confirmé l'envoi
+    * code 10 = rien à envoyer / données absentes
+    * code 20 = échec envoi (tous canaux)
+"""
+import os, json, sys
+from datetime import datetime, timezone
+
+# Logging simple (compatible avec get_logger(name) si dispo)
+logger = None
+try:
+    from src.v2.utils.file_utils import get_logger  # signature: get_logger(name)
+    logger = get_logger("send_reports")
+except Exception:
+    import logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s"
+    )
+    logger = logging.getLogger("send_reports")
+
+DATA_DIR   = "src/v2/data"
+REPORT_DIR = os.path.join(DATA_DIR, "reports")
+SENTI_DIR  = os.path.join(DATA_DIR, "sentiment")
+RISK_DIR   = os.path.join(DATA_DIR, "risk")
+
+DAILY_JSON = os.path.join(REPORT_DIR, "daily_report.json")
+SENTI_JSON = os.path.join(SENTI_DIR, "average_sentiment.json")
+WORST_JSON = os.path.join(RISK_DIR, "worst_trades.json")
+
+def _read_json(path, default):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+def _fmt_report():
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    daily   = _read_json(DAILY_JSON, {})
+    senti   = _read_json(SENTI_JSON, {})
+    worst   = _read_json(WORST_JSON, {"worst_trades": []})
+
+    trade_count        = daily.get("trade_count", 0)
+    worst_trade_count  = daily.get("worst_trade_count", len(worst.get("worst_trades", [])))
+    avg_senti          = senti.get("average", senti if isinstance(senti, (int, float)) else None)
+
+    lines = [
+        f"📊 *Rapport quotidien — {today}*",
+        "",
+        f"• Trades analysés : *{trade_count}*",
+        f"• Pires trades identifiés : *{worst_trade_count}*",
+    ]
+    if isinstance(avg_senti, (int, float, str)):
+        lines.append(f"• Sentiment moyen : *{avg_senti}*")
+
+    # Mini résumé worst trades si dispo
+    wlist = worst.get("worst_trades", [])
+    if isinstance(wlist, list) and wlist:
+        lines.append("")
+        lines.append("• Exemples (pires) :")
+        for w in wlist[:3]:
+            sym = w.get("symbol") or w.get("token") or "?"
+            desc = w.get("reason") or w.get("desc") or ""
+            lines.append(f"  - {sym} — {desc}".strip())
+
+    lines.append("")
+    lines.append("_Envoi auto_")
+    msg = "\n".join(lines)
+    # longueur utile pour les logs
+    return msg
+
+def _send_telegram(text: str) -> bool:
+    try:
+        from src.v2.utils.telegram_utils import send_telegram_message
+    except Exception as e:
+        logger.warning(f"send_reports: pas de module telegram_utils ({e})")
+        return False
+    ok = send_telegram_message(text, category="report", parse_mode="Markdown")
+    return bool(ok)
+
+def _send_email(text: str) -> bool:
+    """
+    Optionnel : on n'échoue pas si l'email n'est pas configuré.
+    Tu peux brancher ta lib SMTP ici si tu veux forcer l'email.
+    """
+    try:
+        # si tu as déjà un util interne d'email, importe-le ici
+        # from src.v2.utils.mail_utils import send_email
+        # return bool(send_email(subject="Rapport quotidien", body=text))
+        return False
+    except Exception as e:
+        logger.warning(f"Email non envoyé: {e}")
+        return False
+
+def main():
+    logger.info("📤 Préparation de l'envoi du rapport...")
+
+    text = _fmt_report()
+    if not text or len(text.strip()) == 0:
+        logger.error("❌ Rien à envoyer (rapport vide).")
+        return 10
+
+    logger.info(f"🧾 Longueur du message : {len(text)}")
+
+    sent_tg = _send_telegram(text)
+    if sent_tg:
+        logger.info("📝 Telegram envoyé = True")
+    else:
+        logger.warning("⚠️ Envoi du rapport non confirmé (Telegram).")
+
+    sent_mail = _send_email(text)
+    if sent_mail:
+        logger.info("✉️ Email envoyé = True")
+
+    if sent_tg or sent_mail:
+        logger.info("✅ Envoi du rapport terminé.")
+        return 0
+
+    logger.error("❌ Aucun canal n'a confirmé l'envoi.")
+    return 20
+
+if __name__ == "__main__":
+    code = main()
+    sys.exit(code)

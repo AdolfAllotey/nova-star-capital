@@ -1,0 +1,70 @@
+import os
+import json
+import openai
+from datetime import datetime, timezone, timezone
+from glob import glob
+from dotenv import load_dotenv
+from src.v2.utils.logger import get_logger
+
+load_dotenv()
+logger = get_logger("performance_interpreter")
+
+openai.api_key = os.getenv("OPENAI_API_KEY")
+MODEL = "gpt-4"
+
+SIMULATION_FOLDER = "src/v2/data/simulation/"
+
+def load_last_n_days(n=7):
+    files = sorted(glob(os.path.join(SIMULATION_FOLDER, "*_simulated_trades.json")), reverse=True)[:n]
+    daily_stats = []
+
+    for f in files:
+        try:
+            with open(f, "r") as infile:
+                data = json.load(infile)
+                gains = [t["pnl"] for t in data.get("tokens", [])]
+                day_gain = sum(gains)
+                day = os.path.basename(f).split("_")[0]
+                daily_stats.append({"day": day, "gain": day_gain, "trades": len(gains)})
+        except Exception as e:
+            logger.warning(f"Erreur lecture fichier {f} : {e}")
+    
+    return daily_stats
+
+def summarize_performance_with_llm(daily_stats: list) -> str:
+    if not daily_stats:
+        return "No simulation data available for analysis."
+
+    table_text = "\n".join([f"{d['day']}: {d['gain']} USDT over {d['trades']} trades" for d in daily_stats])
+    
+    prompt = f"""
+Here is the summary of a crypto trading bot's simulation over the past days:
+
+{table_text}
+
+Based on these results, answer:
+- How consistent is the bot?
+- Are there drawdown or volatility concerns?
+- What patterns or biases are visible?
+- What 2–3 suggestions can you give to improve future performance?
+
+Write a short analysis in bullet points (max 150 words).
+    """.strip()
+
+    try:
+        response = openai.ChatCompletion.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=400,
+            temperature=0.5
+        )
+
+        return response.choices[0].message["content"].strip()
+
+    except Exception as e:
+        logger.exception("Erreur lors de l’analyse LLM des performances")
+        return "Performance interpretation unavailable at this time."
+
+def analyze_recent_performance(n=7):
+    stats = load_last_n_days(n)
+    return summarize_performance_with_llm(stats)

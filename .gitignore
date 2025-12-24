@@ -1,0 +1,38 @@
+# Secrets / env
+.env*
+*.env
+telegram.env
+twitter.env
+reddit.env
+config.json
+
+# Sessions / tokens
+*.session
+sessions/
+*.save
+:.save
+anon.session
+
+# Data runtime
+data/
+reports/
+state/
+backups/
+backup_*/
+archive/
+preprod_archive_*/
+*.tar.gz
+*.zip
+
+# Node / build / venv
+node_modules/
+dist/
+nsc-venv/
+venv*/
+__pycache__/
+*.pyc
+
+# Misc
+0
+=
+package-lock\ 2.json

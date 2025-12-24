@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8" />
+    <title>Dashboard Bot Crypto Ultra V2</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+</head>
+<body>
+    <header>
+        <h1>Dashboard Bot Crypto Ultra V2</h1>
+    </header>
+
+    <section>
+        <h2>Positions</h2>
+        <table border="1" cellpadding="8" cellspacing="0">
+            <thead>
+                <tr><th>Token</th><th>Quantité</th><th>Valeur USD</th></tr>
+            </thead>
+            <tbody>
+                {% for pos in data.positions %}
+                <tr>
+                    <td>{{ pos.token }}</td>
+                    <td>{{ pos.amount }}</td>
+                    <td>${{ pos.value_usd }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </section>
+
+    <section>
+        <h2>Performance</h2>
+        <p>Variation quotidienne : {{ data.performance.daily_change }}%</p>
+        <p>Variation mensuelle : {{ data.performance.monthly_change }}%</p>
+    </section>
+</body>
+</html>

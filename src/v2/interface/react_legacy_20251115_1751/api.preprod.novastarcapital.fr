@@ -1,0 +1,7 @@
+handle {
+	basic_auth {
+		# adrien / monpass (bcrypt)
+		adrien $2a$14$jpss55mYdEA1Ts25mLf7F.sFB9wLclVfYkjTTFo63Co0JLX5TOmSu
+	}
+	reverse_proxy 127.0.0.1:8000
+}

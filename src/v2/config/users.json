@@ -1,0 +1,26 @@
+{
+    "users": [
+        {
+            "id": "john_doe",
+            "name": "John",
+            "telegram_chat_id": 123456789,
+            "strategy": {
+                "stop_loss": -0.1,
+                "take_profit": 0.2,
+                "max_trades": 5,
+                "ethical_filter": true
+            }
+        },
+        {
+            "id": "jane_smith",
+            "name": "Jane",
+            "telegram_chat_id": 987654321,
+            "strategy": {
+                "stop_loss": -0.05,
+                "take_profit": 0.15,
+                "max_trades": 3,
+                "ethical_filter": false
+            }
+        }
+    ]
+}

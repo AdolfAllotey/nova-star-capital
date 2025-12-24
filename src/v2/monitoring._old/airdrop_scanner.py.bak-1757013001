@@ -1,0 +1,49 @@
+# src/v2/monitoring/airdrop_scanner.py
+
+import os
+import json
+from datetime import datetime, timezone
+from src.v2.utils.logger import get_logger
+
+logger = get_logger("airdrop_scanner")
+
+KEYWORDS = ["airdrop", "claim", "testnet", "snapshot", "retrodrop", "eligibility"]
+INPUT_FILE = "src/v2/data/social/social_mentions.json"
+OUTPUT_FILE = "src/v2/data/social/airdrop_alerts.json"
+
+def detect_airdrop_mentions():
+    logger.info("🔍 Début de la détection d’airdrops...")
+    
+    try:
+        with open(INPUT_FILE, "r") as f:
+            messages = json.load(f)
+    except FileNotFoundError:
+        logger.warning(f"Fichier introuvable : {INPUT_FILE}")
+        return []
+    except json.JSONDecodeError as e:
+        logger.error(f"Erreur de parsing JSON : {e}")
+        return []
+
+    alerts = []
+    for msg in messages:
+        text = msg.get("text", "").lower()
+        if any(keyword in text for keyword in KEYWORDS):
+            alerts.append({
+                "text": msg.get("text"),
+                "source": msg.get("source"),
+                "date": msg.get("date", datetime.now(timezone.utc).isoformat())
+            })
+
+    if alerts:
+        os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
+        with open(OUTPUT_FILE, "w") as f:
+            json.dump(alerts, f, indent=4)
+        logger.info(f"✅ {len(alerts)} messages d'airdrop détectés. Enregistrés dans {OUTPUT_FILE}")
+    else:
+        logger.info("❌ Aucun message airdrop détecté.")
+
+    return alerts
+
+
+if __name__ == "__main__":
+    detect_airdrop_mentions()

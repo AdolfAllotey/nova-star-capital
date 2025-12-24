@@ -1,0 +1,375 @@
+"""
+Governor System (light) — Kill Switch Global V2 / Hedge Fund Light
+
+Rôle :
+- Lire les différents modules de risque/gouvernance :
+  * market_regime.json
+  * emotional_regime.json
+  * trading_checklist.json
+  * stress_test_overview.json
+  * anomaly_overview.json
+  * risk_console_overview.json (optionnel)
+  * daily_trading_feedback.json (optionnel)
+- Synthétiser un état global :
+  * global_flag : "ok" | "soft_block" | "hard_block"
+- Mettre à jour kill_switch.json (mode V2) :
+  * enabled : bool
+  * mode    : "none" | "soft" | "hard"
+  * reason  : str
+  * updated_at : ISO timestamp
+- Sauvegarder un rapport détaillé dans governor_overview.json
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, Optional, List
+
+from src.v2.utils.logger import get_logger
+from src.v2.utils.file_utils import load_json_file, save_json_file
+
+logger = get_logger("governor_system_light")
+
+
+@dataclass
+class GovernorInputs:
+    market_regime: Dict[str, Any]
+    emotional_regime: Dict[str, Any]
+    trading_checklist: Dict[str, Any]
+    stress_test: Dict[str, Any]
+    anomalies: Dict[str, Any]
+    risk_console: Dict[str, Any]
+    daily_feedback: Dict[str, Any]
+    kill_switch: Dict[str, Any]
+
+
+@dataclass
+class GovernorDecision:
+    timestamp: str
+    global_flag: str  # "ok" | "soft_block" | "hard_block"
+    kill_switch_enabled: bool
+    kill_switch_mode: str  # "none" | "soft" | "hard"
+    reason: str
+    reasons_detail: List[str]
+    details: Dict[str, Any]
+
+
+def _get_root_and_data_dirs() -> tuple[Path, Path]:
+    """
+    Calcule ROOT_DIR et DATA_DIR sans dépendre de file_utils,
+    en partant de ce fichier : src/v2/analysis/governor_system_light.py
+    """
+    # __file__ = /opt/nsc/app/src/v2/analysis/governor_system_light.py
+    root_dir = Path(__file__).resolve().parents[3]  # → /opt/nsc/app
+    data_dir = root_dir / "data"
+    return root_dir, data_dir
+
+
+# ---------------------------------------------------------------------------
+# Helpers chargement
+# ---------------------------------------------------------------------------
+
+def _load_inputs(data_dir: Path) -> GovernorInputs:
+    market_regime = load_json_file(
+        data_dir / "market" / "market_regime.json",
+        default={},
+    )
+    emotional_regime = load_json_file(
+        data_dir / "analysis" / "emotional_regime.json",
+        default={},
+    )
+    trading_checklist = load_json_file(
+        data_dir / "reports" / "trading_checklist.json",
+        default={},
+    )
+    stress_test = load_json_file(
+        data_dir / "analysis" / "stress_test_overview.json",
+        default={},
+    )
+    anomalies = load_json_file(
+        data_dir / "analysis" / "anomaly_overview.json",
+        default={},
+    )
+    risk_console = load_json_file(
+        data_dir / "analysis" / "risk_console_overview.json",
+        default={},
+    )
+    daily_feedback = load_json_file(
+        data_dir / "reports" / "daily_trading_feedback.json",
+        default={},
+    )
+    kill_switch = load_json_file(
+        data_dir / "trading" / "kill_switch.json",
+        default={
+            "enabled": False,
+            "mode": "none",
+            "reason": "init",
+            "updated_at": None,
+        },
+    )
+
+    return GovernorInputs(
+        market_regime=market_regime or {},
+        emotional_regime=emotional_regime or {},
+        trading_checklist=trading_checklist or {},
+        stress_test=stress_test or {},
+        anomalies=anomalies or {},
+        risk_console=risk_console or {},
+        daily_feedback=daily_feedback or {},
+        kill_switch=kill_switch or {},
+    )
+
+
+def _get_float(d: Dict[str, Any], key: str, default: float = 0.0) -> float:
+    try:
+        v = d.get(key, default)
+        return float(v)
+    except Exception:
+        return default
+
+
+def _get_int(d: Dict[str, Any], key: str, default: int = 0) -> int:
+    try:
+        v = d.get(key, default)
+        return int(v)
+    except Exception:
+        return default
+
+
+# ---------------------------------------------------------------------------
+# Règles de décision
+# ---------------------------------------------------------------------------
+
+def compute_governor_decision(inputs: GovernorInputs) -> GovernorDecision:
+    """
+    Applique les règles "hedge fund light" pour décider :
+    - global_flag: ok / soft_block / hard_block
+    - kill_switch (enabled/mode/reason)
+    """
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Valeurs extraites / défensives
+    regime = inputs.market_regime.get("regime", "unknown")
+    risk_mode = inputs.market_regime.get("risk_mode", "normal")
+    meta_score_nsc = _get_float(inputs.market_regime, "meta_score_nsc", default=0.0)
+    if not meta_score_nsc and inputs.trading_checklist:
+        # fallback depuis la checklist si besoin
+        meta_score_nsc = _get_float(inputs.trading_checklist, "meta_score_nsc", default=0.0)
+
+    emotional_reg = inputs.emotional_regime.get("regime", "unknown")
+    emotional_score = _get_float(inputs.emotional_regime, "score_emotional", default=0.0)
+
+    checklist_all_ok = bool(inputs.trading_checklist.get("all_ok", False))
+    checklist_score = _get_float(inputs.trading_checklist, "score", default=0.0)
+
+    stress_score = _get_float(inputs.stress_test, "stress_score", default=100.0)
+    stress_flag = inputs.stress_test.get("risk_flag", "ok")
+
+    nb_anomalies = _get_int(inputs.anomalies, "nb_anomalies", default=0)
+    nb_critical = _get_int(inputs.anomalies, "nb_critical", default=0)
+    nb_warning = _get_int(inputs.anomalies, "nb_warning", default=0)
+
+    risk_global_flag = inputs.risk_console.get("global_flag", "ok")
+
+    realized_pnl_7d = _get_float(inputs.emotional_regime, "realized_pnl_7d", default=0.0)
+    realized_pnl_7d_pct = _get_float(inputs.emotional_regime, "realized_pnl_7d_pct", default=0.0)
+
+    # Règle daily feedback (optionnel)
+    realized_pnl_today = _get_float(inputs.daily_feedback, "realized_pnl_today", default=0.0)
+    total_capital = _get_float(inputs.daily_feedback, "total_capital", default=0.0)
+    if total_capital <= 0:
+        alloc = load_capital_allocation(trading_dir=DATA_DIR / "trading", default={})
+        total_capital = float(alloc.get("total_budget", 0.0) or 0.0)
+
+
+    # -----------------------------------------------------------------------
+    # Construction des règles
+    # -----------------------------------------------------------------------
+    reasons_hard: List[str] = []
+    reasons_soft: List[str] = []
+
+    # 1) Hard block – anomalies critiques / stress extrême
+    if nb_critical > 0:
+        reasons_hard.append(f"anomalies_critical={nb_critical}")
+
+    if stress_flag in ("critical", "high_risk"):
+        reasons_hard.append(f"stress_flag={stress_flag}")
+
+    if stress_score < 40:
+        reasons_hard.append(f"stress_score={stress_score:.1f}<40")
+
+    # 2) Hard block – psychologique / drawdowns extrêmes
+    if emotional_reg in ("tilt", "panic"):
+        reasons_hard.append(f"emotional_regime={emotional_reg}")
+
+    if emotional_score < 30:
+        reasons_hard.append(f"emotional_score={emotional_score:.1f}<30")
+
+    # Gros drawdown 7d (> -10%) sur le PnL, si info disponible
+    if realized_pnl_7d_pct <= -10:
+        reasons_hard.append(f"realized_pnl_7d_pct={realized_pnl_7d_pct:.1f}<=-10%")
+
+    # 3) Hard block – checklist vraiment dans le rouge
+    if not checklist_all_ok and checklist_score < 60:
+        reasons_hard.append(
+            f"checklist_all_ok=False & checklist_score={checklist_score:.1f}<60"
+        )
+
+    # 4) Soft block – zone orange / vigilance
+    if not checklist_all_ok and 60 <= checklist_score < 80:
+        reasons_soft.append(
+            f"checklist_all_ok=False & checklist_score={checklist_score:.1f} entre 60 et 80"
+        )
+
+    if emotional_reg in ("anxious", "uncertain"):
+        reasons_soft.append(f"emotional_regime={emotional_reg}")
+
+    if 30 <= emotional_score < 60:
+        reasons_soft.append(f"emotional_score={emotional_score:.1f} entre 30 et 60")
+
+    if nb_warning > 0 and nb_critical == 0:
+        reasons_soft.append(f"anomalies_warning={nb_warning}")
+
+    if risk_global_flag in ("watch", "caution"):
+        reasons_soft.append(f"risk_console_flag={risk_global_flag}")
+
+    # 5) Contexte marché : régime défavorable + meta_score faible
+    if regime == "bear" and meta_score_nsc < 40:
+        reasons_soft.append(
+            f"regime=bear & meta_score_nsc={meta_score_nsc:.1f}<40"
+        )
+
+    # 6) Pertes quotidiennes importantes (si daily_feedback dispo)
+    if total_capital > 0:
+        daily_loss_pct = (realized_pnl_today / total_capital) * 100
+    else:
+        daily_loss_pct = 0.0
+
+    if daily_loss_pct <= -5:
+        # perte journalière >= 5% du capital → soft block à minima
+        reasons_soft.append(f"daily_loss_pct={daily_loss_pct:.1f}<=-5%")
+
+    # -----------------------------------------------------------------------
+    # Décision finale
+    # -----------------------------------------------------------------------
+    if reasons_hard:
+        global_flag = "hard_block"
+        kill_enabled = True
+        kill_mode = "hard"
+        main_reason = "; ".join(reasons_hard)
+    elif reasons_soft:
+        global_flag = "soft_block"
+        kill_enabled = False  # on laisse le bot tourner mais avec vigilance
+        kill_mode = "soft"
+        main_reason = "; ".join(reasons_soft)
+    else:
+        global_flag = "ok"
+        kill_enabled = False
+        kill_mode = "none"
+        main_reason = "all_signals_ok"
+
+    logger.info(
+        "[governor_system_light] Décision : global_flag=%s, kill_enabled=%s, mode=%s, reason=%s",
+        global_flag,
+        kill_enabled,
+        kill_mode,
+        main_reason,
+    )
+
+    return GovernorDecision(
+        timestamp=now,
+        global_flag=global_flag,
+        kill_switch_enabled=kill_enabled,
+        kill_switch_mode=kill_mode,
+        reason=main_reason,
+        reasons_detail=reasons_hard + reasons_soft,
+        details={
+            "regime": regime,
+            "risk_mode": risk_mode,
+            "meta_score_nsc": meta_score_nsc,
+            "emotional_regime": emotional_reg,
+            "emotional_score": emotional_score,
+            "checklist_all_ok": checklist_all_ok,
+            "checklist_score": checklist_score,
+            "stress_score": stress_score,
+            "stress_flag": stress_flag,
+            "nb_anomalies": nb_anomalies,
+            "nb_critical": nb_critical,
+            "nb_warning": nb_warning,
+            "risk_console_flag": risk_global_flag,
+            "realized_pnl_7d": realized_pnl_7d,
+            "realized_pnl_7d_pct": realized_pnl_7d_pct,
+            "realized_pnl_today": realized_pnl_today,
+            "daily_loss_pct": daily_loss_pct,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Sauvegarde kill_switch + governor_overview
+# ---------------------------------------------------------------------------
+
+def apply_governor_decision(
+    data_dir: Path,
+    decision: GovernorDecision,
+) -> None:
+    # 1) governor_overview.json
+    governor_path = data_dir / "analysis" / "governor_overview.json"
+    governor_path.parent.mkdir(parents=True, exist_ok=True)
+
+    save_json_file(governor_path, asdict(decision))
+    logger.info(
+        "[governor_system_light] governor_overview.json mis à jour (%s).",
+        governor_path,
+    )
+
+    # 2) kill_switch.json
+    kill_path = data_dir / "trading" / "kill_switch.json"
+    kill_path.parent.mkdir(parents=True, exist_ok=True)
+
+    kill_obj = load_json_file(
+        kill_path,
+        default={
+            "enabled": False,
+            "mode": "none",
+            "reason": "init",
+            "updated_at": None,
+        },
+    ) or {}
+
+    kill_obj["enabled"] = decision.kill_switch_enabled
+    kill_obj["mode"] = decision.kill_switch_mode
+    kill_obj["reason"] = decision.reason
+    kill_obj["updated_at"] = decision.timestamp
+
+    save_json_file(kill_path, kill_obj)
+    logger.info(
+        "[governor_system_light] kill_switch.json mis à jour (enabled=%s, mode=%s).",
+        decision.kill_switch_enabled,
+        decision.kill_switch_mode,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Entrée CLI
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    root_dir, data_dir = _get_root_and_data_dirs()
+    logger.info(
+        "[governor_system_light] ROOT_DIR=%s, DATA_DIR=%s",
+        root_dir,
+        data_dir,
+    )
+
+    inputs = _load_inputs(data_dir)
+    decision = compute_governor_decision(inputs)
+    apply_governor_decision(data_dir, decision)
+
+
+if __name__ == "__main__":
+    main()

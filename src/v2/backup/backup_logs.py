@@ -1,0 +1,31 @@
+import os
+import shutil
+from datetime import datetime, timezone, timezone
+
+# Dossiers à sauvegarder avec chemins complets selon ta structure
+FOLDERS_TO_BACKUP = [
+    "src/v2/data/v2/logs",
+    "src/v2/data/v2/reports",
+]
+
+BACKUP_FOLDER = "src/v2/data/v2/backups"
+
+def create_backup():
+    now = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = os.path.join(BACKUP_FOLDER, f"backup_{now}")
+    print(f"Création du dossier de backup : {backup_path}")
+    os.makedirs(backup_path, exist_ok=True)
+
+    for folder in FOLDERS_TO_BACKUP:
+        if os.path.exists(folder):
+            dest = os.path.join(backup_path, os.path.basename(folder))
+            print(f"Copie de {folder} vers {dest}")
+            shutil.copytree(folder, dest)
+            print(f"✅ Sauvegarde réussie : {folder}")
+        else:
+            print(f"⚠️ Dossier non trouvé : {folder}")
+
+    print(f"Backup terminé dans {backup_path}")
+
+if __name__ == "__main__":
+    create_backup()

@@ -1,0 +1,42 @@
+# src/v2/intelligence/llm_analyzer.py
+import os, json, logging
+from datetime import datetime, timezone
+log = logging.getLogger(__name__)
+
+def apply_llm_recommendations() -> bool:
+    """
+    Stub: si OPENAI_API_KEY n'est pas présent, écrit une reco statique.
+    """
+    try:
+        out_dir  = "src/v2/data/intelligence"
+        os.makedirs(out_dir, exist_ok=True)
+        out_file = os.path.join(out_dir, "llm_recommendations.json")
+
+        key = os.getenv("OPENAI_API_KEY")
+        if not key:
+            payload = {
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "engine": "stub",
+                "recommendations": [
+                    "Conserver la taille de position sous 2% par trade.",
+                    "Éviter de trader autour des annonces macro (stub)."
+                ]
+            }
+            with open(out_file, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+            log.info("🤖 Recos LLM (stub) sauvegardées dans %s", out_file)
+            return True
+
+        # (Plus tard: appel réel à l'API)
+        payload = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "engine": "openai",
+            "recommendations": ["(placeholder)"]
+        }
+        with open(out_file, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        log.info("🤖 Recos LLM (placeholder) sauvegardées dans %s", out_file)
+        return True
+    except Exception as e:
+        log.warning("⚠️ apply_llm_recommendations: %s", e)
+        return False

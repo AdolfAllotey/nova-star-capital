@@ -1,0 +1,191 @@
+import subprocess
+import fcntl
+# src/v2/main.py
+import os
+import sys
+import time
+import importlib
+import logging
+import traceback
+from datetime import datetime, timezone
+from typing import Callable, Any
+
+# =========================
+# Logging: anti-doublons
+# =========================
+_root = logging.getLogger()
+if not _root.handlers:
+    logging.basicConfig(
+        level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s - %(levelname)s - %(message)s",
+    )
+else:
+    _root.setLevel(os.getenv("LOG_LEVEL", "INFO").upper())
+
+log = logging.getLogger(__name__)
+
+
+def _load_dotenv_if_present() -> None:
+    """Charge src/v2/.env si python-dotenv est installé (optionnel)."""
+    try:
+        from dotenv import load_dotenv
+    except Exception:
+        return
+    # Laisse les variables déjà présentes dans l'env prendre le dessus
+    load_dotenv("src/v2/.env", override=False)
+
+
+def _preview_telegram_groups() -> None:
+    """Affiche un aperçu de TELEGRAM_GROUPS (pour debug)."""
+    groups = os.getenv("TELEGRAM_GROUPS", "")
+    if not groups:
+        return
+    parts = [p.strip() for p in groups.split(",") if p.strip()]
+    if not parts:
+        return
+    preview = ",".join(parts[:10])
+    if len(parts) > 10:
+        preview += "..."
+    log.info("[DEBUG] TELEGRAM_GROUPS loaded = %s", preview)
+
+
+def _resolve_callable(dotted: str) -> Callable[..., Any]:
+    """
+    Résout 'module.sub:callable' en objet appelable.
+    Lève si le module ou l'attribut n'existe pas.
+    """
+    if ":" not in dotted:
+        raise ValueError(f"Chemin invalide (attendu 'module:callable'): {dotted}")
+    mod_name, func_name = dotted.split(":", 1)
+    module = importlib.import_module(mod_name)
+    fn = getattr(module, func_name, None)
+    if fn is None or not callable(fn):
+        raise AttributeError(
+            f"aucun callable '{func_name}' dans '{mod_name}'"
+        )
+    return fn
+
+
+def _maybe_run(fn: Callable[..., Any]) -> Any:
+    """
+    Exécute fn(). Si le résultat est un awaitable, l'exécute via asyncio.run().
+    """
+    result = fn()
+    # Ne pas importer asyncio si pas nécessaire
+    if hasattr(result, "__await__"):
+        import asyncio
+        return asyncio.run(result)
+    return result
+
+
+def _is_disabled(step_name: str) -> bool:
+    """Contrôle fin par variables d'environnement pour skipper des étapes."""
+    # Mapping simple et explicite
+    flags = {
+        "Scraping Telegram":    os.getenv("NOVA_SKIP_TG", "0"),
+        "Scraping Reddit":      os.getenv("NOVA_SKIP_REDDIT", "0"),
+        "Analyse du sentiment": os.getenv("NOVA_SKIP_SENTIMENT", "0"),
+        "Simu trades":          os.getenv("NOVA_SKIP_SIM", "0"),
+        "Pires trades":         os.getenv("NOVA_SKIP_WORST", "0"),
+        "Reco LLM":             os.getenv("NOVA_SKIP_LLM", "0"),
+        "PnL mensuel":          os.getenv("NOVA_SKIP_PNL", "0"),
+        "Envoi rapports":       os.getenv("NOVA_SKIP_REPORTS", "0"),
+    }
+    return flags.get(step_name, "0") in ("1", "true", "TRUE", "yes", "YES")
+
+
+def run_step(step_name: str, target: str) -> bool:
+    """
+    Exécute une étape du pipeline.
+    - step_name: libellé humain
+    - target: 'module.sub:callable'
+    Retourne True si ok, False si échec/skip.
+    """
+    if _is_disabled(step_name):
+        log.info("⏭️ %s désactivé via variable d'environnement — étape sautée.", step_name)
+        return False
+
+    log.info("🔹 Étape : %s", step_name)
+    t0 = time.time()
+
+    # Indice pratique : on re-log l’aperçu des groupes au moment du scraping TG
+    if step_name == "Scraping Telegram":
+        # Double log que tu voyais provenait d’une double config; ici on log une seule fois.
+        _preview_telegram_groups()
+
+    try:
+        fn = _resolve_callable(target)
+        _maybe_run(fn)
+        dt = time.time() - t0
+        log.info("✅ %s terminé (%.2fs).", step_name, dt)
+        return True
+    except ModuleNotFoundError as e:
+        log.warning(
+            "⚠️ Étape indisponible (%s): ModuleNotFoundError: %s",
+            target,
+            e
+        )
+        log.info("ℹ️ %s indisponible — étape sautée.", step_name)
+        return False
+    except AttributeError as e:
+        # message aligné avec tes logs précédents
+        log.warning("⚠️ Étape indisponible (%s): %s", target, e)
+        log.info("ℹ️ %s indisponible — étape sautée.", step_name)
+        return False
+    except Exception:
+        log.error("❌ Échec étape '%s': %s", step_name, traceback.format_exc())
+        return False
+
+
+# =========================
+# Définition du pipeline
+# =========================
+PIPELINE_STEPS = [
+    ("Scraping Telegram",    "src.v2.social.telegram_scraper:scrape_telegram"),
+    ("Scraping Reddit",      "src.v2.social.reddit_scraper:scrape_reddit"),
+    ("Analyse du sentiment", "src.v2.analysis.sentiment:analyze_sentiment"),
+    ("Simu trades",          "src.v2.simulation.trade_simulator:simulate_trades"),
+    ("Pires trades",         "src.v2.risk.worst_trades_analyzer:analyze_worst_trades"),
+    ("Reco LLM",             "src.v2.intelligence.llm_analyzer:apply_llm_recommendations"),
+    ("PnL mensuel",          "src.v2.reporting.monthly_pnl:update_monthly_pnl"),
+    ("Envoi rapports",       "src.v2.scripts.send_reports:main"),
+]
+
+
+def main() -> int:
+    # --- Verrou simple pour éviter les exécutions concurrentes ---
+    lock_path = "/tmp/nova-pipeline.lock"
+    lock_file = open(lock_path, "w")
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        log.warning("⛔ Pipeline déjà en cours — sortie.")
+        return 0
+    # --------------------------------------------------------------
+    _load_dotenv_if_present()
+
+    log.info("✅ Démarrage script main.py")
+    log.info("✅ Python exécuté depuis : %s", sys.executable)
+    log.info("✅ Arguments passés : %s", sys.argv)
+    log.info("✅ Chargement des modules")
+
+    # Aperçu utile pour debug de config TG
+    _preview_telegram_groups()
+
+    log.info("✅ Début du pipeline principal")
+
+    for name, target in PIPELINE_STEPS:
+        run_step(name, target)
+
+    log.info("🏁 Pipeline terminé à %s", datetime.now(timezone.utc).isoformat())
+    # Libère le verrou avant de quitter
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_UN)
+        lock_file.close()
+    except Exception:
+        pass
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

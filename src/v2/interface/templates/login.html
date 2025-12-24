@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8" />
+    <title>Connexion</title>
+</head>
+<body>
+    <h2>Connexion</h2>
+    {% if error %}
+    <p style="color:red;">{{ error }}</p>
+    {% endif %}
+    <form method="POST">
+        <input name="username" placeholder="Utilisateur" required />
+        <input name="password" type="password" placeholder="Mot de passe" required />
+        <button type="submit">Se connecter</button>
+    </form>
+</body>
+</html>

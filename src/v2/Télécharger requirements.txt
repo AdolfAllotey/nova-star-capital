@@ -1,0 +1,15 @@
+openai
+tweepy
+pandas
+requests
+python-dotenv
+matplotlib
+tqdm
+beautifulsoup4
+lxml
+telethon
+schedule
+flask
+tweepy
+praw
+aiohttp

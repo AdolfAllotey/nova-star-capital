@@ -1,0 +1,31 @@
+# src/v2/social/reddit_scraper.py
+import json, os, logging
+from datetime import datetime, timezone
+log = logging.getLogger(__name__)
+
+def scrape_reddit(limit: int = 50) -> bool:
+    """
+    Stub: simule un scraping Reddit et écrit un fichier JSON.
+    """
+    try:
+        out_dir = "src/v2/data/social"
+        os.makedirs(out_dir, exist_ok=True)
+        out_file = os.path.join(out_dir, "reddit_data.json")
+
+        now = datetime.now(timezone.utc).isoformat()
+        data = {
+            "generated_at": now,
+            "limit": limit,
+            "posts": [
+                {"subreddit":"r/crypto", "title":"Stub post 1", "score":123, "created_utc":now},
+                {"subreddit":"r/cryptomarkets", "title":"Stub post 2", "score":45, "created_utc":now},
+            ],
+        }
+        with open(out_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+        log.info("📦 Données Reddit sauvegardées dans %s", out_file)
+        return True
+    except Exception as e:
+        log.warning("⚠️ scrape_reddit: %s", e)
+        return False

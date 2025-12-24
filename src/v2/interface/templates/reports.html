@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block title %}Rapports Quotidiens{% endblock %}
+
+{% block content %}
+<h1>Rapports Quotidiens</h1>
+
+{% if reports %}
+<table>
+    <thead>
+        <tr>
+            <th>Date</th>
+            <th>Nombre de Trades</th>
+            <th>Performance</th>
+            <th>Alertes</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for report in reports %}
+        <tr>
+            <td>{{ report.date }}</td>
+            <td>{{ report.trades|length }}</td>
+            <td>{{ report.performance.total_pnl }} (ROI: {{ report.performance.roi_pct }}%)</td>
+            <td>{% if report.alerts %}⚠️ {{ report.alerts|length }}{% else %}✅{% endif %}</td>
+            <td>
+                <a href="{{ url_for('download_report', filename=report.filename) }}">Télécharger</a>
+            </td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p>Aucun rapport disponible.</p>
+{% endif %}
+
+{% endblock %}

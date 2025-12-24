@@ -1,0 +1,305 @@
+# src/v2/monitoring/orchestrator_pro.py
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from src.v2.utils.file_utils import get_data_dir, load_json_file, save_json_file
+from src.v2.utils.logger import get_logger
+from src.v2.utils.event_bus import publish_event
+
+logger = get_logger("orchestrator_pro")
+
+
+def _utc_now() -> str:
+    # On garde un format ISO UTC simple et stable (comme dans les autres engines)
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _severity_from_state(can_trade: bool, gov_flag: str, mode: str) -> str:
+    if not can_trade:
+        return "warning"
+    # mode reduced = info (trade OK mais prudence / sizing)
+    if mode == "reduced" or gov_flag == "caution":
+        return "info"
+    return "info"
+
+
+def _safe_load(path: Path, default: Any) -> Any:
+    # wrapper de sécurité pour supporter "fichier absent" sans crash
+    try:
+        return load_json_file(path, default=default)
+    except TypeError:
+        # au cas où ta version load_json_file n'a pas default (mais chez toi oui)
+        try:
+            data = load_json_file(path)
+            return data if data is not None else default
+        except Exception:
+            return default
+    except Exception:
+        return default
+
+
+def main() -> Dict[str, Any]:
+    data_dir = Path(get_data_dir())
+    env = str((data_dir / "env.txt").read_text().strip()) if (data_dir / "env.txt").exists() else "UNKNOWN"
+
+    analysis_dir = data_dir / "analysis"
+    telemetry_dir = data_dir / "telemetry"
+    trading_dir = data_dir / "trading"
+
+    # Inputs
+    gov_path = analysis_dir / "governance_engine_pro.json"
+    mc_path = analysis_dir / "market_conditions_engine_pro.json"
+    sq_path = analysis_dir / "signal_quality_engine_pro.json"
+    rl_path = trading_dir / "risk_limits.json"
+    ks_path = telemetry_dir / "kill_switch_state.json"
+
+    governance = _safe_load(gov_path, default={})
+    market_conditions = _safe_load(mc_path, default={})
+    signal_quality = _safe_load(sq_path, default={})
+    risk_limits = _safe_load(rl_path, default={})
+    kill_switch = _safe_load(ks_path, default={})
+
+    # Governance
+    gov_flag = str(governance.get("flag", "unknown"))
+    gov_score = float(governance.get("score", 0.0) or 0.0)
+    gov_hard_block = bool(governance.get("hard_block", False))
+    gov_can_trade = bool(governance.get("can_trade_recommended", True))
+    gov_reasons = governance.get("reasons", []) or []
+
+    # Market Conditions
+    mc_flag = str(market_conditions.get("global_flag", "unknown"))
+    mc_score = float(market_conditions.get("score", 50.0) or 50.0)
+    mc_regime = str(market_conditions.get("regime", "neutral"))
+
+    # Signal Quality (fallback safe)
+    sq_flag = str(signal_quality.get("flag", "unknown"))
+    try:
+        sq_score = float(signal_quality.get("score", 50.0) or 50.0)
+    except Exception:
+        sq_score = 50.0
+    sq_hard_block = bool(signal_quality.get("hard_block", False))
+
+    sq_threshold = 45.0
+    try:
+        v = risk_limits.get("signal_quality_hard_block_score", None)
+        if v is not None:
+            sq_threshold = float(v)
+    except Exception:
+        pass
+    sq_hard = bool(sq_hard_block) or (str(sq_flag) == "hard_block") or (float(sq_score) < float(sq_threshold))
+
+    # Risk Limits (fallback safe)
+    rl_risk_on_off = str(risk_limits.get("risk_on_off", "on"))
+    rl_risk_mode = str(risk_limits.get("risk_mode", "normal"))
+    size_factor = float(risk_limits.get("size_factor", 1.0) or 1.0)
+
+    # Kill switch (fallback safe)
+    ks_enabled = bool(kill_switch.get("enabled", False))
+    ks_mode = str(kill_switch.get("mode", "soft"))
+    ks_hard = bool(kill_switch.get("hard_block", False))
+    ks_soft = bool(kill_switch.get("soft_block", False))
+
+    # Mode global
+    # (tu veux: caution => trade OK mais reduced)
+    mode = "normal"
+    if rl_risk_mode == "reduced" or gov_flag == "caution" or mc_flag == "caution" or sq_flag == "caution":
+        mode = "reduced"
+        # ton sizing reduced = 0.5 par défaut si pas fourni
+        if size_factor == 1.0:
+            size_factor = 0.5
+
+    # -----------------------------------------------------------------------
+    reasons: List[str] = []
+    hard_block = False
+    can_trade = True
+
+    # veto dur: risk_on_off
+    if rl_risk_on_off == "off":
+        can_trade = False
+        hard_block = True
+        reasons.append("risk_on_off=off")
+
+    # veto dur: governance hard_block
+    if gov_hard_block:
+        can_trade = False
+        hard_block = True
+        reasons.append(f"governance.flag={gov_flag}")
+        reasons.append("governance.hard_block=True")
+
+    # governance can_trade_recommended=False n'est PAS un hard veto chez toi (on log seulement)
+    if not gov_can_trade:
+        reasons.append(f"governance.flag={gov_flag}")
+        reasons.append("governance.can_trade_recommended=False")
+        if gov_reasons:
+            reasons.append("governance_reasons: " + "; ".join([str(x) for x in gov_reasons]))
+
+        hard_block = True
+        reasons.append(f"signal_quality.flag={sq_flag}")
+        reasons.append("signal_quality.hard_block=True")
+
+# veto dur: kill-switch hard
+    if ks_enabled and ks_hard:
+        can_trade = False
+        hard_block = True
+        reasons.append("kill_switch=hard_block")
+
+    # soft block = warning (mais trade OK)
+    soft_block = bool(ks_enabled and ks_soft)
+
+
+    # --- SQ INIT (fix UnboundLocalError) ---
+    # threshold (source de vérité: risk_limits.json si présent)
+    # --- /SQ INIT ---
+
+    # veto dur: signal quality
+    if sq_hard:
+        can_trade = False
+        hard_block = True
+        reasons.append(f"signal_quality.flag={sq_flag}")
+        reasons.append(f"signal_quality.score={sq_score:.2f}<threshold={sq_threshold:.2f}" if sq_score < sq_threshold else "signal_quality.hard_block=True")
+
+    # Reasons informatifs (quand on trade quand même)
+
+    if can_trade:
+
+        if gov_flag == "caution":
+
+            reasons.append("governance.flag=caution")
+
+        if mc_flag == "caution":
+
+            reasons.append("market_conditions.flag=caution")
+
+        if sq_flag == "caution":
+
+            reasons.append("signal_quality.flag=caution")
+
+        if rl_risk_mode == "reduced" or mode == "reduced":
+
+            reasons.append("risk_mode=reduced")
+
+
+    # Fallback: seulement si vraiment aucun signal à expliquer
+
+    if not reasons:
+
+        reasons.append("all_checks_ok")
+
+
+    severity = _severity_from_state(can_trade, gov_flag, mode)
+
+    # --- NSC_SIGNAL_QUALITY_VARS_START ---
+    # Signal Quality (best-effort) - required variables for state[]
+    sq_path = analysis_dir / "signal_quality_engine_pro.json"
+    signal_quality = _safe_load(sq_path, default={})
+    if not isinstance(signal_quality, dict):
+        signal_quality = {}
+
+    sq_flag = str(signal_quality.get("flag", "unknown"))
+    try:
+        sq_score = float(signal_quality.get("score", 0.0) or 0.0)
+    except Exception:
+        sq_score = 0.0
+
+    # threshold (source de vérité: risk_limits.json si présent)
+    # --- NSC_SIGNAL_QUALITY_VARS_END ---
+
+
+    state: Dict[str, Any] = {
+        "timestamp": _utc_now(),
+        "env": env,
+
+        "mode": mode,
+        "can_trade": can_trade,
+        "severity": severity,
+        "reasons": reasons,
+
+        "risk_on_off": rl_risk_on_off,
+        "risk_mode": rl_risk_mode,
+        "size_factor": round(size_factor, 4),
+
+        "governance": {
+            "flag": gov_flag,
+            "score": round(gov_score, 2),
+            "hard_block": bool(gov_hard_block),
+            "can_trade_recommended": bool(gov_can_trade),
+            "reasons": gov_reasons,
+            "path": str(gov_path),
+        },
+        "market_conditions": {
+            "regime": mc_regime,
+            "global_flag": mc_flag,
+            "score": round(mc_score, 2),
+            "path": str(mc_path),
+        },
+        "signal_quality": {
+            "flag": sq_flag,
+            "score": round(sq_score, 2),
+            "hard_block": bool(sq_hard),
+            "threshold": round(sq_threshold, 2),
+            "gate": bool(sq_hard),
+            "path": str(sq_path),
+        },
+
+        "kill_switch": {
+            "enabled": bool(ks_enabled),
+            "mode": ks_mode,
+            "hard_block": bool(ks_hard),
+            "soft_block": bool(soft_block),
+            "path": str(ks_path),
+        },
+    }
+
+    # Persist telemetry JSON
+    out_path = telemetry_dir / "orchestrator_pro.json"
+    save_json_file(out_path, state)
+
+    logger.info("[orchestrator_pro] DATA_DIR=%s", str(data_dir))
+    logger.info("[orchestrator_pro] état global (%s) – can_trade=%s, reasons=%s", mode, can_trade, reasons[0] if reasons else "none")
+    logger.info("[orchestrator_pro] orchestrator_pro.json sauvegardé (%s, can_trade=%s)", mode, can_trade)
+
+    # Event bus payload simplifié (flat) + compat avec ton jq
+    event_payload = {
+        "timestamp": state["timestamp"],
+        "env": env,
+        "mode": mode,
+        "can_trade": can_trade,
+        "severity": severity,
+        "reasons": reasons,
+        "governance_flag": gov_flag,
+        "governance_score": round(gov_score, 2),
+        "signal_quality_flag": sq_flag,
+        "signal_quality_score": round(sq_score, 2),
+        "signal_quality_hard_block": bool(sq_hard),
+        "risk_on_off": rl_risk_on_off,
+        "risk_mode": rl_risk_mode,
+        "kill_switch": {
+            "enabled": bool(ks_enabled),
+            "mode": ks_mode,
+            "hard_block": bool(ks_hard),
+            "soft_block": bool(soft_block),
+        },
+        "market_conditions": {
+            "regime": mc_regime,
+            "flag": mc_flag if mc_flag != "unknown" else state["market_conditions"]["global_flag"],
+            "score": round(mc_score, 2),
+        },
+    }
+
+    publish_event(
+        event_type="orchestrator.state",
+        source="orchestrator_pro",
+        severity=severity,
+        payload=event_payload,
+    )
+
+    logger.info("[orchestrator_pro] Event publié – type=orchestrator.state source=orchestrator_pro severity=%s", severity)
+    return state
+
+
+if __name__ == "__main__":
+    main()

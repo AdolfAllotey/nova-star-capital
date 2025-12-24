@@ -1,0 +1,495 @@
+# src/v2/analysis/execution_engine_pro.py
+
+"""
+Execution Engine PRO – Version microstructure avancée (préprod, simulation uniquement)
+
+Objectifs :
+- Lire les signaux sizés (sized_signals.json)
+- Prendre en compte le kill-switch global (sans bloquer en préprod sauf hard block)
+- Ajouter une couche "microstructure" (spread, profondeur, volatilité) SI disponible
+- Modéliser le slippage de façon un peu plus réaliste
+- Produire :
+    - trading/execution_attempts.json
+    - trading/simulated_fills.json
+
+    # Toujours écraser execution_plan.json (même si orders est vide) pour éviter les plans stale
+    execution_plan_path = os.path.join(trading_dir, "execution_plan.json")
+    plan_obj = {
+        "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "orders": orders,
+        "stats": {
+            "signals_in": len(sized_signals),
+            "orders_out": len(orders),
+            "skipped": skipped,
+            "hard_blocked": hard_blocked,
+        },
+    }
+    save_json_file(execution_plan_path, plan_obj)
+    logger.info("[execution_engine_pro] execution_plan.json sauvegardé (%s, orders=%d)", execution_plan_path, len(orders))
+    - analysis/execution_engine_pro.json
+
+Compatibilité :
+- Si aucun fichier de microstructure n’est présent, l’engine se comporte comme avant :
+  tous les signaux sont exécutés en simulé, avec un slippage par défaut.
+"""
+
+from __future__ import annotations
+
+import os
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Tuple, Optional
+
+from src.v2.utils.logger import get_logger
+from src.v2.utils.file_utils import load_json_file, save_json_file
+
+logger = get_logger("execution_engine_pro")
+
+
+# ---------------------------------------------------------------------------
+# Helper local pour DATA_DIR (même logique que orchestrator_pro / production_protocol)
+# ---------------------------------------------------------------------------
+
+def get_data_dir() -> str:
+    """
+    Détermine le répertoire DATA de NSC.
+
+    Priorité :
+    1. Variable d'env NSC_DATA_DIR si définie
+    2. <racine_projet>/data (en remontant depuis ce fichier)
+    """
+    env_dir = os.environ.get("NSC_DATA_DIR")
+    if env_dir:
+        return os.path.abspath(env_dir)
+
+    # Remonte : src/v2/analysis/execution_engine_pro.py → /opt/nsc/app
+    base_dir = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "..")
+    )
+    data_dir = os.path.join(base_dir, "data")
+    return data_dir
+
+
+# ---------------------------------------------------------------------------
+# Config microstructure / exécution
+# ---------------------------------------------------------------------------
+
+MICROSTRUCTURE_FILE_CANDIDATES = [
+    # On essaie plusieurs chemins, le premier qui existe est utilisé
+    ("analysis", "microstructure_snapshot.json"),
+    ("market", "microstructure_snapshot.json"),
+]
+
+# Limites "institutionnelles" par défaut (mais non bloquantes en préprod)
+MAX_SPREAD_BPS = 60.0         # au-delà → spread élevé
+MIN_DEPTH_USD = 20_000.0      # en-dessous → profondeur jugée faible
+MAX_IMPACT_BPS = 50.0         # placeholder / futur calcul d’impact
+
+# Mode strict ou non : en préprod on observe mais on ne bloque pas
+MICROSTRUCTURE_STRICT = False  # si True, bloque certains signaux
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _now_iso() -> str:
+    """Timestamp ISO-8601 en UTC (sans microsecondes)."""
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _load_microstructure(data_dir: str) -> Dict[str, Dict[str, Any]]:
+    """
+    Charge un snapshot de microstructure si disponible.
+
+    Format attendu (souple) :
+    {
+      "BTCUSDT": {
+         "symbol": "BTCUSDT",
+         "spread_bps": 8.5,
+         "depth_usd": 250000,
+         "volatility_state": "normal"
+      },
+      ...
+    }
+
+    Si aucun fichier n’est trouvé → {} (tout sera considéré comme "ok" en mode non strict).
+    """
+    for subdir, filename in MICROSTRUCTURE_FILE_CANDIDATES:
+        path = os.path.join(data_dir, subdir, filename)
+        if os.path.exists(path):
+            snapshot = load_json_file(path, default={})
+            if isinstance(snapshot, dict):
+                logger.info(
+                    "[execution_engine_pro] microstructure chargée depuis %s (assets=%d)",
+                    path,
+                    len(snapshot),
+                )
+                # normalisation des clés
+                out: Dict[str, Dict[str, Any]] = {}
+                for key, value in snapshot.items():
+                    if not isinstance(value, dict):
+                        continue
+                    symbol_key = str(value.get("symbol") or key).lower()
+                    out[symbol_key] = value
+                return out
+            else:
+                logger.warning(
+                    "[execution_engine_pro] Format inattendu pour %s (type=%s), snapshot ignoré.",
+                    path,
+                    type(snapshot).__name__,
+                )
+    logger.info(
+        "[execution_engine_pro] Aucun fichier de microstructure trouvé, mode 'fallback' (pas de gating strict)."
+    )
+    return {}
+
+
+def _estimate_slippage_bps(
+    spread_bps: Optional[float],
+    volatility_state: Optional[str],
+) -> float:
+    """
+    Modèle simple de slippage :
+    - base = 10 bps
+    - si spread connu → max(base, 0.5 * spread)
+    - si volatilité 'high' ou 'extreme' → +50%
+    """
+    base = 10.0
+    if spread_bps is not None:
+        try:
+            base = max(base, float(spread_bps) * 0.5)
+        except (TypeError, ValueError):
+            pass
+
+    vol = (volatility_state or "").lower()
+    if vol in {"high", "extreme", "very_high"}:
+        base *= 1.5
+
+    return round(base, 2)
+
+
+def _evaluate_microstructure_for_symbol(
+    symbol: str,
+    micro_snapshot: Dict[str, Dict[str, Any]],
+) -> Tuple[bool, Dict[str, Any], List[str]]:
+    """
+    Retourne :
+    - micro_ok : bool (True si conditions OK)
+    - micro_view : dict (spread_bps, depth_usd, volatility_state, flags)
+    - reasons_micro : raisons liées à la microstructure
+    """
+    reasons: List[str] = []
+    symbol_key = symbol.lower()
+
+    data = micro_snapshot.get(symbol_key)
+    if data is None:
+        # aucune donnée → en mode non strict, on ne bloque pas mais on trace
+        micro_view = {
+            "spread_bps": None,
+            "depth_usd": None,
+            "volatility_state": None,
+            "flags": ["no_microstructure_data"],
+        }
+        reasons.append(
+            "Aucune donnée de microstructure disponible, fallback observation (no_microstructure_data)."
+        )
+        return True, micro_view, reasons
+
+    spread_bps = data.get("spread_bps")
+    depth_usd = data.get("depth_usd")
+    volatility_state = data.get("volatility_state")
+
+    micro_flags: List[str] = []
+    micro_ok = True
+
+    # Contrôle spread
+    if spread_bps is not None:
+        try:
+            spread_val = float(spread_bps)
+            if spread_val > MAX_SPREAD_BPS:
+                micro_ok = False
+                micro_flags.append("spread_too_wide")
+                reasons.append(
+                    f"Spread élevé pour {symbol} ({spread_val:.1f} bps > {MAX_SPREAD_BPS:.1f} bps)."
+                )
+        except (TypeError, ValueError):
+            micro_flags.append("spread_unknown")
+            reasons.append(f"Spread invalide / inconnu pour {symbol}.")
+
+    # Contrôle profondeur
+    if depth_usd is not None:
+        try:
+            depth_val = float(depth_usd)
+            if depth_val < MIN_DEPTH_USD:
+                micro_ok = False
+                micro_flags.append("depth_too_shallow")
+                reasons.append(
+                    f"Profondeur faible pour {symbol} ({depth_val:.0f} USD < {MIN_DEPTH_USD:.0f} USD)."
+                )
+        except (TypeError, ValueError):
+            micro_flags.append("depth_unknown")
+            reasons.append(f"Profondeur invalide / inconnue pour {symbol}.")
+
+    # Contrôle état de volatilité
+    vol = (volatility_state or "").lower()
+    if vol in {"halted", "auction", "circuit_breaker"}:
+        micro_ok = False
+        micro_flags.append("trading_irregular")
+        reasons.append(
+            f"État de marché particulier pour {symbol} (volatility_state={vol})."
+        )
+    elif vol:
+        micro_flags.append(f"volatility_{vol}")
+
+    if micro_ok:
+        reasons.append(f"Microstructure OK pour {symbol} (flags={','.join(micro_flags) or 'none'}).")
+
+    micro_view = {
+        "spread_bps": spread_bps,
+        "depth_usd": depth_usd,
+        "volatility_state": volatility_state,
+        "flags": micro_flags,
+    }
+    return micro_ok, micro_view, reasons
+
+
+def _extract_requested_weight(signal: Dict[str, Any]) -> float:
+    """
+    Essaye de retrouver le poids demandé dans le signal sizé.
+    On garde la même logique que l'engine précédent :
+    - 'final_weight' en priorité (position_sizing)
+    - sinon 'weight'
+    - sinon 0.0
+    """
+    for key in ("final_weight", "weight", "capital_weight"):
+        if key in signal:
+            try:
+                return float(signal[key])
+            except (TypeError, ValueError):
+                continue
+    return 0.0
+
+
+# ---------------------------------------------------------------------------
+# Core
+# ---------------------------------------------------------------------------
+
+def run(data_dir: Optional[str] = None) -> None:
+    if data_dir is None:
+        data_dir = get_data_dir()
+    logger.info("[execution_engine_pro] DATA_DIR=%s", data_dir)
+
+    trading_dir = os.path.join(data_dir, "trading")
+    analysis_dir = os.path.join(data_dir, "analysis")
+    os.makedirs(trading_dir, exist_ok=True)
+    os.makedirs(analysis_dir, exist_ok=True)
+
+    # 1) Chargement des signaux sizés
+    sized_signals_path = os.path.join(trading_dir, "sized_signals.json")
+    sized_signals: List[Dict[str, Any]] = load_json_file(
+        sized_signals_path,
+        default=[],
+    )
+    if not isinstance(sized_signals, list):
+        logger.warning(
+            "[execution_engine_pro] Format inattendu pour sized_signals.json (type=%s), utilisation liste vide.",
+            type(sized_signals).__name__,
+        )
+        sized_signals = []
+
+    logger.info(
+        "[execution_engine_pro] %d sized_signals chargés depuis %s",
+        len(sized_signals),
+        sized_signals_path,
+    )
+
+    # 2) Kill-switch global (soft block observé, hard block bloquant)
+    kill_switch_path = os.path.join(trading_dir, "kill_switch.json")
+    kill_switch = load_json_file(kill_switch_path, default={})
+    logger.info(
+        "[execution_engine_pro] kill_switch.json chargé depuis %s",
+        kill_switch_path,
+    )
+
+    existing = kill_switch.get("enriched", {}).get("existing", kill_switch)
+    hard_block = bool(existing.get("hard_block"))
+    soft_block = bool(existing.get("soft_block"))
+
+    # 3) Microstructure
+    micro_snapshot = _load_microstructure(data_dir)
+
+    # 4) Construction des tentatives d’exécution
+    attempts: List[Dict[str, Any]] = []
+    fills: List[Dict[str, Any]] = []
+
+    nb_executable = 0
+    nb_executed_simulated = 0
+    nb_skipped = 0
+    nb_blocked_governor = 0
+    nb_blocked_hard_veto = 0
+    nb_final_weight_zero = 0
+
+    now_iso = _now_iso()
+
+    for sig in sized_signals:
+        symbol = str(sig.get("symbol") or "").lower()
+        side = str(sig.get("side") or "buy")
+        strategy = str(sig.get("strategy") or "momentum")
+
+        requested_weight = _extract_requested_weight(sig)
+        risk_flag = sig.get("risk_flag")
+        weak_kind = sig.get("weak_kind")
+
+        if requested_weight <= 0:
+            nb_final_weight_zero += 1
+
+        # Statut par défaut
+        executable = True
+        status = "pending"
+        reasons: List[str] = []
+
+        # ---- 4.1 Kill-switch global ----
+        if hard_block:
+            executable = False
+            status = "blocked_kill_switch_hard"
+            reasons.append(
+                "Kill-switch global en mode HARD BLOCK – aucune exécution autorisée."
+            )
+            nb_blocked_hard_veto += 1
+
+        elif soft_block:
+            # En préprod : on n’empêche pas la simulation, mais on logue.
+            reasons.append(
+                "Kill-switch global SOFT BLOCK actif – préprod : exécution simulée uniquement."
+            )
+
+        # ---- 4.2 Évaluation microstructure ----
+        micro_ok, micro_view, micro_reasons = _evaluate_microstructure_for_symbol(
+            symbol=symbol,
+            micro_snapshot=micro_snapshot,
+        )
+        reasons.extend(micro_reasons)
+
+        if not micro_ok and MICROSTRUCTURE_STRICT and executable:
+            executable = False
+            status = "skipped_microstructure"
+            reasons.append(
+                "Signal bloqué par les contraintes de microstructure (mode strict)."
+            )
+            nb_skipped += 1
+
+        # ---- 4.3 Gouvernance / governor_status (placeholder pour la suite) ----
+        governor_status = sig.get("governor_status")
+        if governor_status in {"blocked", "hard_block"} and executable:
+            executable = False
+            status = "blocked_governor"
+            reasons.append("Signal bloqué par le governor_status.")
+            nb_blocked_governor += 1
+
+        # ---- 4.4 Décision finale & simulation de fill ----
+        if executable and status == "pending":
+            nb_executable += 1
+            status = "simulated_filled"
+            slippage_bps = _estimate_slippage_bps(
+                spread_bps=micro_view.get("spread_bps"),
+                volatility_state=micro_view.get("volatility_state"),
+            )
+            latency_ms = 150.0  # placeholder préprod
+
+            reasons.append(
+                "Exécution simulée en mode préproduction (Option A, aucune API exchange)."
+            )
+
+            fill = {
+                "timestamp": now_iso,
+                "symbol": symbol,
+                "side": side,
+                "strategy": strategy,
+                "requested_weight": requested_weight,
+                "filled_weight": requested_weight,
+                "slippage_bps": slippage_bps,
+                "latency_ms": latency_ms,
+                "governor_status": governor_status,
+            }
+            fills.append(fill)
+            nb_executed_simulated += 1
+        else:
+            # Pas de fill
+            slippage_bps = None
+            latency_ms = None
+            if status == "pending":
+                status = "skipped"
+
+        attempt = {
+            "timestamp": now_iso,
+            "symbol": symbol,
+            "side": side,
+            "strategy": strategy,
+            "requested_weight": requested_weight,
+            "risk_flag": risk_flag,
+            "weak_kind": weak_kind,
+            "hard_veto": False,  # placeholder (intégration future avec Risk Engine PRO détaillé)
+            "soft_veto": False,  # idem
+            "governor_status": governor_status,
+            "executable": executable,
+            "status": status,
+            "filled_weight": requested_weight if status == "simulated_filled" else 0.0,
+            "slippage_bps": slippage_bps,
+            "latency_ms": latency_ms,
+            "microstructure": micro_view,
+            "reasons": reasons,
+        }
+        attempts.append(attempt)
+
+    # 5) Stats globales
+    stats = {
+        "timestamp": now_iso,
+        "nb_signals": len(sized_signals),
+        "nb_executable": nb_executable,
+        "nb_executed_simulated": nb_executed_simulated,
+        "nb_skipped": nb_skipped,
+        "nb_blocked_governor": nb_blocked_governor,
+        "nb_blocked_hard_veto": nb_blocked_hard_veto,
+        "nb_final_weight_zero": nb_final_weight_zero,
+        "governor_status": None,  # placeholder pour un statut global ultérieur
+        "global_flag": "ok" if not hard_block else "blocked",
+    }
+
+    summary = {
+        "stats": stats,
+        "attempts": attempts,
+        "fills": fills,
+    }
+
+    # 6) Sauvegardes
+    execution_attempts_path = os.path.join(trading_dir, "execution_attempts.json")
+    simulated_fills_path = os.path.join(trading_dir, "simulated_fills.json")
+    engine_state_path = os.path.join(analysis_dir, "execution_engine_pro.json")
+
+    save_json_file(execution_attempts_path, attempts)
+    save_json_file(simulated_fills_path, fills)
+    save_json_file(engine_state_path, summary)
+
+    logger.info(
+        "[execution_engine_pro] Execution Engine Pro (microstructure avancée) terminé: "
+        "signals=%d, executable=%d, simulated=%d, skipped=%d, hard_blocked=%d",
+        len(sized_signals),
+        nb_executable,
+        nb_executed_simulated,
+        nb_skipped,
+        nb_blocked_hard_veto,
+    )
+    logger.info(
+        "[execution_engine_pro] Fichiers sauvegardés: %s, %s, %s",
+        execution_attempts_path,
+        simulated_fills_path,
+        engine_state_path,
+    )
+
+
+def main() -> None:
+    run()
+
+
+if __name__ == "__main__":
+    main()

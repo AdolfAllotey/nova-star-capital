@@ -1,0 +1,107 @@
+# src/v2/intelligence/whale_behavior_analyzer.py
+
+import os
+import time
+import json
+import requests
+from datetime import datetime, timezone, timezone
+from dotenv import load_dotenv
+from src.v2.utils.logger import get_logger
+
+load_dotenv()
+logger = get_logger("whale_behavior_analyzer")
+
+ETHERSCAN_API_KEY = os.getenv("ETHERSCAN_API_KEY")
+CHAIN_ID = 1  # Ethereum mainnet
+BASE_URL = "https://api.etherscan.io/api"
+OUTPUT_DIR = "src/v2/data/intelligence/"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+def get_transactions(address, startblock=0, endblock=99999999):
+    url = (
+        f"{BASE_URL}?module=account"
+        f"&action=txlist"
+        f"&address={address}"
+        f"&startblock={startblock}"
+        f"&endblock={endblock}"
+        f"&sort=asc"
+        f"&apikey={ETHERSCAN_API_KEY}"
+        f"&chainid={CHAIN_ID}"
+    )
+    try:
+        response = requests.get(url)
+        data = response.json()
+        if data["status"] != "1":
+            logger.warning(f"Aucune donnée pour {address} - {data.get('message')}")
+            return []
+        return data["result"]
+    except Exception as e:
+        logger.error(f"Erreur requête Etherscan : {e}")
+        return []
+
+def analyze_whale_behavior(address):
+    transactions = get_transactions(address)
+    if not transactions:
+        logger.warning(f"Aucune transaction trouvée pour {address}")
+        return None
+
+    sales = []
+    hold_durations = []
+    last_sale_time = None
+    total_value_eth = 0
+
+    for tx in transactions:
+        try:
+            if tx["from"].lower() != address.lower():
+                continue  # On ne garde que les ventes
+
+            value_eth = int(tx["value"]) / 1e18
+            total_value_eth += value_eth
+            timestamp = int(tx["timeStamp"])
+
+            if last_sale_time:
+                duration = timestamp - last_sale_time
+                hold_durations.append(duration)
+
+            last_sale_time = timestamp
+            sales.append(value_eth)
+        except Exception as e:
+            logger.warning(f"Erreur lors du parsing d’une transaction : {e}")
+            continue
+
+    if not sales:
+        logger.warning(f"Aucune vente détectée pour {address}")
+        return None
+
+    avg_hold_days = round(sum(hold_durations) / len(hold_durations) / 86400, 2) if hold_durations else 0
+    avg_sale_volume = round(sum(sales) / len(sales), 4)
+    total_sales = len(sales)
+
+    behavior = {
+        "address": address,
+        "total_sales": total_sales,
+        "avg_hold_duration_days": avg_hold_days,
+        "avg_sale_volume_eth": avg_sale_volume,
+        "total_volume_sold_eth": round(total_value_eth, 4),
+    }
+
+    return behavior
+
+def save_behavior(behavior):
+    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    filename = f"{OUTPUT_DIR}whale_behavior_{behavior['address']}_{ts}.json"
+    try:
+        with open(filename, "w") as f:
+            json.dump(behavior, f, indent=4)
+        logger.info(f"Comportement whale enregistré : {filename}")
+    except Exception as e:
+        logger.error(f"Erreur enregistrement JSON : {e}")
+
+if __name__ == "__main__":
+    # Exemple d’adresse whale (modifiable)
+    whale_address = "0x5abfec25f74cd88437631a7731906932776356f9"
+    behavior = analyze_whale_behavior(whale_address)
+    if behavior:
+        save_behavior(behavior)
+    else:
+        logger.warning("Analyse impossible sur cette adresse.")

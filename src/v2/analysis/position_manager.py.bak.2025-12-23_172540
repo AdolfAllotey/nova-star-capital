@@ -1,0 +1,269 @@
+# src/v2/analysis/position_manager.py
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Tuple
+
+from src.v2.utils.logger import get_logger
+from src.v2.utils.file_utils import load_json_file, save_json_file
+
+logger = get_logger(__name__)
+
+ROOT_DIR = Path(__file__).resolve().parents[3]
+DATA_DIR = Path(os.getenv("NSC_DATA_DIR", ROOT_DIR / "data"))
+
+
+@dataclass
+class Position:
+    symbol: str
+    side: str
+    strategy: str
+    size_multiplier: float
+    meta_score_pro: float | None
+    risk_flag: str | None
+    weak_kind: str | None
+    opened_at: str
+    last_update_at: str
+    status: str = "open"
+    notes: List[str] | None = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+def _now_iso() -> str:
+    """Timestamp UTC ISO8601."""
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+# ---------- Chargement / sauvegarde JSON ----------
+
+
+def _load_open_positions(data_dir: Path) -> List[Dict[str, Any]]:
+    path = data_dir / "trading" / "open_positions.json"
+    positions = load_json_file(path, default=[])
+    if not isinstance(positions, list):
+        logger.warning(
+            "[position_manager] open_positions.json n'est pas une liste, reset []."
+        )
+        return []
+    logger.info(
+        "[position_manager] Positions ouvertes initiales: %d (source=%s)",
+        len(positions),
+        path,
+    )
+    return positions
+
+
+def _load_exit_events(data_dir: Path) -> List[Dict[str, Any]]:
+    path = data_dir / "trading" / "exit_events.json"
+    events = load_json_file(path, default=[])
+    if not isinstance(events, list):
+        logger.warning(
+            "[position_manager] exit_events.json n'est pas une liste, reset []."
+        )
+        return []
+    logger.info(
+        "[position_manager] Exit events existants: %d (source=%s)",
+        len(events),
+        path,
+    )
+    return events
+
+
+def _load_sized_signals(data_dir: Path) -> List[Dict[str, Any]]:
+    """
+    Charge les signaux dimensionnés issus de position_sizing_institutional :
+    data/trading/sized_signals.json
+    """
+    path = data_dir / "trading" / "sized_signals.json"
+    signals = load_json_file(path, default=[])
+
+    if not isinstance(signals, list):
+        logger.warning(
+            "[position_manager] sized_signals.json n'est pas une liste, reset []."
+        )
+        return []
+
+    logger.info(
+        "[position_manager] %d sized_signals chargés depuis %s.",
+        len(signals),
+        path,
+    )
+    return signals
+
+
+# ---------- Logique principale ----------
+
+
+def _build_position_from_signal(sig: Dict[str, Any]) -> Position:
+    """
+    Construit une Position à partir d'un sized_signal.
+    On suppose que final_weight > 0 (sinon, on ne devrait pas être là).
+    """
+    now = _now_iso()
+    symbol = sig.get("symbol")
+    side = sig.get("side", "buy")
+    strategy = sig.get("strategy", "unknown")
+
+    final_weight = float(sig.get("final_weight", 0.0))
+    risk_flag = sig.get("risk_flag")
+    weak_kind = sig.get("weak_kind")
+    meta_score = sig.get("meta_score_pro")
+    notes = sig.get("notes", [])
+
+    if not isinstance(notes, list):
+        notes = [str(notes)]
+
+    pos = Position(
+        symbol=symbol,
+        side=side,
+        strategy=strategy,
+        size_multiplier=final_weight,
+        meta_score_pro=meta_score,
+        risk_flag=risk_flag,
+        weak_kind=weak_kind,
+        opened_at=now,
+        last_update_at=now,
+        status="open",
+        notes=notes,
+    )
+
+    return pos
+
+
+def _index_positions_by_symbol(positions: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """
+    Indexation simple des positions encore ouvertes par symbole.
+    Si plusieurs positions par symbole, on garde la première (cas simple).
+    """
+    by_symbol: Dict[str, Dict[str, Any]] = {}
+    for p in positions:
+        if p.get("status", "open") != "open":
+            continue
+        sym = p.get("symbol")
+        if not sym:
+            continue
+        if sym not in by_symbol:
+            by_symbol[sym] = p
+    return by_symbol
+
+
+def update_positions_from_sized_signals(
+    data_dir: Path,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
+    """
+    Logique principale :
+    - lit sized_signals.json
+    - ouvre de nouvelles positions pour les signaux avec final_weight > 0 et symbole pas déjà ouvert
+    - pour l'instant, pas de logique d'EXIT automatique (sera ajoutée plus tard avec les prix).
+    """
+    open_positions = _load_open_positions(data_dir)
+    exit_events = _load_exit_events(data_dir)
+    sized_signals = _load_sized_signals(data_dir)
+
+    if not sized_signals:
+        logger.warning(
+            "[position_manager] Aucun sized_signal disponible, aucune nouvelle position."
+        )
+        stats = {
+            "nb_open_before": len(open_positions),
+            "nb_open_after": len(open_positions),
+            "nb_new_positions": 0,
+            "nb_exit_events": len(exit_events),
+        }
+        return open_positions, exit_events, stats
+
+    by_sym = _index_positions_by_symbol(open_positions)
+    nb_new = 0
+
+    for sig in sized_signals:
+        sym = sig.get("symbol")
+        if not sym:
+            continue
+
+        final_weight = float(sig.get("final_weight", 0.0))
+        if final_weight <= 0.0:
+            # Contexte risk/weak_signals trop prudent → on reste flat sur cet asset
+            logger.info(
+                "[position_manager] %s: final_weight=%.2f → aucune nouvelle position.",
+                sym,
+                final_weight,
+            )
+            continue
+
+        if sym in by_sym:
+            # Position déjà ouverte : pour l'instant on ne modifie pas (pas de pyramiding)
+            logger.info(
+                "[position_manager] %s: position déjà ouverte, pas de nouvelle entrée.",
+                sym,
+            )
+            continue
+
+        # Nouvelle position
+        pos = _build_position_from_signal(sig)
+        open_positions.append(pos.to_dict())
+        by_sym[sym] = pos.to_dict()
+        nb_new += 1
+
+        logger.info(
+            "[position_manager] Nouvelle position ouverte: %s, side=%s, weight=%.2f, risk_flag=%s, weak_kind=%s",
+            sym,
+            pos.side,
+            pos.size_multiplier,
+            pos.risk_flag,
+            pos.weak_kind,
+        )
+
+    stats = {
+        "nb_open_before": len(_load_open_positions(data_dir)),  # relecture brutale
+        "nb_open_after": len(open_positions),
+        "nb_new_positions": nb_new,
+        "nb_exit_events": len(exit_events),
+    }
+
+    return open_positions, exit_events, stats
+
+
+def main() -> None:
+    data_dir = DATA_DIR
+    logger.info("[position_manager] [position_manager] DATA_DIR=%s", str(data_dir))
+
+    trading_dir = data_dir / "trading"
+    trading_dir.mkdir(parents=True, exist_ok=True)
+
+    open_positions, exit_events, stats = update_positions_from_sized_signals(data_dir)
+
+    # Sauvegardes
+    open_path = trading_dir / "open_positions.json"
+    exit_path = trading_dir / "exit_events.json"
+
+    save_json_file(open_path, open_positions)
+    logger.info(
+        "[position_manager] Positions ouvertes sauvegardées (%s, n=%d).",
+        open_path,
+        len(open_positions),
+    )
+
+    save_json_file(exit_path, exit_events)
+    logger.info(
+        "[position_manager] Exit events sauvegardés (%s, total=%d).",
+        exit_path,
+        len(exit_events),
+    )
+
+    logger.info(
+        "[position_manager] Update terminé: open_before=%d, open_after=%d, new=%d, exit_events=%d",
+        stats["nb_open_before"],
+        stats["nb_open_after"],
+        stats["nb_new_positions"],
+        stats["nb_exit_events"],
+    )
+
+
+if __name__ == "__main__":
+    main()

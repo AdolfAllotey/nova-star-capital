@@ -1,0 +1,38 @@
+# src/v2/simulation/trade_simulator.py
+import csv, os, logging
+from datetime import datetime, timezone, timezone, timedelta
+from random import random
+log = logging.getLogger(__name__)
+
+def simulate_trades() -> bool:
+    """
+    Stub: génère des trades fictifs du jour dans trades.csv
+    """
+    try:
+        out_dir = "src/v2/data/trading"
+        os.makedirs(out_dir, exist_ok=True)
+        out_file = os.path.join(out_dir, "trades.csv")
+
+        now = datetime.now(timezone.utc)
+        rows = []
+        for i in range(10):
+            pnl = round((random() - 0.5) * 50, 2)  # +/- 25$
+            rows.append([
+                (now - timedelta(minutes=5*i)).isoformat(),
+                f"PAIR{i:02d}/USDT",
+                "LONG" if random() > 0.5 else "SHORT",
+                pnl
+            ])
+
+        header = ["timestamp","symbol","side","pnl_usd"]
+        write_header = not os.path.exists(out_file)
+        with open(out_file, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            if write_header: w.writerow(header)
+            w.writerows(rows)
+
+        log.info("📈 Trades simulés écrits dans %s (%d lignes)", out_file, len(rows))
+        return True
+    except Exception as e:
+        log.warning("⚠️ simulate_trades: %s", e)
+        return False

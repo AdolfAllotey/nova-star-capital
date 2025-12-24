@@ -1,0 +1,3 @@
+Only invest if sentiment > 0.3 and llm_behavior_score > 6
+Avoid tokens flagged as risky (llm_risk_flag == 'yes')
+Score must be at least 70 and whale_score > 0.5

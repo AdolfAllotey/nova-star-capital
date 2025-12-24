@@ -1,0 +1,24 @@
+wallets:
+  eth: "0xVotreAdresseEthereum"
+  bsc: "0xVotreAdresseBSC"
+  tax_wallet: "0xVotreAdressePourLesTaxes"
+
+exchange:
+  api_key: "dummmy"
+  api_secret: "dummy"
+
+symbol: "BTC/USDT"
+timeframe: "1h"
+amount: 0.001
+paper: true  # Mode simulation
+
+strategy:
+  fast_ema: 50
+  slow_ema: 200
+
+taxation:
+  flat_tax_percent: 30
+
+notifications:
+  telegram_bot_token: "VOTRE_BOT_TOKEN"
+  telegram_chat_id: "VOTRE_CHAT_ID"

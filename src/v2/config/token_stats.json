@@ -1,0 +1,14 @@
+{
+    "BTC": {
+      "drawdown": 12.5,
+      "exposure": 16000
+    },
+    "ETH": {
+      "drawdown": 9.0,
+      "exposure": 9500
+    },
+    "SOL": {
+      "drawdown": 17,
+      "exposure": 8500
+    }
+  }

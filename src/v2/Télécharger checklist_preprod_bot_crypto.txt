@@ -1,0 +1,51 @@
+
+✅ CHECKLIST PRÉPRODUCTION — BOT CRYPTO V2 NOVA STAR CAPITAL
+
+📌 1. Données & JSON générés
+-----------------------------------------
+| Élément                               | Chemin attendu                                            | Généré ? | Vérifié ? |
+|---------------------------------------|------------------------------------------------------------|----------|-----------|
+| final_scores.json                     | src/v2/data/scores/                                        | ☐        | ☐         |
+| worst_trades.json                     | src/v2/data/risk/                                          | ☐        | ☐         |
+| monthly_costs.json                    | src/v2/data/monitoring/                                    | ☐        | ☐         |
+| global_performance.json              | src/v2/data/monitoring/                                    | ☐        | ☐         |
+| llm_scores.json                       | src/v2/data/intelligence/                                  | ☐        | ☐         |
+| llm_opportunities.json (si activé)   | src/v2/data/intelligence/                                  | ☐        | ☐         |
+
+💻 2. Dashboard React — Interface
+-----------------------------------------
+| Composant / page                     | Vérification affichage | Données chargées | Résponsive |
+|-------------------------------------|------------------------|------------------|------------|
+| PnLChart.jsx                        | ☐                      | ☐                | ☐          |
+| WinLossChart.jsx                    | ☐                      | ☐                | ☐          |
+| StrategyDistributionChart.jsx      | ☐                      | ☐                | ☐          |
+| TokenAllocationChart.jsx           | ☐                      | ☐                | ☐          |
+| WorstTradeTable.jsx                | ☐                      | ☐                | ☐          |
+| CostTracker.jsx (API & infra)      | ☐                      | ☐                | ☐          |
+| LlmOpportunities.jsx (si activé)   | ☐                      | ☐                | ☐          |
+
+⚙️ 3. Backend & exécutions
+-----------------------------------------
+| Module principal                    | Fonctionnel ? | Fichier généré ? |
+|------------------------------------|---------------|------------------|
+| main.py                            | ☐             | ☐                |
+| generate_trade_simulation.py       | ☐             | ☐                |
+| generate_daily_report.py           | ☐             | ☐                |
+| worst_trade_analyzer.py            | ☐             | ☐                |
+| llm_analyzer.py (si activé)        | ☐             | ☐                |
+| cost_tracker.py                    | ☐             | ☐                |
+
+📩 4. Envois automatisés
+-----------------------------------------
+| Type de rapport              | Canal           | Fonctionne ? |
+|-----------------------------|------------------|--------------|
+| Simulation des trades       | Telegram         | ☐            |
+| Rapport global quotidien    | Telegram & Email | ☐            |
+| Alertes (erreurs / risques) | Telegram         | ☐            |
+
+🕑 5. Planification & CRON
+-----------------------------------------
+| Tâche                        | Heure prévue | CRON actif ? |
+|-----------------------------|--------------|--------------|
+| Mise à jour groupes Telegram| 08h & 20h     | ☐            |
+| Exécution main.py           | 24h/24        | ☐            |

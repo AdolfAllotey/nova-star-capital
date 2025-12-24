@@ -1,0 +1,27 @@
+# app/src/v2/api/app.py
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+app = FastAPI(title="NSC API", version="2.0.0")
+
+# CORS (si besoin)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], allow_credentials=True,
+    allow_methods=["*"], allow_headers=["*"],
+)
+
+# --- Routes existantes ---
+@app.get("/status")
+def status():
+    return {"status": "ok", "service": "NSC API", "version": "2.0.0"}
+
+# --- ⬇️ AJOUTER ICI ⬇️ ---
+from .routes.reports import router as reports_router
+from .routes.risk import router as risk_router
+from .routes.simulation import router as simulation_router
+
+app.include_router(reports_router)
+app.include_router(risk_router)
+app.include_router(simulation_router)
+# --- ⬆️ AJOUTER ICI ⬆️ ---

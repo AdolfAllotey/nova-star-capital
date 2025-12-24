@@ -1,0 +1,32 @@
+2025-07-11 17:23:23,659 — INFO — 🔍 Démarrage du module Whale Tracker...
+2025-07-11 17:23:23,659 — WARNING — Fichier de tokens sélectionnés introuvable.
+2025-07-11 17:23:23,659 — WARNING — Fichier mock non trouvé: data/v2/mock_whale_alerts.json
+2025-07-11 17:23:23,659 — INFO — Aucune alerte whale pertinente aujourd'hui.
+2025-07-11 17:34:39,951 — INFO — 🔍 Démarrage du module Whale Tracker...
+2025-07-11 17:34:39,951 — WARNING — Fichier de tokens sélectionnés introuvable.
+2025-07-11 17:34:39,951 — WARNING — Fichier mock non trouvé: data/v2/mock_whale_alerts.json
+2025-07-11 17:34:39,951 — INFO — Aucune alerte whale pertinente aujourd'hui.
+2025-07-11 17:44:11,499 — INFO — 🔍 Démarrage du module Whale Tracker...
+2025-07-11 17:44:11,499 — WARNING — Fichier de tokens sélectionnés introuvable.
+2025-07-11 17:44:11,499 — WARNING — Fichier mock non trouvé: data/v2/mock_whale_alerts.json
+2025-07-11 17:44:11,499 — INFO — Aucune alerte whale pertinente aujourd'hui.
+2025-07-11 18:24:29,135 — INFO — 🔍 Démarrage du module Whale Tracker...
+2025-07-11 18:24:29,136 — WARNING — Fichier de tokens sélectionnés introuvable.
+2025-07-11 18:24:29,136 — WARNING — Fichier mock non trouvé: data/v2/mock_whale_alerts.json
+2025-07-11 18:24:29,136 — INFO — Aucune alerte whale pertinente aujourd'hui.
+2025-07-11 19:19:03,843 — INFO — 🔍 Démarrage du module Whale Tracker...
+2025-07-11 19:19:03,844 — WARNING — Fichier de tokens sélectionnés introuvable.
+2025-07-11 19:19:03,844 — WARNING — Fichier mock non trouvé: data/v2/mock_whale_alerts.json
+2025-07-11 19:19:03,844 — INFO — Aucune alerte whale pertinente aujourd'hui.
+2025-07-11 19:22:16,365 — INFO — 🔍 Démarrage du module Whale Tracker...
+2025-07-11 19:22:16,365 — WARNING — Fichier de tokens sélectionnés introuvable.
+2025-07-11 19:22:16,365 — WARNING — Fichier mock non trouvé: data/v2/mock_whale_alerts.json
+2025-07-11 19:22:16,365 — INFO — Aucune alerte whale pertinente aujourd'hui.
+2025-07-11 20:05:22,995 — INFO — 🔍 Démarrage du module Whale Tracker...
+2025-07-11 20:05:22,995 — WARNING — Fichier des tokens sélectionnés introuvable.
+2025-07-11 20:05:22,995 — WARNING — Fichier mock non trouvé: src/v2/tests/mock_whale_alerts.json
+2025-07-11 20:05:22,995 — INFO — Aucune alerte whale pertinente aujourd'hui.
+2025-07-11 20:27:37,512 — INFO — 🔍 Démarrage du module Whale Tracker...
+2025-07-11 20:27:37,512 — WARNING — Fichier des tokens sélectionnés introuvable.
+2025-07-11 20:27:37,512 — WARNING — Fichier mock non trouvé: src/v2/tests/mock_whale_alerts.json
+2025-07-11 20:27:37,512 — INFO — Aucune alerte whale pertinente aujourd'hui.

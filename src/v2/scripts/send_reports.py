@@ -1,0 +1,339 @@
+# src/v2/scripts/send_reports.py
+from __future__ import annotations
+
+import os
+import json
+import time
+import hmac
+import hashlib
+import logging
+import smtplib
+import socket
+from email.mime.text import MIMEText
+from email.utils import formatdate
+from pathlib import Path
+from datetime import datetime, timezone, timezone
+
+# ------------------------------------------------------------------------------
+# Chargement .env (optionnel)
+# ------------------------------------------------------------------------------
+try:
+    from dotenv import load_dotenv, find_dotenv
+    _env = (find_dotenv(".env", usecwd=True)
+            or find_dotenv("src/v2/.env", usecwd=True))
+    if _env:
+        load_dotenv(_env, override=False)
+except Exception as e:
+    # Non bloquant
+    print(f"python-dotenv non critique: {e}")
+
+# ------------------------------------------------------------------------------
+# Constantes chemins & logs
+# ------------------------------------------------------------------------------
+ROOT = Path(__file__).resolve().parents[3]  # .../Bot_crypto_ultra
+DATA_DIR = ROOT / "src" / "v2" / "data"
+STATE_DIR = ROOT / "state"
+LOGS_DIR = ROOT / "src" / "v2" / "logs"
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
+STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+RUN_LOG = LOGS_DIR / f"send_reports_{datetime.now(timezone.utc).date().isoformat()}.log"
+LOG = logging.getLogger("send_reports")
+LOG.setLevel(logging.INFO)
+if not LOG.handlers:
+    fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(fmt)
+    fh = logging.FileHandler(RUN_LOG, encoding="utf-8")
+    fh.setLevel(logging.INFO)
+    fh.setFormatter(fmt)
+    LOG.addHandler(ch)
+    LOG.addHandler(fh)
+
+# ------------------------------------------------------------------------------
+# Utilitaires ENV
+# ------------------------------------------------------------------------------
+def env_bool(name: str, default: bool = True) -> bool:
+    v = os.environ.get(name, str(int(default))).strip().lower()
+    return v in {"1", "true", "yes", "y", "on"}
+
+def env_int(name: str, default: int) -> int:
+    try:
+        return int(str(os.environ.get(name, default)).strip())
+    except Exception:
+        return default
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+def utc_iso() -> str:
+    return utcnow().isoformat()
+
+# ------------------------------------------------------------------------------
+# Construction du rapport (simple, robuste)
+# ------------------------------------------------------------------------------
+def _read_json_safe(path: Path):
+    try:
+        if path.is_file():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        LOG.warning("Lecture JSON échouée (%s): %s", path, e)
+    return None
+
+def build_report() -> str:
+    """
+    Compose un message texte concis à partir des données disponibles.
+    N’utilise que des dépendances standards => robuste côté serveur.
+    """
+    lines = []
+    lines.append("📊 Rapport quotidien Nova Star")
+    lines.append(f"⏱️ Généré: {utc_iso()}")
+    lines.append("")
+
+    # Telegram (si scraping exécuté)
+    tg_path = DATA_DIR / "social" / "telegram_data.json"
+    tg = _read_json_safe(tg_path)
+    if tg:
+        groups = tg.get("groups") if isinstance(tg, dict) else None
+        if not groups and isinstance(tg, list):
+            # Version possible: [{"group":"...", "count":N, ...}, ...]
+            groups = tg
+        if groups:
+            count_msgs = 0
+            distinct = 0
+            for g in groups:
+                try:
+                    cnt = int(g.get("count", 0))
+                    count_msgs += cnt
+                    distinct += 1
+                except Exception:
+                    pass
+            lines.append(f"🛰️ Telegram: {count_msgs} msgs / {distinct} groupes.")
+        else:
+            lines.append("🛰️ Telegram: données présentes mais format non reconnu.")
+    else:
+        lines.append("🛰️ Telegram: aucune donnée récente.")
+
+    # Reddit (si scraping exécuté)
+    rd_path = DATA_DIR / "social" / "reddit_data.json"
+    rd = _read_json_safe(rd_path)
+    if rd:
+        try:
+            n = len(rd) if isinstance(rd, list) else len(rd.keys())
+            lines.append(f"👽 Reddit: {n} entrées.")
+        except Exception:
+            lines.append("👽 Reddit: données présentes (format non reconnu).")
+    else:
+        lines.append("👽 Reddit: aucune donnée récente.")
+
+    # Sentiment (optionnel)
+    sent_path = DATA_DIR / "analysis" / "sentiment_summary.json"
+    sent = _read_json_safe(sent_path)
+    if sent and isinstance(sent, dict):
+        score = sent.get("score_avg")
+        lines.append(f"🧠 Sentiment moyen: {score if score is not None else 'n/a'}")
+    else:
+        lines.append("🧠 Sentiment: n/a")
+
+    # PnL mensuel (optionnel)
+    pnl_path = DATA_DIR / "reporting" / "monthly_pnl.json"
+    pnl = _read_json_safe(pnl_path)
+    if pnl and isinstance(pnl, dict):
+        this_m = pnl.get("this_month", {})
+        v = this_m.get("pnl", None)
+        lines.append(f"💹 PnL mois en cours: {v if v is not None else 'n/a'}")
+    else:
+        lines.append("💹 PnL mois en cours: n/a")
+
+    # Recos LLM (optionnel)
+    reco_path = DATA_DIR / "intelligence" / "llm_recos.json"
+    recos = _read_json_safe(reco_path)
+    if recos and isinstance(recos, list) and recos:
+        lines.append(f"🤖 Recommandations LLM: {len(recos)} item(s).")
+    else:
+        lines.append("🤖 Recommandations LLM: n/a")
+
+    lines.append("")
+    lines.append("— Nova Star —")
+
+    return "\n".join(lines)
+
+# ------------------------------------------------------------------------------
+# Anti-rafale / Anti-duplicat
+# ------------------------------------------------------------------------------
+def content_hash(s: str) -> str:
+    key = os.environ.get("FLASK_SECRET_KEY", "nova-secret").encode("utf-8")
+    return hmac.new(key, s.encode("utf-8"), hashlib.sha256).hexdigest()
+
+def should_skip_sending(content: str) -> bool:
+    """
+    1) Si REPORT_FORCE_SEND=1 => on envoie toujours.
+    2) Si hash du contenu = hash déjà envoyé aujourd’hui => on saute.
+    3) Si cooldown actif => on saute.
+    """
+    if env_bool("REPORT_FORCE_SEND", False):
+        return False
+
+    today = utcnow().date().isoformat()
+    hash_file = STATE_DIR / f"last_report_hash_{today}.txt"
+    last_ts_file = STATE_DIR / "last_send_ts"
+
+    # 2) duplicate?
+    h = content_hash(content)
+    if hash_file.is_file():
+        try:
+            if hash_file.read_text(encoding="utf-8").strip() == h:
+                LOG.info("⏳ Rapport identique déjà envoyé aujourd'hui — envoi sauté.")
+                return True
+        except Exception:
+            pass
+
+    # 3) cooldown
+    cooldown = env_int("NOVA_TG_COOLDOWN_REPORT", 1800)  # 30 min par défaut
+    if cooldown > 0 and last_ts_file.is_file():
+        try:
+            last_ts = float(last_ts_file.read_text(encoding="utf-8"))
+            if time.time() - last_ts < cooldown:
+                LOG.info("⏳ Cooldown actif (%.0fs restants) — envoi sauté.",
+                         cooldown - (time.time() - last_ts))
+                return True
+        except Exception:
+            pass
+
+    return False
+
+def mark_sent(content: str) -> None:
+    today = utcnow().date().isoformat()
+    (STATE_DIR / f"last_report_hash_{today}.txt").write_text(content_hash(content), encoding="utf-8")
+    (STATE_DIR / "last_send_ts").write_text(str(time.time()), encoding="utf-8")
+
+# ------------------------------------------------------------------------------
+# Envoi Telegram (Bot API via HTTPS)
+# ------------------------------------------------------------------------------
+import urllib.request
+import urllib.parse
+
+def send_telegram(message: str) -> bool:
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    chat  = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    if not token or not chat:
+        LOG.warning("✍️ Telegram non configuré: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID manquants.")
+        return False
+
+    base = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": chat,
+        "text": message,
+        "parse_mode": "HTML",  # ou 'MarkdownV2'
+        "disable_web_page_preview": True,
+    }
+    data = urllib.parse.urlencode(payload).encode("utf-8")
+
+    try:
+        req = urllib.request.Request(base, data=data, method="POST")
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            body = resp.read()
+        # On peut vérifier 'ok':true
+        ok = b'"ok":true' in body
+        if ok:
+            LOG.info("📝 Telegram envoyé = True")
+        else:
+            LOG.warning("📝 Telegram: réponse inattendue: %s", body[:300])
+        return ok
+    except Exception as e:
+        LOG.warning("📝 Telegram: échec d'envoi: %s", e)
+        return False
+
+# ------------------------------------------------------------------------------
+# Envoi Email (SMTP STARTTLS)
+# ------------------------------------------------------------------------------
+def send_email(subject: str, body: str) -> bool:
+    host = os.environ.get("SMTP_HOST") or os.environ.get("EMAIL_HOST")
+    port = int(os.environ.get("SMTP_PORT") or os.environ.get("EMAIL_PORT") or 587)
+    user = os.environ.get("SMTP_USER") or os.environ.get("EMAIL_USER")
+    pwd  = os.environ.get("SMTP_PASSWORD") or os.environ.get("EMAIL_PASSWORD")
+    sender = os.environ.get("EMAIL_FROM") or os.environ.get("EMAIL_SENDER")
+    to = os.environ.get("EMAIL_TO") or os.environ.get("EMAIL_RECEIVER")
+
+    if not all([host, port, user, pwd, sender, to]):
+        LOG.warning("✉️ Email: variables manquantes: EMAIL_HOST/SMTP_HOST, EMAIL_PORT/SMTP_PORT, "
+                    "EMAIL_USER/SMTP_USER, EMAIL_PASSWORD/SMTP_PASSWORD, "
+                    "EMAIL_SENDER/EMAIL_FROM, EMAIL_RECEIVER/EMAIL_TO")
+        return False
+
+    use_tls = env_bool("SMTP_USE_TLS", True)
+    use_ssl = env_bool("SMTP_USE_SSL", False)
+
+    try:
+        msg = MIMEText(body, _charset="utf-8")
+        subject_prefix = os.environ.get("EMAIL_SUBJECT_PREFIX", "").strip()
+        full_subject = f"{subject_prefix} Rapport quotidien" if subject_prefix else "Rapport quotidien"
+        msg["Subject"] = full_subject if not subject else f"{subject_prefix} {subject}".strip()
+        msg["From"] = sender
+        msg["To"] = to
+        msg["Date"] = formatdate(localtime=False)
+
+        if use_ssl:
+            server = smtplib.SMTP_SSL(host, port, timeout=30)
+        else:
+            server = smtplib.SMTP(host, port, timeout=30)
+
+        with server:
+            server.ehlo()
+            if use_tls and not use_ssl:
+                server.starttls()
+                server.ehlo()
+            server.login(user, pwd)
+            server.sendmail(sender, [to], msg.as_string())
+
+        LOG.info("✉️ Email envoyé = True")
+        return True
+    except smtplib.SMTPAuthenticationError as e:
+        LOG.warning("✉️ Email: échec d'authentification: %s", e)
+        return False
+    except (socket.timeout, smtplib.SMTPException, Exception) as e:
+        LOG.warning("✉️ Email: échec d'envoi: %s", e)
+        return False
+
+# ------------------------------------------------------------------------------
+# MAIN
+# ------------------------------------------------------------------------------
+def main() -> None:
+    LOG.info("📤 Préparation de l'envoi du rapport...")
+
+    # 1) Construire le contenu
+    content = build_report()
+    LOG.info("🧾 Longueur du message : %d", len(content))
+
+    # 2) Anti-duplication / cooldown
+    if should_skip_sending(content):
+        LOG.info("✅ Envoi du rapport ignoré (déjà envoyé récemment ou identique).")
+        return
+
+    # 3) Envois
+    # Telegram
+    tg_ok = False
+    if env_bool("TELEGRAM_ALERTS_ENABLED", True):
+        tg_ok = send_telegram(content)
+    else:
+        LOG.info("📝 Telegram désactivé (TELEGRAM_ALERTS_ENABLED=0).")
+
+    # Email
+    email_ok = False
+    if env_bool("EMAIL_ENABLED", True):
+        # Le sujet peut être personnalisé via ENV (optionnel)
+        subject = os.environ.get("EMAIL_SUBJECT", "Rapport quotidien")
+        email_ok = send_email(subject, content)
+    else:
+        LOG.info("✉️ Email désactivé (EMAIL_ENABLED=0).")
+
+    # 4) Marquer envoyé si au moins un canal a réussi
+    if tg_ok or email_ok:
+        mark_sent(content)
+
+    LOG.info("✅ Envoi du rapport terminé.")
+
+# Point d’entrée
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,408 @@
+"""
+portfolio_engine_light.py
+
+Portfolio Engine (version light / Saison 1, Kernel V3) :
+
+Objectif :
+    Produire une vue simple mais propre du portefeuille courant à partir de
+    open_positions.json, capital_allocation.json et éventuellement sector_map.json.
+
+Inputs :
+    - data/trading/open_positions.json
+        → liste de positions, chaque position est un dict avec au minimum :
+          - symbol (str)
+          - side (str) : "long" ou "short" (facultatif, default: "long")
+          - size (float) ou quantity, amount, etc. (facultatif)
+          - entry_price (float) (facultatif)
+          - capital / allocated_capital / notional (facultatif)
+          - unrealized_pnl (float) (facultatif)
+
+    - data/trading/capital_allocation.json
+        → total_capital, pockets.trading, etc. (facultatif)
+
+    - data/market/sector_map.json (optionnel)
+        {
+          "bitcoin": "L1",
+          "ethereum": "L1",
+          "solana": "L1",
+          "uniswap": "DeFi",
+          ...
+        }
+
+Fallbacks :
+    - Si capital par position n'est pas explicite, on tente :
+        capital = capital_field
+               ou = size * entry_price
+               ou = 0.0
+    - Si sector_map absent ou symbole inconnu → sector = "unknown".
+
+Output :
+    - data/analysis/portfolio_overview.json
+
+Structure de sortie (exemple) :
+
+{
+  "timestamp": "...",
+  "root_dir": "...",
+  "data_dir": "...",
+  "nb_positions": 3,
+  "total_capital": 1000.0,
+  "trading_capital": 450.0,
+  "total_exposure": 270.0,
+  "exposure_pct_trading": 60.0,
+  "exposure_pct_total": 27.0,
+  "total_unrealized_pnl": 12.5,
+  "assets": [
+    {
+      "symbol": "bitcoin",
+      "side": "long",
+      "sector": "L1",
+      "nb_positions": 1,
+      "exposure": 150.0,
+      "unrealized_pnl": 10.0
+    },
+    ...
+  ],
+  "sectors": [
+    {
+      "sector": "L1",
+      "nb_positions": 2,
+      "nb_assets": 2,
+      "exposure": 220.0,
+      "unrealized_pnl": 11.0,
+      "exposure_pct_total": 22.0,
+      "exposure_pct_trading": 48.9
+    },
+    ...
+  ]
+}
+
+Cette brique ne modifie aucun autre fichier et ne contient aucune logique d'exécution.
+Elle sert uniquement de "photo" du portefeuille pour l'interface et les reportings.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from src.v2.utils.logger import get_logger
+from src.v2.utils.file_utils import load_json_file, save_json_file
+
+logger = get_logger("portfolio_engine_light")
+
+
+# ---------------------------------------------------------------------------
+# Helpers ROOT/DATA autonomes
+# ---------------------------------------------------------------------------
+
+
+def _get_root_and_data_dirs() -> Tuple[Path, Path]:
+    """
+    Reconstruit ROOT_DIR et DATA_DIR à partir du chemin du fichier.
+
+    Ce fichier vit typiquement ici :
+        /opt/nsc/app/src/v2/analysis/portfolio_engine_light.py
+
+    On remonte à /opt/nsc/app (parents[3]) puis on ajoute /data.
+    """
+    here = Path(__file__).resolve()
+    root_dir = here.parents[3]  # .../app
+    data_dir = root_dir / "data"
+    return root_dir, data_dir
+
+
+# ---------------------------------------------------------------------------
+# Dataclasses
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class AssetExposure:
+    symbol: str
+    side: str
+    sector: str
+    nb_positions: int
+    exposure: float
+    unrealized_pnl: float
+
+
+@dataclass
+class SectorExposure:
+    sector: str
+    nb_positions: int
+    nb_assets: int
+    exposure: float
+    unrealized_pnl: float
+    exposure_pct_total: float
+    exposure_pct_trading: float
+
+
+@dataclass
+class PortfolioOverview:
+    timestamp: str
+    root_dir: str
+    data_dir: str
+    nb_positions: int
+    total_capital: float
+    trading_capital: float
+    total_exposure: float
+    exposure_pct_trading: float
+    exposure_pct_total: float
+    total_unrealized_pnl: float
+    assets: List[AssetExposure]
+    sectors: List[SectorExposure]
+
+
+# ---------------------------------------------------------------------------
+# Small helpers
+# ---------------------------------------------------------------------------
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _ensure_list(obj: Any) -> List[Any]:
+    if isinstance(obj, list):
+        return obj
+    return []
+
+
+def _ensure_dict(obj: Any) -> Dict[str, Any]:
+    if isinstance(obj, dict):
+        return obj
+    return {}
+
+
+def _get_sector(symbol: str, sector_map: Dict[str, str]) -> str:
+    if symbol in sector_map:
+        return str(sector_map[symbol])
+    return "unknown"
+
+
+def _get_position_capital(pos: Dict[str, Any]) -> float:
+    """
+    Essaye de déduire un "capital" / notional pour la position.
+
+    Ordre :
+        1) champ explicitement nommé capital / allocated_capital / notional
+        2) size * entry_price si dispo
+        3) 0.0
+    """
+    for key in ("capital", "allocated_capital", "notional", "exposure"):
+        if key in pos:
+            val = _safe_float(pos.get(key), None)
+            if val is not None:
+                return val
+
+    size = _safe_float(pos.get("size") or pos.get("quantity") or pos.get("amount"), 0.0)
+    entry_price = _safe_float(pos.get("entry_price"), 0.0)
+
+    if size > 0 and entry_price > 0:
+        return size * entry_price
+
+    return 0.0
+
+
+def _get_position_unrealized_pnl(pos: Dict[str, Any]) -> float:
+    for key in ("unrealized_pnl", "unrealised_pnl", "pnl_unrealized"):
+        if key in pos:
+            return _safe_float(pos.get(key), 0.0)
+    return 0.0
+
+
+# ---------------------------------------------------------------------------
+# Core
+# ---------------------------------------------------------------------------
+
+
+def compute_portfolio_overview() -> PortfolioOverview:
+    root_dir, data_dir = _get_root_and_data_dirs()
+    trading_dir = data_dir / "trading"
+    market_dir = data_dir / "market"
+    analysis_dir = data_dir / "analysis"
+
+    logger.info(
+        "[portfolio_engine_light] ROOT_DIR=%s, DATA_DIR=%s",
+        root_dir,
+        data_dir,
+    )
+
+    # 1) Charger open_positions.json
+    open_positions_raw = load_json_file(trading_dir / "open_positions.json", default=[])
+    positions = _ensure_list(open_positions_raw)
+
+    # 2) Charger capital_allocation.json (si présent)
+    capital_alloc = _ensure_dict(
+        load_json_file(trading_dir / "capital_allocation.json", default={})
+    )
+    total_capital = _safe_float(capital_alloc.get("total_budget"), 0.0)
+    trading_capital = _safe_float(
+        capital_alloc.get("trading_budget"), 0.0
+    )
+
+    # 3) Charger sector_map.json (optionnel)
+    sector_map = _ensure_dict(
+        load_json_file(market_dir / "sector_map.json", default={})
+    )
+    sector_map_str = {str(k): str(v) for k, v in sector_map.items()}
+
+    # Agrégation par symbol
+    per_symbol: Dict[str, Dict[str, Any]] = {}
+
+    for pos in positions:
+        if not isinstance(pos, dict):
+            continue
+
+        symbol = str(pos.get("symbol") or "").strip()
+        if not symbol:
+            continue
+
+        side = str(pos.get("side") or "long").lower()
+        sector = _get_sector(symbol, sector_map_str)
+
+        capital = _get_position_capital(pos)
+        pnl_unrealized = _get_position_unrealized_pnl(pos)
+
+        key = (symbol, side, sector)
+        d = per_symbol.setdefault(
+            key,
+            {
+                "nb_positions": 0,
+                "exposure": 0.0,
+                "unrealized_pnl": 0.0,
+            },
+        )
+
+        d["nb_positions"] += 1
+        d["exposure"] += capital
+        d["unrealized_pnl"] += pnl_unrealized
+
+    # Convertir en AssetExposure
+    asset_items: List[AssetExposure] = []
+    total_exposure = 0.0
+    total_unrealized_pnl = 0.0
+
+    for (symbol, side, sector), agg in per_symbol.items():
+        nb = agg["nb_positions"]
+        exposure = _safe_float(agg["exposure"], 0.0)
+        pnl_unrealized = _safe_float(agg["unrealized_pnl"], 0.0)
+
+        total_exposure += exposure
+        total_unrealized_pnl += pnl_unrealized
+
+        asset_items.append(
+            AssetExposure(
+                symbol=symbol,
+                side=side,
+                sector=sector,
+                nb_positions=nb,
+                exposure=exposure,
+                unrealized_pnl=pnl_unrealized,
+            )
+        )
+
+    # Agrégation par secteur
+    per_sector: Dict[str, Dict[str, Any]] = {}
+    for asset in asset_items:
+        d = per_sector.setdefault(
+            asset.sector,
+            {
+                "nb_positions": 0,
+                "symbols": set(),
+                "exposure": 0.0,
+                "unrealized_pnl": 0.0,
+            },
+        )
+        d["nb_positions"] += asset.nb_positions
+        d["symbols"].add(asset.symbol)
+        d["exposure"] += asset.exposure
+        d["unrealized_pnl"] += asset.unrealized_pnl
+
+    sector_items: List[SectorExposure] = []
+    for sector, agg in sorted(per_sector.items()):
+        exposure_sector = _safe_float(agg["exposure"], 0.0)
+        pnl_sector = _safe_float(agg["unrealized_pnl"], 0.0)
+        nb_positions_sector = int(agg["nb_positions"])
+        nb_assets_sector = len(agg["symbols"])
+
+        exposure_pct_total = (
+            (exposure_sector / total_capital * 100.0) if total_capital > 0 else 0.0
+        )
+        exposure_pct_trading = (
+            (exposure_sector / trading_capital * 100.0)
+            if trading_capital > 0
+            else 0.0
+        )
+
+        sector_items.append(
+            SectorExposure(
+                sector=sector,
+                nb_positions=nb_positions_sector,
+                nb_assets=nb_assets_sector,
+                exposure=exposure_sector,
+                unrealized_pnl=pnl_sector,
+                exposure_pct_total=exposure_pct_total,
+                exposure_pct_trading=exposure_pct_trading,
+            )
+        )
+
+    # Ratios globaux
+    exposure_pct_total_global = (
+        (total_exposure / total_capital * 100.0) if total_capital > 0 else 0.0
+    )
+    exposure_pct_trading_global = (
+        (total_exposure / trading_capital * 100.0) if trading_capital > 0 else 0.0
+    )
+
+    overview = PortfolioOverview(
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        root_dir=str(root_dir),
+        data_dir=str(data_dir),
+        nb_positions=len(positions),
+        total_capital=total_capital,
+        trading_capital=trading_capital,
+        total_exposure=total_exposure,
+        exposure_pct_trading=exposure_pct_trading_global,
+        exposure_pct_total=exposure_pct_total_global,
+        total_unrealized_pnl=total_unrealized_pnl,
+        assets=asset_items,
+        sectors=sector_items,
+    )
+
+    return overview
+
+
+def save_portfolio_overview(overview: PortfolioOverview) -> Path:
+    _, data_dir = _get_root_and_data_dirs()
+    output_path = data_dir / "analysis" / "portfolio_overview.json"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    payload = asdict(overview)
+    payload["assets"] = [asdict(a) for a in overview.assets]
+    payload["sectors"] = [asdict(s) for s in overview.sectors]
+
+    save_json_file(output_path, payload)
+
+    logger.info(
+        "[portfolio_engine_light] portfolio_overview.json sauvegardé (%s, nb_positions=%d, nb_sectors=%d).",
+        output_path,
+        overview.nb_positions,
+        len(overview.sectors),
+    )
+    return output_path
+
+
+def main() -> None:
+    overview = compute_portfolio_overview()
+    save_portfolio_overview(overview)
+
+
+if __name__ == "__main__":
+    main()

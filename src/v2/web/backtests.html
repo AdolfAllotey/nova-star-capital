@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Backtests – Nova Star Capital</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial,sans-serif;margin:20px;line-height:1.4}
+    header{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+    input[type=text]{padding:8px 10px;border:1px solid #ddd;border-radius:8px;min-width:360px}
+    button{padding:8px 12px;border:1px solid #222;background:#222;color:#fff;border-radius:8px;cursor:pointer}
+    button:disabled{opacity:.6;cursor:not-allowed}
+    .runs{margin-top:16px;display:grid;grid-template-columns:1fr;gap:10px}
+    .card{border:1px solid #eee;border-radius:12px;padding:14px}
+    .card h3{margin:0 0 6px 0;font-size:16px}
+    .meta{color:#666;font-size:12px;margin-bottom:8px}
+    .row{display:flex;gap:10px;flex-wrap:wrap}
+    .grow{flex:1}
+    .files{font-size:13px;margin:8px 0}
+    img{max-width:100%;height:auto;border:1px solid #eee;border-radius:8px}
+    code{background:#f6f6f6;padding:1px 6px;border-radius:6px}
+  </style>
+</head>
+<body>
+  <header>
+    <h1 style="margin:0">Backtests</h1>
+    <input id="token" type="text" placeholder="Collez le Bearer token…" />
+    <button id="loadBtn">Charger les runs</button>
+  </header>
+
+  <div class="runs" id="runs"></div>
+
+  <script>
+    const BASE = "https://api.novastarcapital.fr";
+
+    function fmtDate(ts){
+      try{
+        const d = new Date(ts*1000);
+        return d.toISOString().replace('T',' ').slice(0,19) + "Z";
+      }catch(_){ return ts; }
+    }
+
+    async function authFetch(url, token){
+      const res = await fetch(url, { headers: { "Authorization": "Bearer " + token }});
+      if(!res.ok) throw new Error(res.status + " " + res.statusText);
+      return res;
+    }
+
+    async function loadRuns(){
+      const token = document.getElementById('token').value.trim();
+      if(!token){ alert("Renseignez le token Bearer."); return; }
+
+      const btn = document.getElementById('loadBtn');
+      btn.disabled = true;
+      const container = document.getElementById('runs');
+      container.innerHTML = "Chargement…";
+
+      try{
+        const res = await authFetch(`${BASE}/api/backtests/runs`, token);
+        const runs = await res.json();
+
+        if(!Array.isArray(runs) || runs.length === 0){
+          container.innerHTML = "<div class='card'>Aucun run trouvé.</div>";
+          btn.disabled = false;
+          return;
+        }
+
+        // construire les cartes
+        container.innerHTML = "";
+        for(const r of runs){
+          const card = document.createElement('div');
+          card.className = 'card';
+          card.innerHTML = `
+            <h3>${r.id}</h3>
+            <div class="meta">
+              <div><b>Path</b> <code>${r.path}</code></div>
+              <div><b>Fichiers</b> ${r.files_count} • <b>MTime</b> ${fmtDate(r.mtime)}</div>
+            </div>
+            <div class="row">
+              <button class="btn-summary">Résumé JSON</button>
+              <a class="btn-csv" target="_blank">Télécharger summary.csv</a>
+            </div>
+            <div class="files"></div>
+            <div class="preview"></div>
+          `;
+          container.appendChild(card);
+
+          const filesDiv = card.querySelector(".files");
+          const previewDiv = card.querySelector(".preview");
+          const btnSummary = card.querySelector(".btn-summary");
+          const linkCsv = card.querySelector(".btn-csv");
+
+          // lister fichiers
+          try{
+            const fRes = await authFetch(`${BASE}/api/backtests/runs/${encodeURIComponent(r.id)}/files`, token);
+            const files = await fRes.json();
+            filesDiv.textContent = "Fichiers: " + files.join(", ");
+
+            // si equity.png présent, l’afficher
+            if(files.includes("equity.png")){
+              // on passe le token via Authorization: impossible en <img>, donc on renvoie sur un URL signé… ici on triche:
+              // comme le PNG n’est pas protégé par header (il l’est), on propose un proxy de téléchargement
+              // => fallback: on met un bouton “Ouvrir PNG”
+              const a = document.createElement('a');
+              a.textContent = "Ouvrir equity.png";
+              a.href = `${BASE}/api/backtests/runs/${encodeURIComponent(r.id)}/download?file=equity.png`;
+              a.target = "_blank";
+              previewDiv.appendChild(a);
+            }
+          }catch(e){
+            filesDiv.textContent = "Erreur de listing fichiers: " + e.message;
+          }
+
+          // résumé JSON (affiche les 10 premières lignes)
+          btnSummary.addEventListener('click', async ()=>{
+            btnSummary.disabled = true;
+            try{
+              const sRes = await authFetch(`${BASE}/api/backtests/runs/${encodeURIComponent(r.id)}/summary?limit=10`, token);
+              const summary = await sRes.json();
+              const pre = document.createElement('pre');
+              pre.textContent = JSON.stringify(summary, null, 2);
+              card.appendChild(pre);
+            }catch(e){
+              alert("Erreur summary: "+e.message);
+            }finally{
+              btnSummary.disabled = false;
+            }
+          });
+
+          // lien CSV (ouvre dans un nouvel onglet)
+          linkCsv.href = `${BASE}/api/backtests/runs/${encodeURIComponent(r.id)}/download?file=summary.csv`;
+          linkCsv.textContent = "Télécharger summary.csv";
+        }
+      }catch(e){
+        container.innerHTML = `<div class="card">Erreur: ${e.message}</div>`;
+      }finally{
+        btn.disabled = false;
+      }
+    }
+
+    document.getElementById('loadBtn').addEventListener('click', loadRuns);
+  </script>
+</body>
+</html>

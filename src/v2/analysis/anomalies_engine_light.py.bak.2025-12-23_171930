@@ -1,0 +1,211 @@
+"""
+anomalies_engine_light.py
+
+Moteur "light" qui agrège les signaux des autres overviews
+(narrative, hype_cycle, liquidity_risk, weak_signals, discipline,
+logs, daily_feedback, etc.) et produit un anomalies_overview.json
+centralisé.
+
+Structure de sortie :
+
+{
+  "generated_at": "2025-12-02T15:00:00Z",
+  "global_flag": "ok" | "warning" | "critical",
+  "nb_anomalies": 2,
+  "nb_critical": 1,
+  "nb_warning": 1,
+  "anomalies": [
+    {
+      "id": "liquidity_risk",
+      "level": "critical",
+      "message": "Risque de liquidité élevé sur plusieurs actifs.",
+      "source": "liquidity_risk_overview.json"
+    },
+    ...
+  ]
+}
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List
+
+from src.v2.assistant.config import get_config
+from src.v2.utils.logger import get_logger
+from src.v2.utils.file_utils import load_json_file, save_json_file
+
+logger = get_logger(__name__)
+
+
+def _get_paths() -> tuple[Path, Path, Path]:
+    """
+    Récupère ROOT_DIR, DATA_DIR et le chemin de sortie pour anomalies_overview.json.
+    """
+    cfg = get_config()
+    root_dir = Path(cfg["root_dir"]).resolve()
+    data_dir = Path(cfg["data_dir"]).resolve()
+
+    analysis_dir = data_dir / "analysis"
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+
+    out_path = analysis_dir / "anomalies_overview.json"
+    return root_dir, data_dir, out_path
+
+
+def _safe_load_json(path: Path) -> Dict[str, Any]:
+    """
+    Chargement JSON robuste : renvoie {} en cas d'erreur.
+    """
+    try:
+        if not path.exists():
+            logger.debug("[anomalies_engine_light] Fichier absent: %s", path)
+            return {}
+        return load_json_file(path)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[anomalies_engine_light] Impossible de lire %s: %s", path, exc
+        )
+        return {}
+
+
+def compute_anomalies() -> Dict[str, Any]:
+    """
+    Agrège les différentes vues pour construire un overview d’anomalies.
+
+    Logique simple :
+    - On regarde le champ `global_flag` (ou `status`) de chaque overview.
+    - Si global_flag ∈ {'warning', 'degraded'} => anomaly level = warning
+    - Si global_flag ∈ {'critical', 'down'}   => anomaly level = critical
+    - On compte nb_warning / nb_critical et en déduit global_flag global.
+    """
+    root_dir, data_dir, _ = _get_paths()
+    logger.info(
+        "[anomalies_engine_light] ROOT_DIR=%s, DATA_DIR=%s", root_dir, data_dir
+    )
+
+    # Liste des fichiers d'overview à analyser
+    sources = [
+        ("narrative_overview.json", "narrative_engine"),
+        ("hype_cycle_overview.json", "hype_cycle_engine"),
+        ("liquidity_risk_overview.json", "liquidity_risk_engine"),
+        ("weak_signals_overview.json", "weak_signals_engine"),
+        ("discipline_overview.json", "discipline_engine"),
+        ("logs_overview.json", "logs_overview"),
+        ("daily_feedback.json", "daily_trading_feedback"),
+    ]
+
+    anomalies: List[Dict[str, Any]] = []
+    nb_warning = 0
+    nb_critical = 0
+
+    for filename, source_id in sources:
+        path = data_dir / "analysis" / filename
+        if not path.exists():
+            # certains fichiers peuvent ne pas exister, ce n'est pas bloquant
+            logger.debug(
+                "[anomalies_engine_light] Fichier d'overview absent (ok): %s",
+                path,
+            )
+            continue
+
+        data = _safe_load_json(path)
+        if not data:
+            # on a déjà loggé dans _safe_load_json
+            anomalies.append(
+                {
+                    "id": f"{source_id}_read_error",
+                    "level": "warning",
+                    "message": f"Impossible de lire ou parser {filename}.",
+                    "source": filename,
+                }
+            )
+            nb_warning += 1
+            continue
+
+        flag = (
+            data.get("global_flag")
+            or data.get("status")
+            or data.get("regime")
+        )
+
+        if flag is None:
+            logger.debug(
+                "[anomalies_engine_light] Aucun global_flag/status dans %s",
+                filename,
+            )
+            continue
+
+        flag_str = str(flag).lower()
+
+        if flag_str in {"critical", "down"}:
+            anomalies.append(
+                {
+                    "id": f"{source_id}_critical",
+                    "level": "critical",
+                    "message": f"Signal critique détecté dans {filename} (flag={flag_str}).",
+                    "source": filename,
+                }
+            )
+            nb_critical += 1
+        elif flag_str in {"warning", "degraded"}:
+            anomalies.append(
+                {
+                    "id": f"{source_id}_warning",
+                    "level": "warning",
+                    "message": f"Signal dégradé/avertissement dans {filename} (flag={flag_str}).",
+                    "source": filename,
+                }
+            )
+            nb_warning += 1
+        else:
+            logger.debug(
+                "[anomalies_engine_light] Flag global '%s' ignoré pour %s",
+                flag_str,
+                filename,
+            )
+
+    nb_anomalies = len(anomalies)
+
+    if nb_critical > 0:
+        global_flag = "critical"
+    elif nb_warning > 0:
+        global_flag = "warning"
+    else:
+        global_flag = "ok"
+
+    overview: Dict[str, Any] = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "global_flag": global_flag,
+        "nb_anomalies": nb_anomalies,
+        "nb_critical": nb_critical,
+        "nb_warning": nb_warning,
+        "anomalies": anomalies,
+    }
+
+    logger.info(
+        "[anomalies_engine_light] Anomalies calculées (global_flag=%s, nb=%d, critical=%d, warning=%d).",
+        global_flag,
+        nb_anomalies,
+        nb_critical,
+        nb_warning,
+    )
+    return overview
+
+
+def main() -> None:
+    """
+    Point d'entrée CLI.
+    """
+    _, _, out_path = _get_paths()
+    overview = compute_anomalies()
+    save_json_file(out_path, overview)
+    logger.info(
+        "[anomalies_engine_light] anomalies_overview.json sauvegardé (%s).",
+        out_path,
+    )
+
+
+if __name__ == "__main__":
+    main()

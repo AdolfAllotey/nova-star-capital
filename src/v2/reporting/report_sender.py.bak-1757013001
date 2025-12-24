@@ -1,0 +1,18 @@
+import os
+from datetime import datetime, timezone
+from src.v2.utils.telegram_utils import send_telegram_message
+
+# from src.v2.utils.email_utils import send_email_with_attachment  # ❌ Désactivé
+
+def send_report_via_telegram(report_path):
+    with open(report_path, "r") as f:
+        content = f.read()
+    filename = os.path.basename(report_path)
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    message = f"📝 Rapport du {date_str} — *{filename}* :\n\n```\n{content[:3900]}\n```"  # Max 4096 chars
+    send_telegram_message(message, parse_mode="Markdown")
+
+# def send_report_via_email(report_path):  # ❌ Désactivé pour le moment
+#     subject = f"Rapport quotidien du {datetime.now().strftime('%Y-%m-%d')}"
+#     body = "Veuillez trouver ci-joint le rapport quotidien généré par le bot."
+#     send_email_with_attachment(subject, body, report_path)

@@ -1,0 +1,57 @@
+import os
+import json
+from datetime import datetime, timezone, timezone
+from src.v2.utils.logger import get_logger
+from pathlib import Path
+
+logger = get_logger("cost_tracker")
+
+# Emplacement du fichier de suivi des coûts
+DATA_FOLDER = Path("src/v2/data/risk")
+DATA_FOLDER.mkdir(parents=True, exist_ok=True)
+COST_FILE = DATA_FOLDER / "monthly_costs.json"
+
+# Coûts estimés mensuels (à adapter si besoin)
+ESTIMATED_COSTS = {
+    "openai_api": 18.90,        # en euros
+    "etherscan_api": 3.25,
+    "hetzner_vps": 21.60,
+    "telegram_send": 0.85,
+    "email_service": 1.10,
+    "storage_s3": 2.50
+}
+
+def load_cost_data():
+    if COST_FILE.exists():
+        try:
+            with open(COST_FILE, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Erreur lecture {COST_FILE}: {e}")
+    return {}
+
+def save_cost_data(data):
+    try:
+        with open(COST_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+        logger.info(f"Coûts mensuels enregistrés dans {COST_FILE}")
+    except Exception as e:
+        logger.error(f"Erreur sauvegarde {COST_FILE}: {e}")
+
+def update_monthly_costs():
+    now = datetime.now()
+    month_key = now.strftime("%Y-%m")
+    data = load_cost_data()
+
+    # Calcul du total
+    total = sum(ESTIMATED_COSTS.values())
+
+    data[month_key] = {
+        **ESTIMATED_COSTS,
+        "total": round(total, 2)
+    }
+
+    save_cost_data(data)
+
+if __name__ == "__main__":
+    update_monthly_costs()

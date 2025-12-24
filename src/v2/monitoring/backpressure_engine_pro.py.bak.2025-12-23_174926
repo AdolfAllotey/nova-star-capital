@@ -1,0 +1,310 @@
+"""
+backpressure_engine_pro.py
+
+Backpressure Engine PRO – surveille la boucle quotidienne
+et ajuste un mode (normal / degraded / emergency) en fonction :
+
+- des métriques de la boucle (system_metrics.json)
+- du résumé des logs (logs_overview_light.json)
+
+Produit :
+- data/telemetry/backpressure_state.json
+- un event "backpressure.state" dans l'event bus
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from src.v2.utils.file_utils import (
+    load_json_file,
+    save_json_file,
+    get_data_dir,
+)
+from src.v2.utils.logger import get_logger
+from src.v2.core.message_bus import publish_event
+
+logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Dataclasses internes
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SystemMetrics:
+    timestamp: Optional[str] = None
+    env: Optional[str] = None
+    duration_s: float = 0.0
+    steps_total: int = 0
+    steps_ok: int = 0
+    steps_error: int = 0
+    failed_steps: Optional[List[str]] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SystemMetrics":
+        if not data:
+            return cls()
+        return cls(
+            timestamp=data.get("timestamp"),
+            env=data.get("env"),
+            duration_s=float(
+                data.get("duration_s")
+                or data.get("total_duration_sec")
+                or 0.0
+            ),
+            steps_total=int(data.get("steps_total") or 0),
+            steps_ok=int(data.get("steps_ok") or 0),
+            steps_error=int(data.get("steps_error") or 0),
+            failed_steps=data.get("failed_steps") or [],
+        )
+
+
+@dataclass
+class LogsOverview:
+    timestamp: Optional[str] = None
+    env: Optional[str] = None
+    has_errors: bool = False
+    steps_error: int = 0
+    failed_steps: Optional[List[str]] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "LogsOverview":
+        if not data:
+            return cls()
+        return cls(
+            timestamp=data.get("timestamp"),
+            env=data.get("env"),
+            has_errors=bool(data.get("has_errors", False)),
+            steps_error=int(data.get("steps_error") or 0),
+            failed_steps=data.get("failed_steps") or [],
+        )
+
+
+@dataclass
+class BackpressureState:
+    timestamp: str
+    env: str
+    mode: str  # normal / degraded / emergency
+    reasons: List[str]
+    metrics: Dict[str, Any]
+    logs: Dict[str, Any]
+    throttling_factor: float
+    safe_mode: bool
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "timestamp": self.timestamp,
+            "env": self.env,
+            "mode": self.mode,
+            "reasons": self.reasons,
+            "metrics": self.metrics,
+            "logs": self.logs,
+            "throttling_factor": self.throttling_factor,
+            "safe_mode": self.safe_mode,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Logique de calcul du backpressure
+# ---------------------------------------------------------------------------
+
+
+def compute_backpressure(
+    system_metrics: SystemMetrics,
+    logs_overview: LogsOverview,
+) -> BackpressureState:
+    """
+    Détermine le mode de backpressure en fonction :
+    - du nombre d'erreurs dans la boucle (steps_error)
+    - de la durée totale de la boucle (duration_s)
+    """
+
+    env = os.getenv("NSC_ENV", system_metrics.env or logs_overview.env or "PREPROD")
+    now_ts = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
+    reasons: List[str] = []
+    mode = "normal"
+
+    # Récupération métriques
+    nb_steps_error = max(system_metrics.steps_error, logs_overview.steps_error)
+    duration_s = system_metrics.duration_s
+
+    # Heuristiques :
+    # - any error => au moins degraded
+    # - durée > 60s => degraded
+    # - durée > 120s ou >3 erreurs => emergency
+
+    if nb_steps_error > 0:
+        mode = "degraded"
+        reasons.append(f"{nb_steps_error} étape(s) en erreur dans la boucle.")
+
+    if duration_s > 60:
+        if mode == "normal":
+            mode = "degraded"
+        reasons.append(f"Durée totale de la boucle élevée ({duration_s:.2f}s > 60s).")
+
+    if duration_s > 120 or nb_steps_error > 3:
+        mode = "emergency"
+        reasons.append(
+            f"Backpressure critique (duration={duration_s:.2f}s, steps_error={nb_steps_error})."
+        )
+
+    if logs_overview.has_errors:
+        if mode == "normal":
+            mode = "degraded"
+        reasons.append("Erreurs détectées dans les logs (has_errors=true).")
+
+    if not reasons:
+        reasons.append("Aucune anomalie détectée (mode normal).")
+
+    # Throttling factor et safe_mode
+    if mode == "normal":
+        throttling_factor = 1.0
+        safe_mode = False
+    elif mode == "degraded":
+        throttling_factor = 0.5
+        safe_mode = True
+    else:  # emergency
+        throttling_factor = 0.0
+        safe_mode = True
+
+    # IMPORTANT : on garde total_duration_sec pour compat avec l'ancien schéma
+    metrics_dict = {
+        "nb_steps_error": nb_steps_error,
+        "total_duration_sec": duration_s,
+        "steps_total": system_metrics.steps_total,
+        "steps_ok": system_metrics.steps_ok,
+    }
+
+    logs_dict = {
+        "has_errors": logs_overview.has_errors,
+        "steps_error": logs_overview.steps_error,
+        "failed_steps": logs_overview.failed_steps or [],
+    }
+
+    state = BackpressureState(
+        timestamp=now_ts,
+        env=env,
+        mode=mode,
+        reasons=reasons,
+        metrics=metrics_dict,
+        logs=logs_dict,
+        throttling_factor=throttling_factor,
+        safe_mode=safe_mode,
+    )
+
+    return state
+
+
+# ---------------------------------------------------------------------------
+# I/O helpers
+# ---------------------------------------------------------------------------
+
+
+def load_inputs(telemetry_dir: Path) -> tuple[SystemMetrics, LogsOverview]:
+    system_metrics_path = telemetry_dir / "system_metrics.json"
+    logs_overview_path = telemetry_dir / "logs_overview_light.json"
+
+    raw_system = load_json_file(system_metrics_path, default={})
+    raw_logs = load_json_file(logs_overview_path, default={})
+
+    system_metrics = SystemMetrics.from_dict(raw_system)
+    logs_overview = LogsOverview.from_dict(raw_logs)
+
+    return system_metrics, logs_overview
+
+
+def save_backpressure_state(telemetry_dir: Path, state: BackpressureState) -> Path:
+    telemetry_dir.mkdir(parents=True, exist_ok=True)
+    out_path = telemetry_dir / "backpressure_state.json"
+    save_json_file(out_path, state.to_dict())
+    logger.info(
+        "[backpressure_engine_pro] backpressure_state.json sauvegardé (%s, throttling=%.2f)",
+        state.mode,
+        state.throttling_factor,
+    )
+    return out_path
+
+
+def publish_backpressure_event(state: BackpressureState) -> None:
+    """
+    Publie un event 'backpressure.state' dans l'event bus.
+    """
+    severity = "info"
+    if state.mode == "degraded":
+        severity = "warning"
+    elif state.mode == "emergency":
+        severity = "critical"
+
+    payload = {
+        "timestamp": state.timestamp,
+        "env": state.env,
+        "mode": state.mode,
+        "throttling_factor": state.throttling_factor,
+        "safe_mode": state.safe_mode,
+        "metrics": state.metrics,
+        "logs": state.logs,
+        "reasons": state.reasons,
+    }
+
+    publish_event(
+        "backpressure.state",
+        "backpressure_engine_pro",
+        payload,
+        severity=severity,
+    )
+
+    logger.info(
+        "[backpressure_engine_pro] event backpressure.state publié (mode=%s, severity=%s)",
+        state.mode,
+        severity,
+    )
+
+
+# ---------------------------------------------------------------------------
+# main() CLI
+# ---------------------------------------------------------------------------
+
+
+def main() -> None:
+    # Normalize data_dir to Path (avoid 'str / str' TypeError)
+    if isinstance(data_dir, str):
+        data_dir = Path(data_dir)
+    """
+    Entrée CLI :
+    - lit system_metrics.json & logs_overview_light.json
+    - calcule l'état de backpressure
+    - écrit backpressure_state.json
+    - publie un event 'backpressure.state'
+    """
+    data_dir: Path = get_data_dir()  # utilise NSC_DATA_DIR si défini, sinon 'data'
+    telemetry_dir: Path = data_dir / "telemetry"
+
+    logger.info(
+        "[backpressure_engine_pro] DATA_DIR=%s, telemetry_dir=%s",
+        data_dir,
+        telemetry_dir,
+    )
+
+    system_metrics, logs_overview = load_inputs(telemetry_dir)
+    state = compute_backpressure(system_metrics, logs_overview)
+
+    logger.info(
+        "[backpressure_engine_pro] mode=%s, throttling_factor=%.2f, safe_mode=%s",
+        state.mode,
+        state.throttling_factor,
+        state.safe_mode,
+    )
+
+    save_backpressure_state(telemetry_dir, state)
+    publish_backpressure_event(state)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,44 @@
+# src/v2/analysis/sentiment.py
+import json, os, logging
+from datetime import datetime, timezone
+log = logging.getLogger(__name__)
+
+def analyze_sentiment() -> bool:
+    """
+    Stub: charge telegram_data.json / reddit_data.json si présents,
+    calcule un 'sentiment' trivial, et écrit sentiment_summary.json.
+    """
+    try:
+        base = "src/v2/data/social"
+        tg = os.path.join(base, "telegram_data.json")
+        rd = os.path.join(base, "reddit_data.json")
+
+        sources = {}
+        for p in (tg, rd):
+            if os.path.exists(p):
+                with open(p, "r", encoding="utf-8") as f:
+                    sources[os.path.basename(p)] = json.load(f)
+
+        score = 0.0
+        # Heuristique bidon: +1 si des posts existent
+        if "telegram_data.json" in sources and sources["telegram_data.json"].get("groups"):
+            score += 0.5
+        if "reddit_data.json" in sources and sources["reddit_data.json"].get("posts"):
+            score += 0.5
+
+        out_dir = "src/v2/data/analysis"
+        os.makedirs(out_dir, exist_ok=True)
+        out_file = os.path.join(out_dir, "sentiment_summary.json")
+        payload = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "score": score,
+            "explain": "Stub sentiment basé sur présence de données Telegram/Reddit."
+        }
+        with open(out_file, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+
+        log.info("🧠 Sentiment sauvegardé dans %s (score=%.2f)", out_file, score)
+        return True
+    except Exception as e:
+        log.warning("⚠️ analyze_sentiment: %s", e)
+        return False

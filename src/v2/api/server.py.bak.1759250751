@@ -1,0 +1,84 @@
+from __future__ import annotations
+
+import logging
+import os
+import platform
+import socket
+import time
+from typing import Any, Dict
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+# ---- Routers applicatifs ----
+from src.v2.api.strategy import router as strategy_router
+from src.v2.api.ohlcv import router as ohlcv_router
+
+# ---- Logger ----
+logger = logging.getLogger("server")
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+)
+
+# ---- Factory ----
+def create_app() -> FastAPI:
+    app = FastAPI(title="Nova Star Capital API", version=os.getenv("NSC_API_VERSION", "1.0.0"))
+
+    # CORS
+    origins = os.getenv("CORS_ORIGINS", "").split(",")
+    if origins and origins != [""]:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+    # Meta
+    start_time = time.time()
+
+    @app.get("/health", response_class=JSONResponse)
+    async def health() -> Dict[str, Any]:
+        return {
+            "status": "ok",
+            "version": os.getenv("NSC_API_VERSION", "1.0.0"),
+            "env": os.getenv("APP_ENV", "dev"),
+            "host": socket.gethostname(),
+            "platform": platform.platform(),
+            "python": platform.python_version(),
+            "uptime_s": round(time.time() - start_time, 2),
+        }
+
+    @app.get("/config", response_class=JSONResponse)
+    async def config() -> Dict[str, Any]:
+        return {
+            "CORS_ORIGINS": origins,
+            "OHLCV_URL": os.getenv("OHLCV_URL"),
+            "OHLCV_TIMEOUT": os.getenv("OHLCV_TIMEOUT"),
+        }
+
+    # ---- Routers ----
+    app.include_router(strategy_router, prefix="/api/strategy", tags=["strategy"])
+    app.include_router(ohlcv_router, prefix="/api/ohlcv", tags=["ohlcv"])
+
+    # Readiness endpoint
+    app.add_api_route("/ready", readiness_handler, methods=["GET"], response_class=JSONResponse)
+
+    return app
+
+# ---- Readiness handler (vérifie l'OHLCV backend) ----
+async def readiness_handler():
+    import os
+    import httpx
+    url = os.getenv("OHLCV_URL", "http://127.0.0.1:8000/api/ohlcv/ohlcv")
+    params = {"symbol": "BTCUSDT", "tf": "1h", "limit": "1", "mock": "1"}
+    try:
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
+            r = await client.get(url, params=params)
+        ok = (r.status_code == 200)
+        return JSONResponse({"ready": ok, "ohlcv_status": r.status_code})
+    except Exception as e:
+        return JSONResponse({"ready": False, "error": str(e)}, status_code=503)

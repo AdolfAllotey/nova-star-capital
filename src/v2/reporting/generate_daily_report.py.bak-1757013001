@@ -1,0 +1,53 @@
+import os
+import json
+from datetime import datetime, timezone
+from src.v2.utils.logger import get_logger
+from src.v2.utils.file_utils import load_json_file, save_json_file
+
+# Logger centralisé
+logger = get_logger("generate_daily_report")
+
+# Dossiers et fichiers
+DATA_DIR = "src/v2/data/reports"
+TRADE_SIM_FILE = os.path.join(DATA_DIR, "trade_simulation.json")
+WORST_TRADES_FILE = os.path.join(DATA_DIR, "worst_trades.json")
+WORST_TRADES_SUMMARY_FILE = os.path.join(DATA_DIR, "worst_trades_summary.json")
+AVERAGE_SENTIMENT_FILE = os.path.join(DATA_DIR, "average_sentiment.json")
+DAILY_REPORT_FILE = os.path.join(DATA_DIR, "daily_report.json")
+
+
+def generate_daily_report():
+    """
+    Génère le rapport quotidien global du bot Nova Star Capital.
+    """
+    logger.info("📊 Génération du rapport quotidien...")
+
+    # Charger les fichiers
+    trades = load_json_file(TRADE_SIM_FILE, default=[])
+    worst_trades = load_json_file(WORST_TRADES_FILE, default=[])
+    worst_trades_summary = load_json_file(WORST_TRADES_SUMMARY_FILE, default={})
+    average_sentiment = load_json_file(AVERAGE_SENTIMENT_FILE, default={})
+
+    # Gestion du cas où sentiment est une liste
+    if isinstance(average_sentiment, list):
+        logger.warning("⚠️ Format inattendu pour average_sentiment.json, conversion en dict vide.")
+        average_sentiment = {}
+
+    # Création du rapport
+    report = {
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "trade_count": len(trades),
+        "worst_trade_count": len(worst_trades),
+        "average_sentiment": average_sentiment,
+        "worst_trades_summary": worst_trades_summary
+    }
+
+    # Sauvegarde du rapport
+    save_json_file(report, DAILY_REPORT_FILE)
+    logger.info(f"✅ Rapport quotidien généré : {DAILY_REPORT_FILE}")
+
+    return report
+
+
+if __name__ == "__main__":
+    generate_daily_report()

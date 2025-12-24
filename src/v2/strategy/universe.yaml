@@ -1,0 +1,10 @@
+defaults:
+  days: 30
+  fees: 0.0004
+  slippage: 0.0002
+  sma_fast: 10
+  sma_slow: 20
+
+tasks:
+  - { symbol: BTCUSDT, tf: 1h }
+  - { symbol: ETHUSDT, tf: 1h }

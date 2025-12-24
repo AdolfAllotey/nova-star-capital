@@ -1,0 +1,11 @@
+{
+  "mode": "single",
+  "active_user": "default_user",
+  "users": {
+    "default_user": {
+      "profile": "conservateur",
+      "wallet": "0x123...",
+      "exchange": "binance"
+    }
+  }
+}

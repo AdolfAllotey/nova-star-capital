@@ -1,0 +1,2 @@
+datetime,strategy,symbol,timeframe,start,end,total_return_%,nb_trades,win_rate_%
+2025-05-06 11:52:06,shitcoin,BTC/USDT,1h,2022-01-01,2022-03-01,0,0,0

@@ -1,0 +1,44 @@
+
+import json
+import os
+from datetime import datetime, timezone
+
+CONTEXT_FILE = "data/v2/users/user_context.json"
+os.makedirs(os.path.dirname(CONTEXT_FILE), exist_ok=True)
+
+def load_context():
+    if os.path.exists(CONTEXT_FILE):
+        with open(CONTEXT_FILE, "r") as f:
+            return json.load(f)
+    return {
+        "last_access": None,
+        "performance_history": [],
+        "current_profile": "equilibre"
+    }
+
+def save_context(context):
+    with open(CONTEXT_FILE, "w") as f:
+        json.dump(context, f, indent=2)
+
+def update_context(performance=None, profile=None):
+    context = load_context()
+    context["last_access"] = datetime.now(timezone.utc).isoformat()
+
+    if performance:
+        context["performance_history"].append({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            **performance
+        })
+
+    if profile:
+        context["current_profile"] = profile
+
+    save_context(context)
+    print("✅ Contexte utilisateur mis à jour.")
+
+# Exemple d'utilisation
+if __name__ == "__main__":
+    update_context(
+        performance={"pnl": 300, "roi_pct": 2.5},
+        profile="agressif"
+    )
