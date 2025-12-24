@@ -120,3 +120,11 @@ main.py
 # Runtime configs (local only)
 ############################
 config/config.yaml
+
+############################
+# Editor / backup artifacts
+############################
+*.bak
+*.bak-*
+*.save
+*~
