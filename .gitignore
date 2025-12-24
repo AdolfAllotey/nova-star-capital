@@ -104,3 +104,9 @@ package-lock*.json
 backtester
 index.html
 group_list.txt
+
+############################
+# Local launch helpers
+############################
+launch_streamlit.command
+launch_streamlit.commandes
