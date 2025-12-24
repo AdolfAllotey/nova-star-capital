@@ -1,0 +1,6 @@
+exchange:
+  api_key: "CHANGEME"
+  api_secret: "CHANGEME"
+
+telegram:
+  telegram_bot_token: "CHANGEME"
