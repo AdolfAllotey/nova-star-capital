@@ -44,7 +44,10 @@ def _safe_load(path: Path, default: Any) -> Any:
 
 def main() -> Dict[str, Any]:
     data_dir = Path(get_data_dir())
-    env = str((data_dir / "env.txt").read_text().strip()) if (data_dir / "env.txt").exists() else "UNKNOWN"
+    env = os.getenv("NSC_ENV") \
+        or (str((data_dir / "env.txt").read_text().strip()) if (data_dir / "env.txt").exists() else None) \
+        or os.getenv("ENV") \
+        or "PREPROD"
 
     analysis_dir = data_dir / "analysis"
     telemetry_dir = data_dir / "telemetry"
