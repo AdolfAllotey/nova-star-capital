@@ -115,3 +115,8 @@ launch_streamlit.commandes
 # Legacy root entrypoints
 ############################
 main.py
+
+############################
+# Runtime configs (local only)
+############################
+config/config.yaml
