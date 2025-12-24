@@ -128,3 +128,11 @@ config/config.yaml
 *.bak-*
 *.save
 *~
+
+############################
+# Editor / backup artifacts
+############################
+*.bak
+*.bak-*
+*.save
+*~
