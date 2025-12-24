@@ -110,3 +110,8 @@ group_list.txt
 ############################
 launch_streamlit.command
 launch_streamlit.commandes
+
+############################
+# Legacy root entrypoints
+############################
+main.py
