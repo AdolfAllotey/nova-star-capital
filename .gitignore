@@ -1,71 +1,106 @@
-# =========================
-# Secrets / env
-# =========================
+############################
+# 🔒 SECRETS / ENV (NEVER COMMIT)
+############################
 .env
 .env.*
 *.env
+*.pem
+*.key
 telegram.env
 twitter.env
 reddit.env
+src/scheduler/run.env
 config.json
 
-# =========================
-# Auth sessions / tokens
-# =========================
+############################
+# 🔐 CONFIG RUNTIME (JSON)
+############################
+src/v2/config/*.json
+!src/v2/config/*.example.json
+
+############################
+# 📡 SESSIONS (Telethon / Telegram)
+############################
 *.session
-*.save
+*.session-journal
 sessions/
-anon.session
+src/social/sessions/
+src/v2/.session
 
-# =========================
-# Runtime data / archives
-# =========================
-data/
-reports/
-state/
-backups/
-backup_*/
-archive/
-preprod_archive_*/
-*.tar.gz
-*.zip
-
-# =========================
-# Logs (IMPORTANT)
-# =========================
+############################
+# 📊 LOGS / REPORTS / STATE
+############################
 logs/
-*.log
-*.log.*
-*.gz
-*.csv
-
-# Ignore known log folders inside repo
 src/logs/
 src/v2/logs/
+reports/
+src/v2/reports/
+state/
+src/state/
+src/v2/state/
+optimizer_results/
+backup_telegram/
+*.log
+*.jsonl
 
-# =========================
-# OS / IDE
-# =========================
-.DS_Store
-**/.DS_Store
-.idea/
-.vscode/
+############################
+# 🗄️ DATA / GENERATED
+############################
+data/
+charts/
+backtests_downloads/
+ohlcv.csv
 
-# =========================
-# Python
-# =========================
+############################
+# 📦 ARCHIVES / BACKUPS
+############################
+archive/
+backups/
+Archive.zip
+*.zip
+*.tar.gz
+preprod_archive_*/
+
+############################
+# 🐍 PYTHON
+############################
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
 .venv/
-venv/
 venv*/
 nsc-venv/
+venv310/
 
-# =========================
-# Node / build
-# =========================
+############################
+# 🌐 FRONTEND
+############################
 node_modules/
 dist/
 build/
+
+############################
+# 🧹 OS / EDITORS / JUNK
+############################
+.DS_Store
+.vscode/
+.idea/
+*.save
+*~
+*.swp
+*.swo
+:
+
+############################
+# 🧹 LOCAL ARTIFACTS / TEMP
+############################
+*.pages
+*.backup
+app.py.backup
+package-lock*.json
+
+############################
+# Root leftovers / legacy
+############################
+backtester
+index.html
+group_list.txt
