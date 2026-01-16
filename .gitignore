@@ -136,3 +136,17 @@ config/config.yaml
 *.bak-*
 *.save
 *~
+
+# --- NSC: junk / backups ---
+**/*.bak
+**/*.bak.*
+**/*.broken*
+**/*.swp
+**/*.swo
+
+# preprod script backups
+scripts/preprod_check.sh.bak_*
+scripts/preprod_check.sh.bak*
+
+# accidental marker files
+mode=risk_off
