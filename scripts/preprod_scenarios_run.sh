@@ -9,6 +9,16 @@ mkdir -p "$OUT_DIR"
 
 ts="$(date -u +%Y%m%d_%H%M%S)"
 out_json="$OUT_DIR/preprod_scenarios_${ts}.json"
+
+# NSC_PATCH: overall_ok_from_scenarios BEGIN
+# Force overall_ok to be AND of all scenario_ok values (source-of-truth)
+if [ -f "$out_json" ]; then
+  _all_ok="$(jq -r '[.scenarios[].scenario_ok] | all' "$out_json" 2>/dev/null || echo "false")"
+  tmp="${out_json}.tmp"
+  jq --argjson v "$_all_ok" '.overall_ok = ($v == true)' "$out_json" > "$tmp" && mv "$tmp" "$out_json"
+fi
+# NSC_PATCH: overall_ok_from_scenarios END
+
 out_md="$OUT_DIR/preprod_scenarios_${ts}.md"
 
 echo "== PREPROD SCENARIOS RUN =="
@@ -90,7 +100,18 @@ for f in "${files[@]}"; do
   fi
 
   # record
-  results="$(jq -c \
+  
+  # NSC_PATCH: compute_scen_ok_v1 BEGIN
+  # scenario_ok = preprod_check_ok AND (stress_ok is true OR null)
+  scen_ok=false
+  if [ "$ok" = "true" ]; then
+    if [ "$stress_ok" = "true" ] || [ "$stress_ok" = "null" ]; then
+      scen_ok=true
+    fi
+  fi
+  # NSC_PATCH: compute_scen_ok_v1 END
+
+results="$(jq -c \
     --arg id "$sid" \
     --arg desc "$desc" \
     --arg file "$f" \
@@ -98,13 +119,13 @@ for f in "${files[@]}"; do
     --argjson assertions "$assertions" \
     --argjson details "$details" \
     --arg stress_ok "$stress_ok" \
-    --arg scen_ok "$( [ "$scen_ok" = true ] && echo true || echo false )" \
+    --arg scen_ok "$scen_ok" \
     '. + [{
       "id": $id,
       "desc": $desc,
       "file": $file,
       "preprod_check_ok": ($ok == "true"),
-      "scenario_ok": ($scen_ok == true),
+      "scenario_ok": ($scen_ok == "true"),  # NSC_PATCH: scenario_ok_from_scen_ok_v1
       "stress_ok": (if $stress_ok == "null" then null else ($stress_ok == "true") end),
       "assertions": $assertions,
       "details": $details
