@@ -44,6 +44,52 @@ for f in "${files[@]}"; do
   desc="$(jq -r '.desc // ""' "$f")"
   echo
   echo "---- scenario: $sid ----"
+
+  # NSC_PATCH: custom_scenarios_overrides_v1 BEGIN
+  # Some scenarios need temporary JSON overrides; always restore (defense-in-depth).
+  _restore_files=()
+
+  _backup_and_write_json() {
+    # $1 = target path, $2 = json content
+    local target="$1"
+    local content="$2"
+    local bak="${target}.bak_scen_$$"
+    if [ -f "$target" ]; then
+      cp -a "$target" "$bak"
+      _restore_files+=("$target::$bak")
+    else
+      _restore_files+=("$target::__CREATED__")
+    fi
+    mkdir -p "$(dirname "$target")"
+    printf "%s\n" "$content" > "$target"
+  }
+
+  _restore_all() {
+    local item target bak
+    for item in "${_restore_files[@]}"; do
+      target="${item%%::*}"
+      bak="${item##*::}"
+      if [ "$bak" = "__CREATED__" ]; then
+        rm -f "$target" 2>/dev/null || true
+      else
+        mv -f "$bak" "$target" 2>/dev/null || true
+      fi
+    done
+    _restore_files=()
+  }
+
+  trap '_restore_all' RETURN
+
+  # Scenario-specific overrides
+  if [ "$id" = "40_killswitch_precedence" ]; then
+    _backup_and_write_json "data/trading/kill_switch.json" '{"hard_block": true, "reason": "scenario_force_killswitch"}'
+  fi
+
+  if [ "$id" = "50_correlation_gate_payload" ]; then
+    _backup_and_write_json "data/analysis/correlation_gate_state.json" '{"active": false, "reason": "scenario_payload_sanity"}'
+  fi
+  # NSC_PATCH: custom_scenarios_overrides_v1 END
+
   echo "$desc"
 
   # reset env to a known baseline for each scenario
