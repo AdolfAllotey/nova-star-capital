@@ -30,6 +30,7 @@ Heuristiques (simplifiées, version PRO mais sans carnets d'ordres réels) :
 """
 
 from __future__ import annotations
+from src.v2.utils.ohlcv_utils import ohlcv_v2_to_legacy_rows
 
 from dataclasses import dataclass, asdict
 from math import sqrt, tanh

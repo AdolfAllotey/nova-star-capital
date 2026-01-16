@@ -22,6 +22,7 @@ from typing import Dict, List, Optional, Any
 
 from src.v2.utils.logger import get_logger
 from src.v2.utils.file_utils import load_json_file, save_json_file
+from src.v2.utils.ohlcv_utils import ohlcv_v2_to_legacy_rows
 
 logger = get_logger("stress_test_engine_light")
 
@@ -157,6 +158,7 @@ def _load_current_prices() -> Dict[str, float]:
     """
     path = DATA_DIR / "market" / "ohlcv_combined.json"
     data = load_json_file(path, default={})
+    data = ohlcv_v2_to_legacy_rows(data)
     prices: Dict[str, float] = {}
 
     if not isinstance(data, dict):

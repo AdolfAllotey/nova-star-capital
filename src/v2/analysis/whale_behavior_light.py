@@ -21,6 +21,7 @@ Objectifs :
 """
 
 from __future__ import annotations
+from src.v2.utils.ohlcv_utils import ohlcv_v2_to_legacy_rows
 
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone

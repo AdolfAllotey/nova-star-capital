@@ -1,19 +1,506 @@
 from __future__ import annotations
+import datetime as dt
 
 import os
+import time
+import secrets  # NSC_CORRELATION_RUN_ID_WRITER_V1
 import math
-import datetime as dt
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.v2.utils.logger import get_logger
 from src.v2.utils.file_utils import load_json_file, save_json_file
+from src.v2.utils.ohlcv_utils import ohlcv_v2_to_legacy_rows
 from src.v2.core.message_bus import publish_event
 
 logger = get_logger(__name__)
 
+def _load_correlation_universe(data_dir: Path):
+    """
+    Lit data/market/correlation_universe.json:
+      {"symbols":["BTCUSDT","ETHUSDT",...]}
+    Retourne set(symbols_upper) ou None si absent/invalide.
+    """
+    try:
+        from src.v2.utils.file_utils import load_json_file
+        path = data_dir / "market" / "correlation_universe.json"
+        raw = load_json_file(str(path), default={}) or {}
+        if not isinstance(raw, dict):
+            return None
+        syms = raw.get("symbols")
+        if not isinstance(syms, list) or not syms:
+            return None
+        out = set()
+        for x in syms:
+            if isinstance(x, str) and x.strip():
+                out.add(x.strip().upper())
+        return out if out else None
+    except Exception:
+        return None
 
+def _matrix_to_pairs(matrix):
+    """matrix: dict[a][b]=corr -> list of {a,b,corr}, uniquement off-diagonal."""
+    if not isinstance(matrix, dict):
+        return []
+    pairs = []
+    done = set()
+    for a, row in matrix.items():
+        if not isinstance(row, dict):
+            continue
+        for b, r in row.items():
+            if a == b:
+                continue
+            if not isinstance(r, (int, float)):
+                continue
+            key = tuple(sorted((a, b)))
+            if key in done:
+                continue
+            done.add(key)
+            pairs.append({"a": a, "b": b, "corr": float(r)})
+    return pairs
+
+def _build_corr_matrix_from_ohlcv_v2(raw):
+    """
+    Construit une matrice de corrélation (Pearson) à partir de ohlcv_combined.json v2:
+      {assets:[{symbol, candles:[{close,...}, ...]}]}
+    Retour: dict[str, dict[str, float]]
+    """
+    if not isinstance(raw, dict):
+        return {}
+    assets = raw.get("assets")
+    if not isinstance(assets, list) or not assets:
+        return {}
+
+    def _get_close(c):
+        if not isinstance(c, dict):
+            return None
+        for k in ("close", "c", "Close", "close_price", "closePrice"):
+            v = c.get(k)
+            if v is not None:
+                try:
+                    return float(v)
+                except Exception:
+                    return None
+        return None
+
+    series = {}
+    for a in assets:
+        if not isinstance(a, dict):
+            continue
+        sym = a.get("symbol")
+        candles = a.get("candles")
+        if not isinstance(sym, str) or not isinstance(candles, list):
+            continue
+        closes = []
+        for c in candles:
+            v = _get_close(c)
+            if v is not None:
+                closes.append(v)
+        # il faut au moins 2 points pour corr
+        if len(closes) >= 2:
+            series[sym] = closes
+
+    syms = sorted(series.keys())
+    if len(syms) < 2:
+        return {}
+
+    def _pearson(x, y):
+        n = min(len(x), len(y))
+        if n < 2:
+            return None
+        x = x[-n:]
+        y = y[-n:]
+        mx = sum(x) / n
+        my = sum(y) / n
+        num = 0.0
+        vx = 0.0
+        vy = 0.0
+        for i in range(n):
+            dx = x[i] - mx
+            dy = y[i] - my
+            num += dx * dy
+            vx += dx * dx
+            vy += dy * dy
+        if vx <= 0.0 or vy <= 0.0:
+            return None
+        return num / ((vx ** 0.5) * (vy ** 0.5))
+
+    matrix = {}
+    for i, a in enumerate(syms):
+        matrix[a] = {}
+        for j, b in enumerate(syms):
+            if a == b:
+                matrix[a][b] = 1.0
+            elif b in matrix and a in matrix[b]:
+                matrix[a][b] = matrix[b][a]
+            else:
+                r = _pearson(series[a], series[b])
+                if r is not None:
+                    matrix[a][b] = float(r)
+
+    # Nettoyage: garder seulement les lignes non vides
+    matrix = {k: v for k, v in matrix.items() if isinstance(v, dict) and len(v) > 0}
+    return matrix
+
+def _extract_close_series_from_ohlcv_v2(raw):
+    """
+    Supporte ohlcv_combined.json v2:
+      {timestamp, env, assets:[{symbol, candles:[{close|c|...}, ...]}]}
+    Retour: dict symbol -> list[float] closes (min 2 points)
+    """
+    if not isinstance(raw, dict):
+        return {}
+    assets = raw.get("assets")
+    if not isinstance(assets, list):
+        return {}
+
+    def _get_close(c):
+        if not isinstance(c, dict):
+            return None
+        for k in ("close", "c", "Close", "close_price", "closePrice"):
+            v = c.get(k)
+            if v is not None:
+                try:
+                    return float(v)
+                except Exception:
+                    return None
+        return None
+
+    out = {}
+    for a in assets:
+        if not isinstance(a, dict):
+            continue
+        sym = a.get("symbol")
+        candles = a.get("candles")
+        if not isinstance(sym, str) or not isinstance(candles, list):
+            continue
+        closes = []
+        for c in candles:
+            v = _get_close(c)
+            if v is not None:
+                closes.append(v)
+        if len(closes) >= 2:
+            out[sym] = closes
+    return out
+
+def _count_ohlcv_symbols_v2(data_dir: Path) -> int:
+    path = data_dir / "market" / "ohlcv_combined.json"
+    try:
+        from src.v2.utils.file_utils import load_json_file
+        raw = load_json_file(str(path), default={})
+        raw = ohlcv_v2_to_legacy_rows(raw)
+    except Exception:
+        return 0
+    if not isinstance(raw, dict):
+        return 0
+    assets = raw.get("assets")
+    if isinstance(assets, list):
+        syms = []
+        for a in assets:
+            if isinstance(a, dict) and isinstance(a.get("symbol"), str):
+                syms.append(a["symbol"])
+        return len(set(syms))
+    # legacy
+    keys = [k for k in raw.keys() if k not in ("timestamp","env","meta","source","assets")]
+    return len(keys)
+
+
+def _normalize_ohlcv_combined(raw):
+    """
+    Return dict: symbol -> list[candles]
+    Supports:
+      - v2: { "assets": [ {"symbol": "...", "candles": [...]}, ... ] }
+      - legacy: { "bitcoin": [...], "ethereum": [...] }
+    """
+    if not isinstance(raw, dict):
+        return {}
+
+    # v2 format
+    assets = raw.get("assets")
+    if isinstance(assets, list):
+        out = {}
+        for a in assets:
+            if not isinstance(a, dict):
+                continue
+            sym = a.get("symbol") or a.get("id") or a.get("name")
+            if not isinstance(sym, str) or not sym.strip():
+                continue
+            sym = sym.strip()
+
+            candles = a.get("candles")
+            if candles is None:
+                candles = a.get("ohlcv")
+            if candles is None:
+                candles = a.get("data")
+
+            if isinstance(candles, list) and len(candles) > 0:
+                out[sym] = candles
+        return out
+
+    # legacy format
+    out = {}
+    for k, v in raw.items():
+        if k in ("timestamp", "env", "meta", "source", "assets"):
+            continue
+        if isinstance(k, str) and isinstance(v, list) and len(v) > 0:
+            out[k] = v
+    return out
+
+
+# Corrélation: éviter les hard-blocks sur un univers trop petit
+MIN_PAIRS_FOR_PANIC = 10
+
+
+
+
+def _nsc_build_corr_matrix_from_ohlcv(data_dir: Path, lookback: int = 120) -> dict:
+    """
+    Fallback: build a simple correlation matrix from data/market/ohlcv_combined.json.
+
+    Supported formats:
+      A) { "bitcoin":[{"close":...},...], "ethereum":[...], ... }
+      B) { "bitcoin":{"close":[...], "high":[...], "low":[...]}, ... }
+
+    Returns: {assetA:{assetB:corr,...}, ...}
+    """
+    try:
+        from src.v2.utils.file_utils import load_json_file
+
+        ohlcv_path = data_dir / "market" / "ohlcv_combined.json"
+        obj = load_json_file(str(ohlcv_path), default={}) or {}
+        obj = ohlcv_v2_to_legacy_rows(obj)
+        if not isinstance(obj, dict) or not obj:
+            return {}
+
+        series = {}
+        for asset, rows in obj.items():
+            closes = []
+
+            # Case A: list of candles
+            if isinstance(rows, list) and rows:
+                for r in rows[-lookback:]:
+                    v = r.get("close") if isinstance(r, dict) else None
+                    try:
+                        if v is None:
+                            continue
+                        closes.append(float(v))
+                    except Exception:
+                        continue
+
+            # Case B: dict with arrays (your current format)
+            elif isinstance(rows, dict):
+                c = rows.get("close")
+                if isinstance(c, list) and c:
+                    for v in c[-lookback:]:
+                        try:
+                            if v is None:
+                                continue
+                            closes.append(float(v))
+                        except Exception:
+                            continue
+
+            if len(closes) >= 10:
+                series[str(asset)] = closes
+
+        assets = sorted(series.keys())
+        if len(assets) < 2:
+            return {}
+
+        def corr(x, y):
+            n = min(len(x), len(y))
+            if n < 10:
+                return None
+            x = x[-n:]
+            y = y[-n:]
+            mx = sum(x) / n
+            my = sum(y) / n
+            num = sum((a - mx) * (b - my) for a, b in zip(x, y))
+            denx = sum((a - mx) * (a - mx) for a in x)
+            deny = sum((b - my) * (b - my) for b in y)
+            den = (denx * deny) ** 0.5
+            if den == 0:
+                return None
+            return num / den
+
+        matrix = {a: {} for a in assets}
+        for i, a in enumerate(assets):
+            matrix[a][a] = 1.0
+            for b in assets[i + 1:]:
+                c = corr(series[a], series[b])
+                if c is None:
+                    continue
+                matrix[a][b] = float(c)
+                matrix[b][a] = float(c)
+
+        return matrix
+    except Exception:
+        logger.exception("[correlation_regime_engine_pro] fallback matrix build failed")
+        return {}
+
+def _nsc_ensure_asset_correlations_file(data_dir: Path) -> dict:
+    """
+    Returns the object stored in analysis/asset_correlations.json.
+    If missing/empty, computes a fallback matrix from market/ohlcv_combined.json and saves it.
+    Format saved:
+      {"timestamp": "...Z", "source":"correlation_regime_engine_pro", "matrix": {...}}
+    """
+    from src.v2.utils.file_utils import load_json_file, save_json_file
+
+    corr_file = data_dir / "analysis" / "asset_correlations.json"  # FORCE_REBUILD_ON_MISMATCH
+    raw = load_json_file(corr_file, default={}) or {}
+    raw = ohlcv_v2_to_legacy_rows(raw)
+
+    # If already valid, return
+    if isinstance(raw, dict) and isinstance(raw.get("matrix"), dict) and raw["matrix"]:
+        return raw
+    if isinstance(raw, dict) and raw and "matrix" not in raw:
+        # accept legacy "matrix-less" dict as matrix
+        # but only if it looks like a matrix
+        any_key = next(iter(raw.keys()), None)
+        if any_key and isinstance(raw.get(any_key), dict):
+            wrapped = {
+                "timestamp": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace('+00:00','Z'),
+                "source": "correlation_regime_engine_pro",
+                "matrix": raw,
+                "pairs": _matrix_to_pairs(matrix if isinstance(matrix, dict) else {}),
+            }
+            wrapped["pairs"] = _matrix_to_pairs(wrapped.get("matrix"))
+            save_json_file(corr_file, wrapped)
+            return wrapped
+
+    # Compute fallback
+    matrix = (_compute_asset_correlation_matrix_from_ohlcv(data_dir=data_dir, lookback=120) or
+              _nsc_build_corr_matrix_from_ohlcv(data_dir=data_dir, lookback=180))
+    wrapped = {
+        "timestamp": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace('+00:00','Z'),
+        "source": "correlation_regime_engine_pro",
+        "matrix": matrix if isinstance(matrix, dict) else {},
+    }
+    wrapped["pairs"] = _matrix_to_pairs(wrapped.get("matrix"))
+    save_json_file(corr_file, wrapped)
+    return wrapped
+
+def _compute_asset_correlation_matrix_from_ohlcv(data_dir: Path, lookback: int = 120) -> dict:
+    """
+    Fallback: compute a correlation *matrix* from market/ohlcv_combined.json.
+    Expected: { "bitcoin":[{close:..},..], "ethereum":[...], ... }
+    Output: { "bitcoin": {"ethereum": 0.82, ...}, ... } (upper/lower mirrored).
+    """
+    try:
+        import math
+        from src.v2.utils.file_utils import load_json_file
+
+        ohlcv_path = data_dir / "market" / "ohlcv_combined.json"
+        ohlcv = load_json_file(str(ohlcv_path), default={}) or {}
+        ohlcv = ohlcv_v2_to_legacy_rows(ohlcv)
+        matrix = _build_corr_matrix_from_ohlcv_v2(ohlcv)
+        universe = _load_correlation_universe(data_dir)
+        if universe is not None and isinstance(matrix, dict) and matrix:
+            before_n = len(matrix)
+            # filter outer keys + inner keys (garde seulement les paires dans l'univers)
+            filtered = {}
+            for a, row in matrix.items():
+                if str(a).upper() not in universe:
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                row2 = {b: r for b, r in row.items()
+                        if str(b).upper() in universe and isinstance(r, (int, float))}
+                if row2:
+                    filtered[a] = row2
+            matrix = filtered
+            logger.info("[correlation_regime_engine_pro] universe filter applied: before=%s after=%s",
+                        before_n, len(matrix))
+        # IMPORTANT: si le parser v2 a construit une matrice non vide,
+        # on l'utilise directement (sinon le code legacy attend {sym:[...]} et retournera {}).
+        if isinstance(matrix, dict):
+            nb_pairs_v2 = sum(len(v) for v in matrix.values() if isinstance(v, dict)) // 2
+            if nb_pairs_v2 > 0:
+                return matrix
+
+        logger.info("[correlation_regime_engine_pro] fallback(ohlcv_v2) symbols=%s", (len(matrix) if isinstance(matrix, dict) else 0))
+        pairs = _matrix_to_pairs(matrix)
+        logger.info("[correlation_regime_engine_pro] fallback(ohlcv_v2) pairs=%s", (len(pairs) if isinstance(pairs, list) else 0))
+        if not isinstance(ohlcv, dict) or not ohlcv:
+            return {}
+
+        # closes per symbol
+        closes = {}
+        for sym, rows in ohlcv.items():
+            if not isinstance(rows, list) or len(rows) < 6:
+                continue
+            c = []
+            for r in rows[-lookback:]:
+                if isinstance(r, dict):
+                    v = r.get("close") if r.get("close") is not None else r.get("c")
+                    try:
+                        fv = float(v)
+                        if fv > 0:
+                            c.append(fv)
+                    except Exception:
+                        pass
+            if len(c) >= 6:
+                closes[str(sym).lower()] = c
+
+        syms = sorted(closes.keys())
+        if len(syms) < 2:
+            return {}
+
+        # log returns
+        rets = {}
+        for sym in syms:
+            c = closes[sym]
+            rr = []
+            for i in range(1, len(c)):
+                if c[i-1] > 0 and c[i] > 0:
+                    rr.append(math.log(c[i] / c[i-1]))
+            if len(rr) >= 5:
+                rets[sym] = rr
+
+        syms = sorted(rets.keys())
+        if len(syms) < 2:
+            return {}
+
+        def corr(x, y):
+            n = min(len(x), len(y))
+            if n < 5:
+                return None
+            x = x[-n:]; y = y[-n:]
+            mx = sum(x) / n; my = sum(y) / n
+            vx = sum((a - mx) ** 2 for a in x)
+            vy = sum((b - my) ** 2 for b in y)
+            if vx <= 0 or vy <= 0:
+                return None
+            cov = sum((x[i]-mx) * (y[i]-my) for i in range(n))
+            return float(cov / (vx ** 0.5 * vy ** 0.5))
+
+        matrix = {a: {} for a in syms}
+        for i in range(len(syms)):
+            for j in range(i+1, len(syms)):
+                a, b = syms[i], syms[j]
+                cval = corr(rets[a], rets[b])
+                if cval is None:
+                    continue
+                matrix[a][b] = cval
+                matrix[b][a] = cval
+
+        # keep only if we have at least one pair
+        nb_pairs = sum(len(v) for v in matrix.values()) // 2
+
+        # --- Small universe guard: no panic/risk_off if too few pairs ---
+        if nb_pairs < MIN_PAIRS_FOR_PANIC:
+            regime = 'unknown'
+            global_flag = 'caution'
+            score = 45.0
+            reasons.append(f"Universe trop petit (nb_pairs={nb_pairs} < 10) → pas de panic/risk_off.")
+        if nb_pairs <= 0:
+            return {}
+
+        return matrix
+    except Exception:
+        logger.exception("[correlation_regime_engine_pro] fallback compute matrix failed")
+        return {}
 # ---------------------------------------------------------------------------
 # Helpers locaux pour DATA_DIR et ENV
 # ---------------------------------------------------------------------------
@@ -202,18 +689,10 @@ def severity_from_flag(global_flag: str) -> str:
 
 def build_correlation_regime_state(data_dir: Path, env: str) -> Tuple[Dict[str, Any], str]:
     """
-    Construit l'état de régime de corrélation global à partir d'un fichier JSON.
-
-    Fichier attendu : data/analysis/asset_correlations.json
-
-    Deux formats possibles :
-    1) Directement la matrice :
-       { "BTC": {"ETH": 0.8, "SOL": 0.6}, ... }
-    2) Emballé :
-       { "timestamp": "...", "matrix": { ... } }
+    Construit l'état de régime de corrélation global.
+    Crée analysis/asset_correlations.json si absent via fallback ohlcv_combined.json.
     """
-    corr_file = data_dir / "analysis" / "asset_correlations.json"
-    raw = load_json_file(corr_file, default={})
+    raw = _nsc_ensure_asset_correlations_file(data_dir)
 
     if isinstance(raw, dict) and "matrix" in raw and isinstance(raw["matrix"], dict):
         matrix = raw["matrix"]
@@ -224,7 +703,7 @@ def build_correlation_regime_state(data_dir: Path, env: str) -> Tuple[Dict[str, 
     regime, global_flag, score, reasons = infer_regime_and_score(metrics)
     severity = severity_from_flag(global_flag)
 
-    now_ts = dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    now_ts = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace('+00:00','Z')
 
     state: Dict[str, Any] = {
         "timestamp": now_ts,
@@ -257,6 +736,37 @@ def build_correlation_regime_state(data_dir: Path, env: str) -> Tuple[Dict[str, 
 
     return state, severity
 
+# === NSC_MACRO_RISK_V1 ===
+def _compute_macro_risk_level(data_dir: str) -> str:
+    """
+    Read-only macro risk overlay based on:
+      - analysis/nasdaq_regime_engine.json
+      - analysis/dollar_regime_engine.json
+    Returns: "low" | "neutral" | "medium" | "high"
+    """
+    try:
+        from src.v2.utils.file_utils import load_json_file
+
+        nasdaq = load_json_file(f"{data_dir}/analysis/nasdaq_regime_engine.json", default={}) or {}
+        dollar = load_json_file(f"{data_dir}/analysis/dollar_regime_engine.json", default={}) or {}
+
+        n_reg = str(nasdaq.get("regime", "neutral")).lower()
+        d_reg = str(dollar.get("regime", "neutral")).lower()
+
+        if n_reg == "risk_off" and d_reg != "weak":
+            return "high"
+        if n_reg == "risk_off" and d_reg == "weak":
+            return "medium"
+        if n_reg == "neutral" and d_reg == "strong":
+            return "medium"
+        if n_reg == "risk_on" and d_reg == "weak":
+            return "low"
+        return "neutral"
+    except Exception:
+        return "neutral"
+# === END NSC_MACRO_RISK_V1 ===
+
+
 
 def main() -> None:
     data_dir: Path = get_data_dir()
@@ -272,6 +782,38 @@ def main() -> None:
 
     # Sauvegarde JSON
     output_path = data_dir / "analysis" / "correlation_regime_engine_pro.json"
+    # NSC_CORRELATION_RUN_ID_WRITER_V2
+    try:
+        if isinstance(state, dict):
+            state['writer'] = 'correlation_regime_engine_pro'
+            state['run_id'] = (str(os.environ.get('NSC_RUN_ID') or '').strip() or f"anon-{secrets.token_hex(8)}")
+    except Exception:
+        logger.exception('[correlation_regime_engine_pro] failed to attach writer/run_id')
+
+    # NSC_CORRELATION_CANONICAL_OUTPUT_V2
+    try:
+        _p = output_path
+        _canon = Path(str(_p)).with_name('correlation_regime.json')
+        save_json_file(str(_canon), state)
+    except Exception:
+        logger.exception('[correlation_regime_engine_pro] failed to write canonical correlation_regime.json')
+
+    # === NSC_MACRO_RISK_ATTACH_V1 ===
+    try:
+        state['macro_risk_level'] = _compute_macro_risk_level(str(data_dir))
+    except Exception:
+        logger.exception('[correlation_regime_engine_pro] failed to attach macro_risk_level')
+        state['macro_risk_level'] = 'neutral'
+    # === END NSC_MACRO_RISK_ATTACH_V1 ===
+    # --- schema normalization (backward compat) ---
+    if isinstance(state, dict):
+        _m = state.get('metrics') if isinstance(state.get('metrics'), dict) else {}
+        # expose common metrics at top-level for easier queries
+        state.setdefault('nb_pairs', _m.get('nb_pairs'))
+        state.setdefault('avg_abs_corr', _m.get('avg_abs_corr'))
+        state.setdefault('writer', 'correlation_regime_engine_pro')
+        state.setdefault('schema_version', 1)
+    # --- end schema normalization ---
     save_json_file(output_path, state)
     logger.info(
         "[correlation_regime_engine_pro] correlation_regime_engine_pro.json sauvegardé "

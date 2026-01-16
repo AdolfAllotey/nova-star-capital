@@ -132,6 +132,11 @@ def _build_steps() -> List[Dict[str, Any]]:
     steps += [
         {"name": "market_regime_detector", "module": "src.v2.analysis.market_regime_detector", "func": "main"},
         {"name": "market_conditions_engine_pro", "module": "src.v2.analysis.market_conditions_engine_pro", "func": "main"},
+
+        # --- MACRO / CROSS-ASSET ---
+        {"name": "nasdaq_regime_engine", "module": "src.v2.analysis.nasdaq_regime_engine", "func": "main"},
+        {"name": "dollar_regime_engine", "module": "src.v2.analysis.dollar_regime_engine", "func": "main"},
+
         {"name": "signal_quality_engine_pro", "module": "src.v2.analysis.signal_quality_engine_pro", "func": "main"},
         {"name": "meta_score_engine_pro", "module": "src.v2.analysis.meta_score_engine_pro", "func": "main"},
     ]
@@ -209,6 +214,23 @@ async def main_async() -> None:
     env = _get_env()
     data_dir = _get_data_dir()
     telemetry_dir = os.path.join(data_dir, "telemetry")
+    # PREWRITE_TELEMETRY_LOGS_OVERVIEW_LIGHT
+    # Écrit un stub dès le début pour éviter le warning backpressure (fichier absent)
+    try:
+        save_json_file(os.path.join(telemetry_dir, "logs_overview_light.json"), {
+            "timestamp": _now_utc_iso(),
+            "env": env,
+            "has_errors": False,
+            "steps_total": 0,
+            "steps_ok": 0,
+            "steps_error": 0,
+            "failed_steps": [],
+            "steps": {},
+            "note": "prewrite_stub",
+        })
+    except Exception:
+        pass
+
     analysis_dir = os.path.join(data_dir, "analysis")
     state_dir = os.path.join(data_dir, "state")
 
@@ -314,6 +336,7 @@ async def main_async() -> None:
         "steps": step_results,
     }
     save_json_file(os.path.join(analysis_dir, "logs_overview_light.json"), logs_overview)
+    save_json_file(os.path.join(telemetry_dir, "logs_overview_light.json"), logs_overview)
 
     if steps_error > 0:
         logger.warning(

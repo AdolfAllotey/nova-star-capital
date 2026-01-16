@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections import Counter
 
 def is_dry_run_enabled() -> bool:
     v = (os.getenv("NSC_DRY_RUN") or "").strip().lower()
@@ -11,12 +12,253 @@ def is_dry_run_enabled() -> bool:
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Tuple, Optional
 
-from src.v2.utils.file_utils import get_data_dir, load_json_file, save_json_file
+from src.v2.utils.file_utils import get_data_dir, load_json_file, save_json_file, load_effective_execution_plan
+from src.v2.utils.ohlcv_utils import ohlcv_v2_to_legacy_rows
 from src.v2.utils.logger import get_logger
 
 logger = get_logger("position_manager")
 
 
+
+
+
+from src.v2.governance.kill_switch import load_kill_switch
+
+def _load_hf_policy(data_dir: str):
+    """
+    Lit data/analysis/risk_engine_pro.json et renvoie policy dict.
+    Fallback neutre si absent/invalide.
+    """
+    try:
+        from pathlib import Path
+        from src.v2.utils.file_utils import load_json_file
+        path = str(Path(data_dir) / "analysis" / "risk_engine_pro.json")
+        raw = load_json_file(path, default={}) or {}
+        if not isinstance(raw, dict):
+            return {"position_size_mult": 1.0, "max_open_positions": None, "min_meta_score": None}
+
+        pol = raw.get("policy") or {}
+        if not isinstance(pol, dict):
+            pol = {}
+
+        def _f(x, d):
+            try:
+                return float(x)
+            except Exception:
+                return d
+
+        def _i(x):
+            try:
+                return int(x)
+            except Exception:
+                return None
+
+        mpos = pol.get("max_open_positions")
+        mpos = _i(mpos) if mpos is not None else None
+
+        mmeta = pol.get("min_meta_score")
+        mmeta = _f(mmeta, None) if mmeta is not None else None
+
+        return {
+            "position_size_mult": _f(pol.get("position_size_mult"), 1.0),
+            "max_open_positions": mpos,
+            "min_meta_score": mmeta,
+        }
+    except Exception:
+        # neutre
+        return {"position_size_mult": 1.0, "max_open_positions": None, "min_meta_score": None}
+
+def _nsc_ohlcv_v2_to_legacy_rows(raw, max_points: int = 260):
+    """
+    Convertit ohlcv_combined.json v2:
+      {timestamp, env, assets:[{symbol, candles:[{open,high,low,close,volume,ts}, ...]}]}
+    -> format legacy:
+      { "BTCUSDT":[{"open":..,"high":..,"low":..,"close":..,"volume":..,"ts":..}, ...], ... }
+    """
+    if not isinstance(raw, dict):
+        return raw
+
+    assets = raw.get("assets")
+    if not isinstance(assets, list):
+        return raw
+
+    def _f(x):
+        try:
+            return float(x)
+        except Exception:
+            return None
+
+    def _i(x):
+        try:
+            return int(x)
+        except Exception:
+            return None
+
+    out = {}
+    for a in assets:
+        if not isinstance(a, dict):
+            continue
+        sym = a.get("symbol")
+        candles = a.get("candles")
+        if not isinstance(sym, str) or not sym.strip() or not isinstance(candles, list):
+            continue
+
+        rows = []
+        for c in candles[-max_points:]:
+            if not isinstance(c, dict):
+                continue
+
+            row = {
+                "ts": _i(c.get("ts")) or _i(c.get("t")),
+                "open": _f(c.get("open") if c.get("open") is not None else c.get("o")),
+                "high": _f(c.get("high") if c.get("high") is not None else c.get("h")),
+                "low":  _f(c.get("low")  if c.get("low")  is not None else c.get("l")),
+                "close": _f(c.get("close") if c.get("close") is not None else c.get("c")),
+                "volume": _f(c.get("volume") if c.get("volume") is not None else c.get("v")),
+                "source": c.get("source"),
+            }
+
+            # garde seulement si close exploitable
+            if isinstance(row["close"], float) and row["close"] > 0:
+                rows.append(row)
+
+        if rows:
+            out[sym.strip().upper()] = rows
+
+    # Si on a réussi à convertir, on renvoie le legacy dict, sinon raw inchangé
+    return out if out else raw
+
+
+    def _f(x):
+        try:
+            return float(x)
+        except Exception:
+            return None
+
+    out = {}
+    for a in assets:
+        if not isinstance(a, dict):
+            continue
+        sym = a.get("symbol")
+        candles = a.get("candles")
+        if not isinstance(sym, str) or not isinstance(candles, list):
+            continue
+
+        rows = []
+        for c in candles[-max_points:]:
+            if not isinstance(c, dict):
+                continue
+            close = _f(c.get("close") if c.get("close") is not None else c.get("c"))
+            if close is None or close <= 0:
+                continue
+            rows.append({"ts": c.get("ts"), "close": close})
+
+        if len(rows) >= 6:
+            out[sym] = rows
+
+    return out if out else raw
+
+# --- Execution plan gate (institutional) ---
+def _load_execution_plan(data_dir: str):
+    try:
+        from pathlib import Path
+        from src.v2.utils.file_utils import load_json_file
+        p = Path(data_dir) / "trading" / "execution_plan.json"
+        obj = load_json_file(str(p), default={})
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        logger.exception("[position_manager] Impossible de charger execution_plan.json")
+        return {}
+
+
+def _is_final_safe_plan(plan: dict) -> tuple[bool, str]:
+    # Must be written by execution_engine_pro with governance block
+    if not isinstance(plan, dict) or not plan:
+        return False, "plan_missing"
+    # NSC_AUTOCLEARED_BYPASS_WRITER_GATE_V4_MOVED
+    # If trading_kernel wrote an autocleared stub, treat it as a normal empty plan (not a gate error).
+    try:
+        _st0 = str((plan or {}).get('status') or '')
+        _note0 = str((plan or {}).get('note') or '')
+    except Exception:
+        _st0, _note0 = '', ''
+    if _st0 == 'cleared' or _note0.startswith('autocleared_') or _note0 == 'autocleared_blocked_plan':
+        return False, 'empty'
+
+    # HARD BLOCK (single source of truth + defensive fallbacks)
+    try:
+        ks_plan = plan.get("kill_switch")
+        if isinstance(ks_plan, dict) and bool(ks_plan.get("hard_block", False)):
+            return False, "hard_block_true"
+        rs = plan.get("reasons") or []
+        if isinstance(rs, list) and any(str(r) == "kill_switch:hard_block" for r in rs):
+            return False, "hard_block_true"
+    except Exception:
+        pass
+
+    try:
+        ks_file = load_kill_switch()
+        if bool(getattr(ks_file, "hard_block", False)):
+            return False, "hard_block_true"
+    except Exception:
+        pass
+    
+    if plan.get("writer") != "execution_engine_pro":
+        _dry = str(__import__("os").environ.get("NSC_DRY_RUN","0")).strip().lower() in ("1","true","yes")
+        if _dry:
+            return True, "dry_run_bypass_writer_gate"
+        return False, "writer_not_execution_engine_pro"
+    status = str(plan.get("status") or "").strip().lower()
+    # En préprod, on accepte les plans "soft_veto_*" pour simuler la gestion des positions.
+    allowed_status = {"ok", "soft_veto_caution", "soft_veto_risk_off"}
+    if status not in allowed_status:
+        return False, "status_not_allowed"
+    gov = plan.get("governance")
+    if not isinstance(gov, dict) or gov.get("source") != "execution_engine_pro":
+        return False, "governance_missing_or_wrong_source"
+    if gov.get("hard_block") is True:
+        return False, "hard_block_true"
+    if not plan.get("run_id"):
+        return False, "run_id_missing"
+    gov_run_id = gov.get("run_id")
+    if gov_run_id is None or str(gov_run_id) != str(plan.get("run_id")):
+        return False, "governance_run_id_mismatch"
+    gov_gen = gov.get("generated_at")
+    if gov_gen is None or str(gov_gen) != str(plan.get("generated_at")):
+        return False, "governance_generated_at_mismatch"
+    return True, "ok"
+
+
+
+
+
+
+def _pm_state_path(data_dir: str) -> str:
+    from pathlib import Path
+    return str(Path(data_dir) / "trading" / "position_manager_state.json")
+
+
+def _load_pm_state(data_dir: str) -> dict:
+    try:
+        from src.v2.utils.file_utils import load_json_file
+        return load_json_file(_pm_state_path(data_dir), default={}) or {}
+    except Exception:
+        logger.exception("[position_manager] Impossible de charger position_manager_state.json")
+        return {}
+
+
+def _save_pm_state(data_dir: str, obj: dict) -> None:
+    try:
+        from src.v2.utils.file_utils import save_json_file
+        save_json_file(_pm_state_path(data_dir), obj)
+    except Exception:
+        logger.exception("[position_manager] Impossible de sauvegarder position_manager_state.json")
+
+    try:
+        from src.v2.utils.file_utils import save_json_file
+        save_json_file(_pm_state_path(data_dir), obj)
+    except Exception:
+        logger.exception("[position_manager] Impossible de sauvegarder position_manager_state.json")
 # ============================================================================
 # Helpers OHLCV / ATR
 # ============================================================================
@@ -32,48 +274,107 @@ def _compute_atr_from_bars(
     if not bars:
         return None, None
 
-    bars = bars[-period:]
-    if len(bars) < 2:
-        last_close = bars[-1].get("close")
-        if last_close is None:
-            return None, None
-        high = bars[-1].get("high")
-        low = bars[-1].get("low")
-        if high is None or low is None:
-            return float(last_close), None
-        return float(last_close), float(high) - float(low)
 
-    trs: List[float] = []
-    prev_close: Optional[float] = None
 
-    for i, bar in enumerate(bars):
-        high = bar.get("high")
-        low = bar.get("low")
-        close = bar.get("close")
-        if high is None or low is None or close is None:
-            continue
+def _safe_float(x):
+    try:
+        return float(x)
+    except Exception:
+        return None
 
-        high = float(high)
-        low = float(low)
-        close = float(close)
+def _apply_hf_policy(items, policy, logger, context="items"):
+    """
+    HF enforcement:
+      - min_meta_score: drop low quality (sur meta_score/meta_score_pro/score/final_score)
+      - max_open_positions: keep top-N (by score)
+      - position_size_mult: scale sizing fields (notional_eur/target_notional_eur/capital_per_trade_eur/size/amount)
+    """
+    if not isinstance(items, list) or not items:
+        return items
+    if not isinstance(policy, dict):
+        return items
 
-        if i == 0 or prev_close is None:
-            tr = high - low
-        else:
-            tr = max(
-                high - low,
-                abs(high - prev_close),
-                abs(low - prev_close),
-            )
-        trs.append(tr)
-        prev_close = close
+    def _score(d):
+        if not isinstance(d, dict):
+            return None
+        # IMPORTANT: sized_signals utilise meta_score_pro
+        for k in ("meta_score", "meta_score_pro", "final_score", "score", "risk_score"):
+            v = d.get(k)
+            try:
+                if v is None:
+                    continue
+                return float(v)
+            except Exception:
+                continue
+        return None
 
-    if not trs or prev_close is None:
-        return None, None
+    def _scale_field(d, k, mult):
+        try:
+            if k in d and d[k] is not None:
+                d[k] = float(d[k]) * float(mult)
+        except Exception:
+            pass
 
-    atr = sum(trs) / len(trs)
-    return prev_close, atr
+    min_meta = policy.get("min_meta_score", None)
+    max_pos  = policy.get("max_open_positions", None)
+    mult     = policy.get("position_size_mult", 1.0)
 
+    # Normalize
+    try:
+        mult = float(mult)
+    except Exception:
+        mult = 1.0
+
+    # 1) Filter by min_meta_score ONLY if score exists
+    kept = items
+    if min_meta is not None:
+        try:
+            min_meta_f = float(min_meta)
+        except Exception:
+            min_meta_f = None
+        if min_meta_f is not None:
+            scored = [(it, _score(it)) for it in items]
+            # keep items with score >= threshold; if score missing => keep (do not punish unknown)
+            tmp = [it for (it, sc) in scored if (sc is None) or (sc >= min_meta_f)]
+            if logger:
+                logger.info("[position_manager] [HF] meta filter (%s): kept=%d/%d min_meta=%.2f",
+                            context, len(tmp), len(items), min_meta_f)
+            kept = tmp
+
+            # HF fallback: si on a tout jeté, on garde quand même le top-1/ top-N (quand score dispo)
+            if not kept:
+                scored2 = [(it, _score(it)) for it in items if _score(it) is not None]
+                scored2.sort(key=lambda t: t[1], reverse=True)
+                # garde au minimum 1 élément, sinon rien
+                fallback_n = 1
+                kept = [it for (it, sc) in scored2[:fallback_n]]
+                if logger:
+                    logger.warning("[position_manager] [HF] meta filter (%s): all dropped -> fallback keep top=%d", context, len(kept))
+
+    # 2) Cap max_open_positions (top-N by score, unknown scores go last)
+    if max_pos is not None:
+        try:
+            n = int(max_pos)
+        except Exception:
+            n = None
+        if n is not None and n >= 0 and len(kept) > n:
+            scored = [(it, _score(it)) for it in kept]
+            scored.sort(key=lambda t: (t[1] is not None, t[1] if t[1] is not None else -1e9), reverse=True)
+            kept = [it for (it, sc) in scored[:n]]
+            if logger:
+                logger.info("[position_manager] [HF] cap (%s): max_open_positions=%d -> n=%d", context, n, len(kept))
+
+    # 3) Scale sizing fields
+    if mult != 1.0 and mult >= 0.0:
+        for it in kept:
+            if not isinstance(it, dict):
+                continue
+            for k in ("notional_eur", "target_notional_eur", "capital_per_trade_eur", "size", "amount"):
+                _scale_field(it, k, mult)
+        if logger:
+            logger.info("[position_manager] [HF] sizing mult (%s): position_size_mult=%.3f", context, mult)
+
+    return kept
 
 def get_last_close_and_atr(
     ohlcv_symbol: Any,
@@ -137,6 +438,61 @@ def load_exit_events(data_dir: str) -> List[Dict[str, Any]]:
     return [e for e in events if isinstance(e, dict)]
 
 
+
+
+def _load_simulated_fills_prices(data_dir: str) -> dict:
+    """
+    Retourne dict symbol_norm -> last_fill_price à partir de data/trading/simulated_fills.json
+    (best-effort sur clés: fill_price/price/executed_price/avg_price/close).
+    """
+    try:
+        from src.v2.utils.file_utils import load_json_file
+        path = _path(data_dir, "trading", "simulated_fills.json")
+        fills = load_json_file(path, default=[]) or []
+        out = {}
+        if isinstance(fills, list):
+            for f in fills:
+                if not isinstance(f, dict):
+                    continue
+                sym = f.get("symbol") or f.get("token") or f.get("asset")
+                sn = _normalize_symbol(sym)
+                if not sn:
+                    continue
+                px = f.get("fill_price")
+                if px is None: px = f.get("price")
+                if px is None: px = f.get("executed_price")
+                if px is None: px = f.get("avg_price")
+                if px is None: px = f.get("close")
+                try:
+                    px = float(px) if px is not None else None
+                except Exception:
+                    px = None
+                if px and px > 0:
+                    out[sn] = px  # last wins
+        # NSC_PATCH_SIMPRICES_NORMKEYS_V2
+        # Add normalized keys so lookups work with symbol_norm (e.g., dotusdt/arbusdt).
+        try:
+            _norm_fn = globals().get('_normalize_symbol')
+            if callable(_norm_fn):
+                for _k, _v in list(sim_prices.items()):
+                    _nk = _norm_fn(_k)
+                    if _nk and _nk not in sim_prices:
+                        sim_prices[_nk] = _v
+            else:
+                import re as _re
+                def _fallback_norm(s):
+                    return _re.sub(r'[^a-z0-9]', '', str(s).lower())
+                for _k, _v in list(sim_prices.items()):
+                    _nk = _fallback_norm(_k)
+                    if _nk and _nk not in sim_prices:
+                        sim_prices[_nk] = _v
+        except Exception:
+            pass
+        return out
+    except Exception:
+        logger.exception("[position_manager] Impossible de charger simulated_fills.json pour fallback prix")
+        return {}
+
 def load_execution_plan_orders(data_dir: str) -> List[Dict[str, Any]]:
     """
     execution_plan.json peut être :
@@ -144,7 +500,8 @@ def load_execution_plan_orders(data_dir: str) -> List[Dict[str, Any]]:
       - list [...]
     Retourne orders (liste de dicts).
     """
-    path = _path(data_dir, "trading", "execution_plan.json")
+    plan, plan_path = load_effective_execution_plan(data_dir, default={})
+    # plan_path available for logs if needed
     data = load_json_file(path, default=None)
     orders: List[Dict[str, Any]] = []
 
@@ -179,6 +536,17 @@ def load_signals(data_dir: str) -> List[Dict[str, Any]]:
         _path(data_dir, "trading", "signals.json"),
     ]
 
+    # ─────────────────────────────────────────────
+    # HF POLICY ENFORCEMENT (candidates)
+    # ─────────────────────────────────────────────
+    try:
+        hf_policy = _load_hf_policy(data_dir)
+        if isinstance(candidates, list):
+            candidates = _apply_hf_policy(candidates, hf_policy, logger, context="candidates")
+            logger.info("[position_manager] [HF] applied to candidates: n=%d", len(candidates))
+    except Exception as exc:
+        logger.exception("[position_manager] HF policy apply failed on candidates (ignored): %s", exc)
+
     chosen: Optional[str] = None
     signals: List[Dict[str, Any]] = []
 
@@ -209,8 +577,10 @@ def load_signals(data_dir: str) -> List[Dict[str, Any]]:
 
     signals = [s for s in signals if isinstance(s, dict)]
 
-    # Guard anti-simulation: filtrer les fills simulés dès le chargement
-    if signals:
+    # Guard anti-simulation:
+    # - PREPROD: on autorise les signaux simulés (paper trading)
+    # - PROD: on filtre dès le chargement
+    if signals and os.environ.get("NSC_ENV","").strip().upper() == "PROD":
         before = len(signals)
         filtered = []
         skipped = 0
@@ -222,7 +592,7 @@ def load_signals(data_dir: str) -> List[Dict[str, Any]]:
             filtered.append(s)
         signals = filtered
         if skipped:
-            logger.warning("[position_manager] Skipped %d simulated-fill signals (load_signals).", skipped)
+            logger.warning("[position_manager] Skipped %d simulated-fill signals (load_signals, PROD).", skipped)
             logger.info("[position_manager] Signals: %d -> %d after simulated-fill filter.", before, len(signals))
 
     if chosen and signals:
@@ -263,6 +633,8 @@ def load_ohlcv(data_dir: str) -> Dict[str, Any]:
     path = _path(data_dir, "market", "ohlcv_combined.json")
     ohlcv = load_json_file(path, default={})
     if not isinstance(ohlcv, dict):
+        ohlcv = _nsc_ohlcv_v2_to_legacy_rows(ohlcv)
+
         logger.warning("[position_manager] ohlcv_combined.json inattendu (%s) -> {}", type(ohlcv))
         return {}
     return ohlcv
@@ -303,15 +675,16 @@ def _get_price_and_atr_for_symbol(
     if key is None:
         return None, None
 
-    candidates = {key}
     if key.endswith("usdt"):
+        # NSC_FIX_CANDIDATES_SET_V1
+        candidates = set()
         candidates.add(key.replace("usdt", ""))
     if key.endswith("-usd"):
         candidates.add(key.replace("-usd", ""))
     if key.endswith("/usd"):
         candidates.add(key.replace("/usd", ""))
 
-    for k in candidates:
+    for k in (ohlcv_all.keys() if isinstance(ohlcv_all, dict) else []):
         if k in ohlcv_all:
             return get_last_close_and_atr(ohlcv_all[k])
 
@@ -460,6 +833,7 @@ def update_positions(
 
         # TP2
         if (not tp2_done) and perf >= PARTIAL_LEVELS[1] and remaining_size > 0:
+            pass  # auto-fix empty if
             # ratio appliqué sur le restant (après TP1) pour approx 30% initial
             denom = max(1e-9, 1.0 - PARTIAL_RATIOS[0])
             exit_size = remaining_size * (PARTIAL_RATIOS[1] / denom)
@@ -549,11 +923,37 @@ def update_positions(
     # ----------------------------------------------------------------------
     # 2) Ouverture nouvelles positions
     # ----------------------------------------------------------------------
-    for sig in signals:
+    skip_counts = Counter()
+    sim_prices = _load_simulated_fills_prices(data_dir)
+        # Use HF-filtered sized_signals as entry candidates (ex: n=2)
+    entry_candidates = locals().get('sized_signals')
+    if not isinstance(entry_candidates, list) or not entry_candidates:
+        entry_candidates = signals
+    # ------------------------------------------------------------
+    # NSC_PATCH_OPEN_FROM_HF_CANDIDATES_V1
+    # Prefer HF-capped sized signals (n=2) when available
+    # ------------------------------------------------------------
+    hf_path = os.path.join(data_dir, 'trading', 'sized_signals_hf.json')
+    entry_candidates = load_json_file(hf_path, default=None)
+    if not isinstance(entry_candidates, list) or not entry_candidates:
+        entry_candidates = locals().get('sized_signals')
+    if not isinstance(entry_candidates, list) or not entry_candidates:
+        entry_candidates = signals
+    for sig in entry_candidates:
         src = str(sig.get("source") or "").lower().strip()
-        if src == "derived_from_simulated_fills":
-            continue
+        is_simulated = (src == "derived_from_simulated_fills")
 
+        # En PREPROD, on autorise l'ouverture "paper" même si le signal est simulé.
+        # En PROD, on bloque strictement.
+        if is_simulated and os.environ.get("NSC_ENV", "").strip().upper() == "PROD":
+
+            skip_counts["simulated_source_prod"] += 1
+
+            _sym0 = sig.get("symbol") or sig.get("token") or sig.get("asset")
+
+            logger.info("[position_manager] skip_open:simulated_source_prod symbol=%s", _sym0)
+
+            continue
         symbol_raw = sig.get("symbol") or sig.get("token") or sig.get("asset")
         symbol_norm = _normalize_symbol(symbol_raw)
         if not symbol_norm:
@@ -573,18 +973,95 @@ def update_positions(
         soft_veto = bool(flags.get("soft_veto", False))
 
         if hard_veto or risk_flag == "danger":
+            skip_counts["hard_veto_or_danger"] += 1
             continue
 
         # Entry price
-        entry_price = sig.get("entry_price") or sig.get("price")
+        entry_price = sig.get('entry_price') or sig.get('price') or sig.get('fill_price')
+        if entry_price is None:
+            # Prefer simulated_fills price when available (PREPROD / paper flow)
+            sp = sim_prices.get(symbol_norm)
+            if sp is not None:
+                try:
+                    spv = float(sp)
+                except Exception:
+                    spv = None
+                if spv is not None and spv > 0:
+                    entry_price = spv
+        
         if entry_price is None:
             last_close, _ = _get_price_and_atr_for_symbol(ohlcv_all, str(symbol_raw))
             if last_close is None:
+                skip_counts['no_price_no_ohlcv'] += 1
                 continue
             entry_price = last_close
+        
+        execution_mode = str(sig.get("execution_mode") or "").upper()
 
+
+        executable = bool(sig.get("executable", True))
+
+
+        blocked_by = sig.get("blocked_by") or []
+
+
+        is_simulated_intent = ("SIMULATED" in execution_mode) or (not executable) or any("soft_veto" in str(x) for x in blocked_by)
+
+
+
+        if entry_price is None and is_simulated_intent:
+
+
+            try:
+
+
+                sp = sim_prices.get(symbol_norm)
+
+
+            except Exception:
+
+
+                sp = None
+
+
+            if sp is not None:
+
+
+                entry_price = sp
+
+
+
+        if entry_price is None:
+
+
+            last_close, _ = _get_price_and_atr_for_symbol(ohlcv_all, str(symbol_raw))
+
+
+            if last_close is None:
+
+
+                skip_counts["no_price_no_ohlcv"] += 1
+
+
+                continue
+
+
+            entry_price = last_close
+        if entry_price is None:
+            # PREPROD paper fallback: utilise le dernier prix simulé si dispo
+            sn = _normalize_symbol(symbol_raw)
+            env = os.environ.get("NSC_ENV","").strip().upper()
+            if env != "PROD" and sn and sn in sim_prices:
+                entry_price = sim_prices.get(sn)
+            else:
+                last_close, _ = _get_price_and_atr_for_symbol(ohlcv_all, str(symbol_raw))
+                if last_close is None:
+                    skip_counts["no_price_no_ohlcv"] += 1
+                    continue
+                entry_price = last_close
         entry_price_f = float(entry_price)
         if entry_price_f <= 0:
+            skip_counts["bad_entry_price"] += 1
             continue
 
         # Sizing: notional_eur prioritaire, sinon size/amount * multiplier
@@ -605,6 +1082,7 @@ def update_positions(
             size = base_size * max(0.0, size_multiplier)
 
         if size <= 0:
+            skip_counts["size_le_0"] += 1
             continue
 
         pos = {
@@ -618,7 +1096,7 @@ def update_positions(
             "size_multiplier": float(size_multiplier),
             "soft_veto": soft_veto,
             "hard_veto": hard_veto,
-            "source": sig.get("source"),
+            "source": (sig.get("source") or src or "unknown"),
             "strategy": sig.get("strategy"),
             "meta_score": sig.get("meta_score"),
             "notional_eur": notional_eur,
@@ -626,17 +1104,33 @@ def update_positions(
             "tp2_done": False,
             "trailing_active": False,
             "realized_pnl": 0.0,
+            "paper": bool(is_simulated),
+            "execution_mode": "SIMULATED_ONLY" if is_simulated else "LIVE",
         }
 
         positions.append(pos)
         active_by_symbol[symbol_norm] = pos
         new_positions += 1
+    if skip_counts:
+        logger.info("[position_manager] skip_counts_summary=%s", dict(skip_counts))
+
 
     # Dédup final + save
     positions = _dedup_positions_keep_latest(positions)
 
     open_pos_path = _path(data_dir, "trading", "open_positions.json")
     exit_events_path = _path(data_dir, "trading", "exit_events.json")
+
+    # NSC_PATCH: governance_hard_block_gate BEGIN
+    try:
+        gov = load_json_file(_path(data_dir, "analysis", "governance_engine_pro.json"), default={})
+        if isinstance(gov, dict) and bool(gov.get("hard_block")):
+            rs = gov.get("reasons") if isinstance(gov.get("reasons"), list) else []
+            logger.warning("[position_manager] HARD BLOCK active => skip writes open_positions/exit_events. reasons=%s", rs)
+            return
+    except Exception:
+        logger.exception("[position_manager] governance hard block gate failed (continuing)")
+    # NSC_PATCH: governance_hard_block_gate END
 
     save_json_file(open_pos_path, positions)
     nb_active = len([p for p in positions if float(p.get("remaining_size", p.get("size", 0.0)) or 0.0) > 0 and not p.get("closed", False)])
@@ -655,12 +1149,90 @@ def update_positions(
 def main() -> None:
     data_dir = get_data_dir()
     logger.info("[position_manager] DATA_DIR=%s", data_dir)
+    plan = _load_execution_plan(data_dir)
+    ok, reason = _is_final_safe_plan(plan)
+    if not ok:
+        pass  # auto-fix empty if
+        # NSC_PATCH: position_manager_gate_reasons
+        # Enrich Gate: skip logs with plan.reasons + governance reasons
+        _top_reasons = None
+        _gov_reasons = None
+        try:
+            _top_reasons = plan.get('reasons') if isinstance(plan, dict) else None
+            _gov = plan.get('governance') if isinstance(plan, dict) else None
+            if isinstance(_gov, dict):
+                _gov_reasons = _gov.get('kill_switch_reasons') or _gov.get('reasons')
+        except Exception:
+            pass
+        logger.warning("[position_manager] Gate: skip (reason=%s) writer=%s status=%s gov_source=%s top_reasons=%s gov_reasons=%s", reason, plan.get("writer"), plan.get("status"), (plan.get("governance") or {}).get("source"), _top_reasons, _gov_reasons)
+        return
 
+    # --- Idempotence: do not re-apply on same execution_plan run_id ---
+    state = _load_pm_state(data_dir)
+    last_run_id = state.get("last_processed_run_id")
+    if last_run_id and str(last_run_id) == str(plan.get("run_id")):
+        pass  # auto-fix empty if
+        # NSC_PATCH: force_reprocess_idempotence BEGIN
+        _force = str(os.environ.get('NSC_FORCE_REPROCESS', '0')).strip().lower() in ('1','true','yes')
+        _dry = str(os.environ.get('NSC_DRY_RUN', '0')).strip().lower() in ('1','true','yes')
+        if _force and _dry:
+            logger.warning('[position_manager] FORCE_REPROCESS enabled (DRY_RUN): bypass idempotence')
+        else:
+            logger.info("[position_manager] Idempotence: skip (run_id=%s already processed)", plan.get("run_id"))
+        # NSC_PATCH: force_reprocess_idempotence END
+
+        if not (_force and _dry):
+            return
+
+    # ─────────────────────────────────────────────
     positions = load_open_positions(data_dir)
     exit_events = load_exit_events(data_dir)
     logger.info("[position_manager] Positions ouvertes initiales: %d", len(positions))
 
     signals = load_signals(data_dir)
+
+    # ─────────────────────────────────────────────
+    # HF POLICY ENFORCEMENT (sized_signals / orders)
+    # sized_signals utilisent meta_score_pro → géré par _apply_hf_policy()
+    # ─────────────────────────────────────────────
+    try:
+        hf_policy = _load_hf_policy(data_dir)
+
+        # 1) Apply on signals list (already present earlier in some versions)
+        if isinstance(signals, list):
+            signals = _apply_hf_policy(signals, hf_policy, logger, context="signals")
+            logger.info("[position_manager] HF policy applied to signals: n=%d", len(signals))
+            # Persist HF-filtered sized_signals (signals are coming from sized_signals.json)
+            try:
+                from src.v2.utils.file_utils import save_json_file
+                save_json_file(_path(data_dir, "trading", "sized_signals_hf.json"), signals)
+                logger.info("[position_manager] Saved HF sized_signals: %s", _path(data_dir, "trading", "sized_signals_hf.json"))
+            except Exception:
+                pass
+
+        # 2) Apply on sized_signals if present via helper
+        try:
+            sized = load_execution_plan_orders(data_dir)
+        except Exception:
+            sized = None
+
+        if isinstance(sized, list) and sized:
+            sized2 = _apply_hf_policy(sized, hf_policy, logger, context="sized_signals")
+            logger.info("[position_manager] HF policy applied to sized_signals: n=%d -> %d", len(sized), len(sized2))
+
+            # optional: persist filtered sized_signals for downstream inspection
+            try:
+                from src.v2.utils.file_utils import save_json_file
+                save_json_file(_path(data_dir, "trading", "sized_signals_hf.json"), sized2)
+            except Exception:
+                pass
+
+    except Exception as exc:
+        logger.exception("[position_manager] HF policy enforcement failed (ignored): %s", exc)
+
+
+
+    # ─────────────────────────────────────────────
     ohlcv_all = load_ohlcv(data_dir)
     if not ohlcv_all:
         logger.warning("[position_manager] Aucun OHLCV exploitable: %s", _path(data_dir, "market", "ohlcv_combined.json"))
@@ -676,6 +1248,42 @@ def main() -> None:
         ohlcv_all=ohlcv_all,
     )
 
+
+    # --- Idempotence: persist last processed execution_plan run_id ---
+    try:
+        from datetime import datetime, timezone
+        _force = str(os.environ.get('NSC_FORCE_REPROCESS','0')).strip().lower() in ('1','true','yes')
+        _dry   = str(os.environ.get('NSC_DRY_RUN','0')).strip().lower() in ('1','true','yes')
+        _prev  = _load_pm_state(data_dir)
+        if not isinstance(_prev, dict):
+            _prev = {}
+    
+        _current_run = str(plan.get('run_id'))
+        _prev_last   = _prev.get('last_processed_run_id')
+    
+        # Build next state by preserving previous fields/counters
+        _next = dict(_prev)
+    
+        if _force and _dry and _prev_last is not None:
+            pass  # auto-fix empty if
+            # DRY_RUN replay: keep last_processed_run_id unchanged
+            _next['last_processed_run_id'] = _prev_last
+            # Track reprocess attempts
+            _next['forced_reprocess_count'] = int(_prev.get('forced_reprocess_count') or 0) + 1
+            _next['forced_reprocess_last_run_id_seen'] = _current_run
+        else:
+            _next['last_processed_run_id'] = _current_run
+    
+        _next['last_processed_generated_at'] = plan.get('generated_at')
+        _next['saved_at'] = datetime.now(timezone.utc).isoformat()
+    
+        _save_pm_state(data_dir, _next)
+        logger.info("[position_manager] Idempotence state saved (run_id=%s)", plan.get('run_id'))
+        if not _dry and not _force:
+            logger.info("[position_manager][IDEMPOTENCE] commit run_id=%s", _current_run)
+
+    except Exception:
+        logger.exception("[position_manager] Failed to persist idempotence state")
     nb_active = len([p for p in positions if float(p.get("remaining_size", p.get("size", 0.0)) or 0.0) > 0 and not p.get("closed", False)])
     logger.info(
         "[position_manager] Update terminé: positions_actives=%d, new_positions=%d, new_exit_events=%d",

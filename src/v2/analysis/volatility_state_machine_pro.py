@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import time
+import secrets  # NSC_VOLATILITY_RUN_ID_WRITER_V1
 import math
 import datetime as dt
 from dataclasses import dataclass
@@ -192,6 +194,9 @@ def severity_from_flag(global_flag: str) -> str:
 
 
 def build_volatility_state(data_dir: Path, env: str) -> Tuple[Dict[str, Any], str]:
+    # Always initialize reasons early (used throughout the state machine)
+    reasons = []
+
     """
     Construit l'état de volatilité à partir de :
 
@@ -209,9 +214,72 @@ def build_volatility_state(data_dir: Path, env: str) -> Tuple[Dict[str, Any], st
     }
     """
     src_file = data_dir / "analysis" / "volatility_metrics.json"
-    raw = load_json_file(src_file, default={})
-
-    metrics = load_volatility_metrics(raw)
+    raw = load_json_file(str(src_file), default={})
+    if not isinstance(raw, dict):
+        raw = {}
+    
+    # Fallback: si volatility_metrics.json absent/vide, dériver depuis volatility_engine_pro.json
+    if len(raw) == 0:
+        eng = load_json_file(str(data_dir / "analysis" / "volatility_engine_pro.json"), default={})
+        assets = eng.get("assets") if isinstance(eng, dict) else None
+        logger.info("[volatility_state_machine_pro] fallback(vol_engine) assets_len=%s", (len(assets) if isinstance(assets, list) else None))
+        if isinstance(assets, list) and len(assets) > 0:
+            v7, v30 = [], []
+            spikes, extreme = 0, 0
+            for a in assets:
+                if not isinstance(a, dict):
+                    continue
+                if a.get("vol_7d") is not None:
+                    try: v7.append(float(a["vol_7d"]))
+                    except: pass
+                if a.get("vol_30d") is not None:
+                    try: v30.append(float(a["vol_30d"]))
+                    except: pass
+                fl = a.get("flags") if isinstance(a.get("flags"), dict) else {}
+                if fl.get("vol_spike") is True:
+                    spikes += 1
+                if fl.get("extreme_vol") is True:
+                    extreme += 1
+    
+            def _avg(xs):
+                return (sum(xs) / len(xs)) if xs else None
+    
+            def _std(xs):
+                if not xs or len(xs) < 2:
+                    return None
+                mu = sum(xs) / len(xs)
+                var = sum((x - mu) ** 2 for x in xs) / (len(xs) - 1)
+                return var ** 0.5
+    
+            rv5_d  = _avg(v7)      # proxy
+            rv20_d = _avg(v30)     # proxy
+            xsec_d = _std(v30)     # dispersion cross-asset
+            vov_d  = _std(v7)      # vol-of-vol proxy
+    
+            raw = {
+                "realized_vol_20d": rv20_d,
+                "realized_vol_5d": rv5_d,
+                "implied_vol_index": None,
+                "vol_of_vol": vov_d,
+                "cross_section_vol": xsec_d,
+                "assets_count": len(assets),
+                "spikes": spikes,
+                "extreme": extreme,
+                "source": "derived_from_volatility_engine_pro",
+            }
+            reasons.append("volatility_metrics missing -> derived from volatility_engine_pro")
+            logger.info("[volatility_state_machine_pro] derived raw rv20=%s rv5=%s xsec=%s vov=%s", rv20_d, rv5_d, xsec_d, vov_d)
+        else:
+            raw = {}
+    
+    # Build VolatilityMetrics from raw (single source of truth)
+    metrics = VolatilityMetrics(
+        realized_vol_20d=_get_float(raw.get("realized_vol_20d") or raw.get("rv20") or raw.get("realized_vol20") or raw.get("rv_20d")),
+        realized_vol_5d=_get_float(raw.get("realized_vol_5d") or raw.get("rv5") or raw.get("realized_vol5") or raw.get("rv_5d")),
+        implied_vol_index=_get_float(raw.get("implied_vol_index") or raw.get("iv") or raw.get("implied_vol")),
+        vol_of_vol=_get_float(raw.get("vol_of_vol") or raw.get("vov")),
+        cross_section_vol=_get_float(raw.get("cross_section_vol") or raw.get("xsec")),
+    )
     regime, global_flag, score, reasons = infer_vol_regime_and_score(metrics)
     severity = severity_from_flag(global_flag)
 
@@ -265,6 +333,43 @@ def main() -> None:
 
     # Sauvegarde JSON
     output_path = data_dir / "analysis" / "volatility_state_machine_pro.json"
+    # NSC_VOLATILITY_ATTACH_RUN_META_V3
+    try:
+        _rid = str(os.environ.get('NSC_RUN_ID') or '').strip()
+    except Exception:
+        _rid = ''
+    if isinstance(state, dict):
+        state.setdefault('writer', 'volatility_state_machine_pro')
+        state.setdefault('run_id', _rid or f"{int(time.time()*1000)}-{secrets.token_hex(4)}")
+
+    # NSC_VOLATILITY_CANONICAL_WRITE_V3
+    try:
+        canon_path = (data_dir / 'analysis' / 'volatility_state.json')
+        # NSC_VOLATILITY_CANON_FLAG_SEVERITY_FIX_V2
+        try:
+            if isinstance(state, dict):
+                # Normalize global_flag -> flag
+                if state.get('flag') is None and state.get('global_flag') is not None:
+                    state['flag'] = state.get('global_flag')
+                # Backfill severity if missing
+                if state.get('severity') is None:
+                    state['severity'] = severity_from_flag(str(state.get('flag') or ''))
+        except Exception:
+            logger.exception('[volatility_state_machine_pro] canonical normalize failed')
+        save_json_file(canon_path, state)
+    except Exception:
+        logger.exception('[volatility_state_machine_pro] failed to write canonical volatility_state.json')
+    # NSC_VOLATILITY_FLAG_SEVERITY_FIX_V1
+    if isinstance(state, dict):
+        # Normalize flag/global_flag -> flag
+        if state.get('flag') is None and state.get('global_flag') is not None:
+            state['flag'] = state.get('global_flag')
+        # Backfill severity if missing
+        if state.get('severity') is None:
+            try:
+                state['severity'] = severity_from_flag(str(state.get('flag') or ''))
+            except Exception:
+                state['severity'] = None
     save_json_file(output_path, state)
     logger.info(
         "[volatility_state_machine_pro] volatility_state_machine_pro.json sauvegardé "

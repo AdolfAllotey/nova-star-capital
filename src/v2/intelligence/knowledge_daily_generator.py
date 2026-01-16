@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict
 
 from src.v2.utils.logger import get_logger
-from src.v2.utils.file_utils import load_json_file, save_json_file, data_path, get_data_dir
+from src.v2.utils.file_utils import load_json_file, save_json_file, data_path, get_data_dir, load_effective_execution_plan
 
 logger = get_logger("knowledge_daily_generator")
 
@@ -33,7 +33,7 @@ def _pick(d: Dict[str, Any], *keys: str, default=None):
 
 
 def main() -> Dict[str, Any]:
-    env = os.getenv("ENV", "PREPROD")
+    env = os.getenv("NSC_ENV", "PREPROD")
     resolved_data_dir = get_data_dir()
     logger.info("[knowledge_daily_generator] DATA_DIR=%s env=%s", resolved_data_dir, env)
 
@@ -46,7 +46,8 @@ def main() -> Dict[str, Any]:
 
     orches = _read(("telemetry", "orchestrator_pro.json"), default={}) or {}
     gov = _read(("analysis", "governance_engine_pro.json"), default={}) or {}
-    exec_plan = _read(("trading", "execution_plan.json"), default={}) or {}
+    exec_plan, exec_plan_path = load_effective_execution_plan(get_data_dir(), default={})
+    exec_plan = exec_plan or {}
     sized = _read(("trading", "sized_signals.json"), default={}) or []
     portfolio = _read(("analysis", "portfolio_engine_pro.json"), default={}) or {}
     pnl = _read(("profitability", "monthly_pnl.json"), default={}) or {}
@@ -88,7 +89,7 @@ def main() -> Dict[str, Any]:
         "trading": {
             "signals_sized": nb_sized,
             "orders_planned": orders,
-            "execution_plan_path": str(data_path("trading", "execution_plan.json")),
+            "execution_plan_path": str(exec_plan_path),
             "sized_signals_path": str(data_path("trading", "sized_signals.json")),
         },
         "portfolio": {

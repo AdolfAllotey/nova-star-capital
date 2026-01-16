@@ -324,3 +324,49 @@ def debug_data_resolution() -> Dict[str, Any]:
         "DATA_DIR_const": str(DATA_DIR),
         "selected_tokens_path": str(selected_tokens_path()),
     }
+
+# NSC_PATCH: effective_execution_plan_loader BEGIN
+def load_effective_execution_plan(data_dir: str | None = None, default=None) -> tuple[dict, str]:
+    """
+    PREPROD:
+      - Prefer execution_plan_simulated.json if PREPROD_SIMULATE_ORDERS=true and file exists.
+      - Fallback to execution_plan.json otherwise.
+    PROD:
+      - Always use execution_plan.json.
+
+    Returns: (plan_dict, path_used)
+    Fail-safe: returns (default or {}, "<path>") on any error.
+    """
+    import os
+    from pathlib import Path
+
+    if default is None:
+        default = {}
+
+    try:
+        if data_dir is None:
+            data_dir = get_data_dir()
+
+        env = str(os.getenv("NSC_ENV", "PREPROD")).upper()
+        dd = Path(data_dir)
+
+        plan_real = dd / "trading" / "execution_plan.json"
+        plan_sim  = dd / "trading" / "execution_plan_simulated.json"
+
+        if env == "PREPROD":
+            simulate = os.getenv("PREPROD_SIMULATE_ORDERS", "false").lower() == "true"
+            if simulate and plan_sim.exists():
+                return (load_json_file(plan_sim, default=default) or default, str(plan_sim))
+
+        return (load_json_file(plan_real, default=default) or default, str(plan_real))
+    except Exception:
+        # Ultra fail-safe: never crash callers
+        try:
+            if data_dir is None:
+                data_dir = get_data_dir()
+            dd = Path(data_dir)
+            return (default or {}, str(dd / "trading" / "execution_plan.json"))
+        except Exception:
+            return (default or {}, "data/trading/execution_plan.json")
+# NSC_PATCH: effective_execution_plan_loader END
+

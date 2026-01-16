@@ -1,4 +1,5 @@
 import json
+from src.v2.utils.ohlcv_utils import ohlcv_v2_to_legacy_rows
 import logging
 import os
 from dataclasses import dataclass, asdict

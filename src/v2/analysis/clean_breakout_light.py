@@ -38,6 +38,7 @@ Format de sortie (dict par symbole) :
 """
 
 from __future__ import annotations
+from src.v2.utils.ohlcv_utils import ohlcv_v2_to_legacy_rows
 
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
@@ -52,6 +53,51 @@ except ImportError:  # pragma: no cover
     from src.v2.utils.logger import get_logger  # type: ignore
 
 logger = get_logger("clean_breakout_light")
+
+
+
+def _nsc_ohlcv_v2_to_legacy_rows(raw, max_points: int = 260):
+    if not isinstance(raw, dict):
+        return raw
+    assets = raw.get("assets")
+    if not isinstance(assets, list):
+        return raw
+
+    def _f(x):
+        try:
+            return float(x)
+        except Exception:
+            return None
+
+    out = {}
+    for a in assets:
+        if not isinstance(a, dict):
+            continue
+        sym = a.get("symbol")
+        candles = a.get("candles")
+        if not isinstance(sym, str) or not isinstance(candles, list):
+            continue
+
+        rows = []
+        for c in candles[-max_points:]:
+            if not isinstance(c, dict):
+                continue
+            close = _f(c.get("close") if c.get("close") is not None else c.get("c"))
+            if close is None or close <= 0:
+                continue
+            rows.append({
+                "ts": c.get("ts"),
+                "open": _f(c.get("open")),
+                "high": _f(c.get("high")),
+                "low":  _f(c.get("low")),
+                "close": close,
+                "volume": _f(c.get("volume") if c.get("volume") is not None else c.get("v")),
+            })
+
+        if len(rows) >= 6:
+            out[sym] = rows
+
+    return out if out else raw
 
 # ---------------------------------------------------------------------------
 # Paths

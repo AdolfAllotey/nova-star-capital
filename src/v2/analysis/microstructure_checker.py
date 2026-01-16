@@ -1,4 +1,5 @@
 import os
+from src.v2.utils.ohlcv_utils import ohlcv_v2_to_legacy_rows
 import json
 import logging
 from datetime import datetime, timezone

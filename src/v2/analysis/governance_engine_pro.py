@@ -408,7 +408,45 @@ def main() -> None:
         },
     }
 
+
+    # NSC_PATCH: correlation_gate_hard_block_v3 BEGIN
+    try:
+        _data_dir = Path(data_dir) if isinstance(data_dir, Path) else Path(str(data_dir))
+        _corr = load_json_file(_data_dir / "analysis" / "correlation_regime_engine_pro.json", default={})
+        _gate = load_json_file(_data_dir / "state" / "correlation_gate_state.json", default={})
+        gate_active = bool(_gate.get("active")) if isinstance(_gate, dict) else False
+    
+        if isinstance(result, dict):
+            cm = _corr.get("metrics") if isinstance(_corr, dict) and isinstance(_corr.get("metrics"), dict) else {}
+            result["correlation"] = {
+                "regime": (_corr.get("regime") if isinstance(_corr, dict) else None),
+                "global_flag": (_corr.get("global_flag") if isinstance(_corr, dict) else None),
+                "score": (_corr.get("score") if isinstance(_corr, dict) else None),
+                "nb_pairs": (_corr.get("nb_pairs") if isinstance(_corr, dict) else None) or cm.get("nb_pairs"),
+                "avg_abs_corr": (_corr.get("avg_abs_corr") if isinstance(_corr, dict) else None) or cm.get("avg_abs_corr"),
+                "share_high_corr": cm.get("share_high_corr"),
+                "macro_risk_level": (_corr.get("macro_risk_level") if isinstance(_corr, dict) else None),
+                "gate": {
+                    "active": gate_active,
+                    "regime": (_gate.get("regime") if isinstance(_gate, dict) else None),
+                    "score": (_gate.get("score") if isinstance(_gate, dict) else None),
+                },
+            }
+    
+            if gate_active:
+                result["hard_block"] = True
+                rs = result.get("reasons")
+                if not isinstance(rs, list):
+                    rs = []
+                if "correlation_gate_state.active=true" not in rs:
+                    rs.append("correlation_gate_state.active=true")
+                result["reasons"] = rs
+    except Exception:
+        logger.exception("[governance_engine_pro] correlation gate hard_block failed")
+    # NSC_PATCH: correlation_gate_hard_block_v3 END
+
     out_path = data_dir / "analysis" / "governance_engine_pro.json"
+
     save_json_file(out_path, result)
 
     logger.info(

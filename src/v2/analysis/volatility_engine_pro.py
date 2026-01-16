@@ -7,9 +7,61 @@ from statistics import pstdev
 from typing import Dict, List, Any, Optional
 
 from src.v2.utils.file_utils import load_json_file, save_json_file
+from src.v2.utils.ohlcv_utils import ohlcv_v2_to_legacy_rows
 from src.v2.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _nsc_ohlcv_v2_to_legacy_rows(raw, max_points: int = 260):
+    """
+    Convertit ohlcv_combined.json v2:
+      {timestamp, env, assets:[{symbol, candles:[{close|c|...}, ...]}]}
+    -> format legacy attendu par du code existant:
+      { "BTCUSDT":[{"close":...}, ...], ... }
+    """
+    if not isinstance(raw, dict):
+        return raw
+
+    assets = raw.get("assets")
+    if not isinstance(assets, list):
+        return raw
+
+    def _get_close(c):
+        if not isinstance(c, dict):
+            return None
+        for k in ("close", "c", "Close", "close_price", "closePrice"):
+            v = c.get(k)
+            if v is not None:
+                try:
+                    return float(v)
+                except Exception:
+                    return None
+        return None
+
+    out = {}
+    for a in assets:
+        if not isinstance(a, dict):
+            continue
+        sym = a.get("symbol")
+        if not isinstance(sym, str) or not sym.strip():
+            continue
+
+        candles = a.get("candles")
+        if not isinstance(candles, list) or len(candles) < 10:
+            continue
+
+        closes = []
+        for c in candles[-max_points:]:
+            v = _get_close(c)
+            if v is not None and v > 0:
+                closes.append(v)
+
+        if len(closes) >= 10:
+            out[sym.strip().upper()] = [{"close": x} for x in closes]
+
+    return out if out else raw
+
 
 # Détection des répertoires (même logique que les autres *engine_light)
 # On aligne avec le reste du projet : /opt/nsc/app comme racine
@@ -37,19 +89,20 @@ class VolatilityParams:
 def _load_ohlcv() -> Dict[str, List[Dict[str, Any]]]:
     """
     Charge et normalise ohlcv_combined.json dans un format:
-        { "symbol": [ { "timestamp": ..., "close": ... }, ... ], ... }
-
-    Supporte deux formats:
-    1) dict symbol -> list[candles]
-    2) list de lignes avec champ "symbol".
+      - dict: { "BTCUSDT": [ {candle}, ... ], ... }
+      - list: [ {"symbol":"BTCUSDT","candles":[...]}, ... ]
+      - list: [ {"symbol":"BTCUSDT", ...candle fields...}, ... ]  (group-by symbol)
+    Retour: dict symbol -> list[candles(dict)]
     """
     path = DATA_DIR / "market" / "ohlcv_combined.json"
-    data = load_json_file(path, default=None)
+    data = load_json_file(str(path), default=None)
+    # NSC: support ohlcv_combined.json v2 (assets/candles)
+    data = _nsc_ohlcv_v2_to_legacy_rows(data, max_points=260)
 
     if not data:
         logger.warning(
             "[volatility_engine_pro] ohlcv_combined.json vide ou introuvable (%s), "
-            "aucune volatilité ne sera calculée.",
+            "volatility_engine_pro va sortir nb_assets=0",
             path,
         )
         return {}
@@ -57,28 +110,53 @@ def _load_ohlcv() -> Dict[str, List[Dict[str, Any]]]:
     normalized: Dict[str, List[Dict[str, Any]]] = {}
 
     # Format 1: dict symbol -> list[candles]
-    if isinstance(data, dict) and all(isinstance(v, list) for v in data.values()):
+    if isinstance(data, dict):
         for sym, candles in data.items():
+            # --- Support format: data[sym] = {'close':[...],'high':[...],'low':[...]} ---
+            if isinstance(candles, dict):
+                closes = candles.get('close')
+                highs  = candles.get('high')
+                lows   = candles.get('low')
+                if isinstance(closes, list) and len(closes) > 2:
+                    n = len(closes)
+                    # aligne high/low si présents, sinon None
+                    if not isinstance(highs, list) or len(highs) != n:
+                        highs = [None]*n
+                    if not isinstance(lows, list) or len(lows) != n:
+                        lows = [None]*n
+                    candles = [{'close': float(closes[i]), 'high': (float(highs[i]) if highs[i] is not None else None), 'low': (float(lows[i]) if lows[i] is not None else None)} for i in range(n)]
+                else:
+                    candles = []
             if not isinstance(candles, list):
                 continue
-            normalized[sym] = [c for c in candles if isinstance(c, dict)]
+            normalized[str(sym)] = [c for c in candles if isinstance(c, dict)]
         return normalized
 
-    # Format 2: list de lignes avec "symbol"
+    # Format 2: list
     if isinstance(data, list):
-        for row in data:
-            if not isinstance(row, dict):
+        # Case A: list[{symbol, candles}]
+        for item in data:
+            if not isinstance(item, dict):
                 continue
-            sym = row.get("symbol")
+            sym = item.get("symbol") or item.get("ticker")
+            if sym and isinstance(item.get("candles"), list):
+                normalized[str(sym)] = [c for c in item["candles"] if isinstance(c, dict)]
+        if normalized:
+            return normalized
+
+        # Case B: list[candle dict] with symbol -> group-by
+        for c in data:
+            if not isinstance(c, dict):
+                continue
+            sym = c.get("symbol") or c.get("ticker")
             if not sym:
                 continue
-            normalized.setdefault(sym, []).append(row)
+            normalized.setdefault(str(sym), []).append(c)
         return normalized
 
     logger.warning(
         "[volatility_engine_pro] Format inattendu pour ohlcv_combined.json (%s), type=%s",
-        path,
-        type(data),
+        path, type(data),
     )
     return {}
 

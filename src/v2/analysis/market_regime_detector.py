@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import os
 import time
+from datetime import datetime, timezone  # NSC_MARKET_REGIME_CANONICAL_WRITE_V1
+import secrets  # NSC_MARKET_REGIME_RUN_ID_V1
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -39,6 +41,8 @@ def _analysis_paths(data_dir: Path) -> Dict[str, Path]:
         "coherence": analysis_dir / "market_coherence_engine_pro.json",
         "meta_score": analysis_dir / "meta_score_engine_pro.json",
         "out": analysis_dir / "market_regime_detector.json",
+        "out_canon": analysis_dir / "market_regime.json",  # NSC_MARKET_REGIME_CANONICAL_OUTPUT_V1
+
         "state": data_dir / "state" / "market_regime_state.json",
     }
 
@@ -272,6 +276,11 @@ def main() -> None:
         "generated_at": now_ts(),
         "timestamp": now_ts(),
         "env": env,
+        "writer": "market_regime_detector",  # NSC_MARKET_REGIME_RUN_ID_V1
+        "run_id": (str(os.environ.get("NSC_RUN_ID") or "").strip() or (str(int(time.time()*1000)) + "-" + secrets.token_hex(4))),
+        "source": "market_regime_detector",
+        "writer": "market_regime_detector",
+        "run_id": (str(os.environ.get("NSC_RUN_ID") or "").strip() or None),
         "regime": regime,
         "risk_mode": risk_mode,
         "votes": votes,
@@ -294,15 +303,34 @@ def main() -> None:
     }
 
     save_json_file(paths["out"], out)
-
+    # NSC_MARKET_REGIME_CANONICAL_OUTPUT_V1
+    try:
+        save_json_file(paths["out_canon"], out)
+    except Exception:
+        logger.exception("[market_regime_detector] failed to write canonical market_regime.json")
     state = {
         "updated_at": now_ts(),
         "env": env,
         "regime": regime,
         "risk_mode": risk_mode,
     }
+    # NSC_MARKET_REGIME_CANONICAL_WRITE_V1
+    # Canonical market_regime.json write
+    try:
+        if isinstance(state, dict):
+            _rid = str(os.environ.get('NSC_RUN_ID') or '').strip()
+            if not _rid:
+                _rid = f"mr-1767124938-ba451831"
+            state.setdefault('writer', 'market_regime_detector')
+            state['run_id'] = _rid
+            state.setdefault('env', env)
+            state.setdefault('generated_at', now_ts())
+            state.setdefault('timestamp', now_ts())
+            state.setdefault('timestamp_iso', datetime.now(timezone.utc).isoformat())
+            save_json_file(paths['out_canon'], state)
+    except Exception:
+        logger.exception('[market_regime_detector] canonical write failed')
     save_json_file(paths["state"], state)
-
     logger.info(
         "[market_regime_detector] OK regime=%s risk_mode=%s -> %s",
         regime, risk_mode, str(paths["out"]),

@@ -1,4 +1,5 @@
 import os
+from src.v2.utils.ohlcv_utils import ohlcv_v2_to_legacy_rows
 import json
 import logging
 from pathlib import Path
@@ -30,7 +31,82 @@ DATA_ROOT = Path(os.getenv("DATA_ROOT", "/opt/nsc/app/data")).resolve()
 MARKET_DIR = DATA_ROOT / "market"
 MARKET_DIR.mkdir(parents=True, exist_ok=True)
 
+
 OUTPUT_FILE = MARKET_DIR / "ohlcv_combined.json"
+
+# --- Correlation universe support (optional) ---------------------------------
+CORRELATION_UNIVERSE_FILE = MARKET_DIR / "correlation_universe.json"
+
+# If price_fetcher uses CoinGecko IDs (your current keys: bitcoin/ethereum/solana),
+# allow config with tickers like BTCUSDT/ETHUSDT by mapping to CoinGecko IDs.
+TICKER_TO_COINGECKO_ID = {
+    "BTC": "bitcoin",
+    "ETH": "ethereum",
+    "SOL": "solana",
+    "BNB": "binancecoin",
+    "XRP": "ripple",
+    "AVAX": "avalanche-2",
+    "MATIC": "matic-network",
+    "ADA": "cardano",
+    "DOGE": "dogecoin",
+    "LINK": "chainlink",
+}
+
+def _normalize_symbol_to_cg_id(sym: str) -> str | None:
+    """
+    Accept:
+      - "bitcoin" (already cg id)
+      - "BTC", "ETH"
+      - "BTCUSDT" / "ETHUSDT" (we keep base ticker)
+      - "BTC/USDT" (base ticker)
+    Return CoinGecko id if we can, else None.
+    """
+    if not isinstance(sym, str) or not sym.strip():
+        return None
+    x = sym.strip()
+
+    # already looks like a coingecko id (contains '-' or all lowercase word)
+    if re.fullmatch(r"[a-z0-9\-]+", x):
+        # ex: bitcoin, avalanche-2, matic-network
+        return x
+
+    # convert "BTC/USDT" -> "BTC", "BTCUSDT" -> "BTC"
+    x = x.upper()
+    if "/" in x:
+        x = x.split("/")[0]
+    if x.endswith("USDT"):
+        x = x[:-4]
+
+    return TICKER_TO_COINGECKO_ID.get(x)
+
+def load_correlation_universe_ids() -> list[str]:
+    """
+    Read data/market/correlation_universe.json and return CoinGecko IDs.
+    """
+    try:
+        if not CORRELATION_UNIVERSE_FILE.exists():
+            return []
+        raw = json.loads(CORRELATION_UNIVERSE_FILE.read_text(encoding="utf-8"))
+        syms = raw.get("symbols") if isinstance(raw, dict) else None
+        if not isinstance(syms, list):
+            return []
+        out = []
+        for sym in syms:
+            cid = _normalize_symbol_to_cg_id(sym)
+            if cid:
+                out.append(cid)
+        # unique, preserve order
+        seen = set()
+        uniq = []
+        for cid in out:
+            if cid not in seen:
+                seen.add(cid)
+                uniq.append(cid)
+        return uniq
+    except Exception as e:
+        logger.warning("[price_fetcher] Failed to load correlation universe: %s", e)
+        return []
+
 SELECTED_TOKENS_FILE = DATA_ROOT / "selected_tokens.json"
 
 # Liste de base (Option 3)

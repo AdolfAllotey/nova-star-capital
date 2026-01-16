@@ -41,6 +41,7 @@ def build_system_metrics() -> Dict[str, Any]:
 
     data_dir: Path = get_data_dir()
     telemetry_dir = data_dir / "telemetry"
+    state_dir = data_dir / "state"
     analysis_dir = data_dir / "analysis"
     trading_dir = data_dir / "trading"
 
@@ -77,6 +78,13 @@ def build_system_metrics() -> Dict[str, Any]:
     portfolio = _safe_dict(
         load_json_file(analysis_dir / "portfolio_engine_pro.json", default={})
     )
+    correlation = _safe_dict(
+        load_json_file(analysis_dir / "correlation_regime_engine_pro.json", default={})
+    )
+    correlation_gate = _safe_dict(
+        load_json_file(state_dir / "correlation_gate_state.json", default={})
+    )
+
     weak_signals = _safe_dict(
         load_json_file(analysis_dir / "weak_signals_engine_pro.json", default={})
     )
@@ -129,6 +137,11 @@ def build_system_metrics() -> Dict[str, Any]:
 
         "risk_global_flag": risk_stats.get("global_flag"),
         "weak_signals_flag": weak_stats.get("global_flag"),
+        "correlation_flag": (correlation.get("global_flag") if isinstance(correlation, dict) else None),
+        "correlation_nb_pairs": (correlation.get("nb_pairs") if isinstance(correlation, dict) else None),
+        "correlation_avg_abs_corr": (correlation.get("avg_abs_corr") if isinstance(correlation, dict) else None),
+        "correlation_gate_active": (correlation_gate.get("active") if isinstance(correlation_gate, dict) else None),
+
         "meta_score_flag": meta_stats.get("global_flag"),
 
         "execution_flag": exec_stats.get("global_flag"),
@@ -205,6 +218,20 @@ def build_system_metrics() -> Dict[str, Any]:
             "stats": portfolio_stats,
             "constraints": portfolio_constraints,
         },
+        "correlation": {
+            "regime": (correlation.get("regime") if isinstance(correlation, dict) else None),
+            "global_flag": (correlation.get("global_flag") if isinstance(correlation, dict) else None),
+            "score": (correlation.get("score") if isinstance(correlation, dict) else None),
+            "nb_pairs": (correlation.get("nb_pairs") if isinstance(correlation, dict) else None),
+            "avg_abs_corr": (correlation.get("avg_abs_corr") if isinstance(correlation, dict) else None),
+            "share_high_corr": ((correlation.get("metrics") or {}).get("share_high_corr") if isinstance(correlation, dict) else None),
+            "macro_risk_level": (correlation.get("macro_risk_level") if isinstance(correlation, dict) else None),
+            "gate": {
+                "active": (correlation_gate.get("active") if isinstance(correlation_gate, dict) else None),
+                "regime": (correlation_gate.get("regime") if isinstance(correlation_gate, dict) else None),
+                "score": (correlation_gate.get("score") if isinstance(correlation_gate, dict) else None),
+            },
+        },
         "weak_signals": weak_stats,
         "meta_score": meta_stats,
     }
@@ -215,12 +242,47 @@ def build_system_metrics() -> Dict[str, Any]:
 def main() -> None:
     data_dir: Path = get_data_dir()
     telemetry_dir = data_dir / "telemetry"
+    state_dir = data_dir / "state"
     telemetry_path = telemetry_dir / "system_metrics_pro.json"
 
     metrics = build_system_metrics()
+    # --- FORCE_CORRELATION_HARD_GATE (Option B) ---
+    try:
+        _summary = metrics.get("summary")
+        if not isinstance(_summary, dict):
+            _summary = {}
+            metrics["summary"] = _summary
+    
+        _corr = metrics.get("correlation") or {}
+        _gate = (_corr.get("gate") or {}) if isinstance(_corr, dict) else {}
+        _active = bool(_gate.get("active"))
+        _flag = _corr.get("global_flag") if isinstance(_corr, dict) else None
+    
+        if _active and _flag in ("caution", "high"):
+            _summary["can_trade"] = False
+            _summary["system_flag"] = "warning"
+            _summary["correlation_hard_block"] = True
+    except Exception:
+        pass
+    # --- END FORCE_CORRELATION_HARD_GATE ---
     save_json_file(telemetry_path, metrics)
 
     summary = metrics.get("summary", {}) or {}
+    # --- correlation hard gate (optional) ---
+    try:
+        corr = metrics.get("correlation") or {}
+        corr_gate = (corr.get("gate") or {}) if isinstance(corr, dict) else {}
+        corr_active = bool(corr_gate.get("active"))
+        corr_flag = corr.get("global_flag") if isinstance(corr, dict) else None
+        if corr_active and corr_flag in ("caution", "high"):
+            # Monitoring view: if correlation gate is active, we consider trading unsafe
+            summary["can_trade"] = False
+            summary["system_flag"] = "warning"
+            summary["correlation_hard_block"] = True
+    except Exception:
+        pass
+    # --- end correlation hard gate ---
+
     system_flag = summary.get("system_flag")
     can_trade = summary.get("can_trade")
 
