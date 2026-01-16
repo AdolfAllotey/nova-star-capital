@@ -1,0 +1,547 @@
+"""
+trading_kernel.py
+---------------------------------
+Noyau d'exécution "hedge fund light" pour Nova Star Capital.
+
+Rôle :
+  - Orchestrer une boucle de trading complète :
+      1) momentum_scoring       → calcule les meta-scores 0–100 par asset
+      2) signal_voting          → transforme en signaux (enter_long / watch / avoid)
+      3) capital_allocator      → calcule les poches et capital par trade
+      4) position_manager       → ouvre / met à jour / ferme les positions
+
+  - Appliquer :
+      * un kill-switch global (kill_switch.json)
+      * des gardes de risque (risk_limits.json + daily_trading_feedback.json)
+
+Ce module NE PASSE PAS d'ordres réels (préprod). Il pilote la logique
+et écrit des JSON dans /data.
+"""
+
+from __future__ import annotations
+import os
+
+from pathlib import Path
+from typing import Any, Optional
+
+try:
+    from src.v2.utils.logger import get_logger
+except ImportError:  # pragma: no cover
+    from src.v2.utils.logger import get_logger  # type: ignore
+
+logger = get_logger("trading_kernel")
+
+# ---------------------------------------------------------------------------
+# Paths / DATA_DIR
+# ---------------------------------------------------------------------------
+
+ROOT_DIR = Path(__file__).resolve().parents[3]  # /opt/nsc/app
+DATA_DIR = ROOT_DIR / "data"
+
+TRADING_DIR = DATA_DIR / "trading"
+ANALYSIS_DIR = DATA_DIR / "analysis"
+MARKET_DIR = DATA_DIR / "market"
+REPORTS_DIR = DATA_DIR / "reports"
+
+TRADING_DIR.mkdir(parents=True, exist_ok=True)
+ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
+MARKET_DIR.mkdir(parents=True, exist_ok=True)
+REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+
+KILL_SWITCH_FILE = TRADING_DIR / "kill_switch.json"
+RISK_LIMITS_FILE = TRADING_DIR / "risk_limits.json"
+DAILY_FEEDBACK_FILE = REPORTS_DIR / "daily_trading_feedback.json"
+ORCHESTRATOR_STATE_FILE = DATA_DIR / "telemetry" / "orchestrator_pro.json"
+SIGNAL_QUALITY_FILE = ANALYSIS_DIR / "signal_quality_engine_pro.json"
+SIGNAL_QUALITY_HARD_BLOCK_SCORE = float(45.0)  # score < => stop trading
+
+logger.info(
+    "[trading_kernel] ROOT_DIR=%s, DATA_DIR=%s", ROOT_DIR, DATA_DIR
+)
+
+# ---------------------------------------------------------------------------
+# file_utils fallback
+# ---------------------------------------------------------------------------
+
+try:
+    from src.v2.utils.file_utils import load_json_file, save_json_file  # type: ignore
+except Exception:  # pragma: no cover
+    load_json_file = None
+    save_json_file = None
+
+    import json
+
+    def _load_json(path: Path, default: Any = None) -> Any:
+        if not path.exists():
+            return default
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            logger.exception(
+                "[trading_kernel] Erreur lors du chargement JSON: %s", path
+            )
+            return default
+
+    def _save_json(path: Path, data: Any) -> None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("w", encoding="utf-8") as f:
+                import json as _json
+
+                _json.dump(data, f, indent=2, ensure_ascii=False)
+        except Exception:
+            logger.exception(
+                "[trading_kernel] Erreur lors de l'écriture JSON: %s", path
+            )
+else:
+
+    def _load_json(path: Path, default: Any = None) -> Any:
+        return load_json_file(str(path), default=default)
+
+    def _save_json(path: Path, data: Any) -> None:
+        save_json_file(str(path), data)
+
+
+# ---------------------------------------------------------------------------
+# Kill-switch
+# ---------------------------------------------------------------------------
+
+def _apply_orchestrator_risk_limits() -> None:
+    """
+    Propulse l'état runtime de l'orchestrator (mode/risk_mode/size_factor)
+    dans data/trading/risk_limits.json, sans écraser la config existante.
+    """
+    st = _load_json(ORCHESTRATOR_STATE_FILE, default={})
+    if not isinstance(st, dict):
+        logger.warning("[trading_kernel] orchestrator_pro.json invalide -> skip")
+        return
+
+    size_factor = st.get("size_factor", None)
+    mode = st.get("mode", None)
+    risk_mode = st.get("risk_mode", None)
+
+    # Rien à appliquer
+    if size_factor is None and mode is None and risk_mode is None:
+        return
+
+    cfg = _load_json(RISK_LIMITS_FILE, default={})
+    if not isinstance(cfg, dict):
+        cfg = {}
+
+    # Merge non destructif
+    if size_factor is not None:
+        try:
+            cfg["size_factor"] = float(size_factor)
+        except Exception:
+            logger.warning("[trading_kernel] size_factor invalide: %r", size_factor)
+
+    if mode:
+        cfg["mode"] = str(mode)
+
+    if risk_mode:
+        cfg["risk_mode"] = str(risk_mode)
+
+    _save_json(RISK_LIMITS_FILE, cfg)
+    logger.info(
+        "[trading_kernel] risk_limits mis à jour depuis orchestrator: mode=%s risk_mode=%s size_factor=%s",
+        cfg.get("mode"), cfg.get("risk_mode"), cfg.get("size_factor")
+    )
+
+def is_kill_switch_enabled() -> bool:
+    """
+    kill_switch.json format attendu :
+    {
+      "enabled": true/false,
+      "reason": "..."
+    }
+    """
+    data = _load_json(KILL_SWITCH_FILE, default={})
+    if not isinstance(data, dict):
+        return False
+    enabled = bool(data.get("enabled", False))
+    if enabled:
+        logger.warning(
+            "[trading_kernel] Kill-switch ACTIVÉ (reason=%s)",
+            data.get("reason") or "n/a",
+        )
+    return enabled
+
+
+def set_kill_switch(enabled: bool, reason: str = "") -> None:
+    payload = {
+        "enabled": bool(enabled),
+        "reason": reason,
+    }
+    _save_json(KILL_SWITCH_FILE, payload)
+    logger.info(
+        "[trading_kernel] Kill-switch mis à jour: enabled=%s, reason=%s",
+        enabled,
+        reason,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Risk guards (risk_limits + daily_feedback)
+# ---------------------------------------------------------------------------
+
+def _load_risk_limits() -> dict:
+    cfg = _load_json(RISK_LIMITS_FILE, default={})
+    if not isinstance(cfg, dict):
+        cfg = {}
+    return cfg
+
+
+def _load_daily_feedback() -> dict:
+    fb = _load_json(DAILY_FEEDBACK_FILE, default={})
+    if not isinstance(fb, dict):
+        return {}
+    return fb
+
+
+def _check_risk_guards() -> bool:
+    """
+    Vérifie les gardes de risque "soft" avant de lancer une boucle de trading.
+
+    risk_limits.json attendu :
+    {
+      "enable_meta_score_guard": true,
+      "min_meta_score_nsc": 50.0,
+      "enable_daily_drawdown_guard": true,
+      "max_daily_loss_eur": 500.0,
+      "enable_hard_risk_off_guard": true
+    }
+
+    daily_trading_feedback.json doit contenir idéalement :
+    {
+      "meta_score_nsc": ...,
+      "realized_pnl_today": ...,
+      "regime": "...",
+      "risk_mode": "..."
+      ...
+    }
+    """
+    cfg = _load_risk_limits()
+    fb = _load_daily_feedback()
+
+    meta_score = float(fb.get("meta_score_nsc", 0.0)) if fb else 0.0
+    realized_today = float(fb.get("realized_pnl_today", 0.0)) if fb else 0.0
+    regime = str(fb.get("regime", "")).lower() if fb else ""
+    risk_mode = str(fb.get("risk_mode", "")).lower() if fb else ""
+
+    # 1) Meta-score guard
+    if cfg.get("enable_meta_score_guard", False):
+        min_meta = float(cfg.get("min_meta_score_nsc", 0.0))
+        if meta_score < min_meta:
+            logger.warning(
+                "[trading_kernel] Guard meta_score_nsc active: meta_score=%.2f < %.2f → boucle annulée.",
+                meta_score,
+                min_meta,
+            )
+            return False
+
+    # 2) Daily drawdown guard
+    if cfg.get("enable_daily_drawdown_guard", False):
+        max_loss = float(cfg.get("max_daily_loss_eur", 0.0))
+        if realized_today < -abs(max_loss):
+            logger.warning(
+                "[trading_kernel] Guard daily_drawdown active: realized_pnl_today=%.2f < -%.2f → boucle annulée.",
+                realized_today,
+                abs(max_loss),
+            )
+            return False
+
+    # 3) Hard risk_off guard
+    if cfg.get("enable_hard_risk_off_guard", False):
+        if regime.startswith("bear") or risk_mode == "risk_off":
+            logger.warning(
+                "[trading_kernel] Guard hard risk_off active: regime=%s, risk_mode=%s → boucle annulée.",
+                regime,
+                risk_mode,
+            )
+            return False
+
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Signal Quality gate (Signal Quality Engine Pro)
+# ---------------------------------------------------------------------------
+
+def _check_signal_quality_gate() -> bool:
+    """
+    Gate runtime: bloque la boucle si la qualité de signal est trop faible.
+    Source de vérité du threshold: data/trading/risk_limits.json (signal_quality_hard_block_score).
+    Bloque si:
+      - hard_block=True dans signal_quality_engine_pro.json
+      - flag == "hard_block"
+      - score < threshold
+    """
+    # Load signal quality
+    sq = _load_json(SIGNAL_QUALITY_FILE, default={})
+    if not isinstance(sq, dict):
+        return True  # fail-open
+
+    flag = str(sq.get("flag") or "neutral")
+    try:
+        score = float(sq.get("score", 100.0) or 0.0)
+    except Exception:
+        score = 100.0
+
+    hard_block = bool(sq.get("hard_block", False))
+
+    # Load threshold from risk_limits
+    cfg_rl = _load_json(RISK_LIMITS_FILE, default={})
+    if not isinstance(cfg_rl, dict):
+        cfg_rl = {}
+    try:
+        threshold = float(cfg_rl.get("signal_quality_hard_block_score", 45.0))
+    except Exception:
+        threshold = 45.0
+
+    logger.info(
+        "[trading_kernel] signal_quality gate: flag=%s score=%.2f hard_block=%s",
+        flag, score, hard_block
+    )
+
+    should_block = False
+    reason = None
+
+    if hard_block:
+        should_block = True
+        reason = "hard_block=True"
+    elif flag == "hard_block":
+        should_block = True
+        reason = "flag=hard_block"
+    elif score < threshold:
+        should_block = True
+        reason = f"score<threshold ({score:.2f}<{threshold:.2f})"
+
+    if should_block:
+        logger.warning(
+            "[trading_kernel] Boucle annulée par Signal Quality: flag=%s score=%.2f hard_block=%s (threshold=%.2f) reason=%s",
+            flag, score, hard_block, threshold, reason
+        )
+        return False
+
+    return True
+def _safe_len_json_list(path):
+    try:
+        from src.v2.utils.file_utils import load_json_file
+        data = load_json_file(path, default=[])
+        return len(data) if isinstance(data, list) else 0
+    except Exception:
+        return 0
+
+def _safe_read_json(path, default=None):
+    try:
+        from src.v2.utils.file_utils import load_json_file
+        return load_json_file(path, default=default)
+    except Exception:
+        return default
+
+
+def _check_orchestrator_gate() -> tuple[bool, bool]:
+    """
+    Gate runtime (orchestrator-first):
+      - return (ok, orch_available)
+      - ok=False => stop trading
+      - orch_available=False => fail-open + allow SQ fallback gate
+    """
+    try:
+        st = _load_json(ORCHESTRATOR_STATE_FILE, default=None)
+    except Exception:
+        return (True, False)
+
+    if not isinstance(st, dict):
+        return (True, False)  # orchestrator indisponible => fail-open + SQ fallback
+
+    can_trade = bool(st.get("can_trade", True))
+    mode = str(st.get("mode") or "unknown")
+    reasons = st.get("reasons", []) or []
+    severity = str(st.get("severity") or "info")
+
+    if not can_trade:
+        logger.warning(
+            "[trading_kernel] Boucle annulée par Orchestrator gate: can_trade=False mode=%s severity=%s reasons=%s",
+            mode, severity, reasons
+        )
+        return (False, True)
+
+    return (True, True)
+
+def run_once(max_new_positions: Optional[int] = None) -> None:
+    """
+    Exécute une boucle complète "hedge fund light" :
+
+      0) Vérifie kill_switch + guards de risque
+      1) momentum_scoring
+      2) signal_voting
+      3) capital_allocator
+      4) position_manager
+
+    max_new_positions : réservé pour usage futur (limiter le nombre
+    de nouvelles positions par cycle).
+    """
+    # 0) Kill-switch & risk guards
+    if is_kill_switch_enabled():
+        logger.warning("[trading_kernel] Boucle annulée car le kill-switch est activé.")
+        return
+
+    # Sync risk_limits depuis orchestrator (si dispo) avant guards/sizing
+    _apply_orchestrator_risk_limits()
+
+    # Orchestrator gate (source de vérité runtime)
+    ok, orch_available = _check_orchestrator_gate()
+    if not ok:
+        return
+
+    # Signal Quality gate (fallback uniquement si orchestrator indisponible)
+    if not orch_available:
+        if not _check_signal_quality_gate():
+            logger.warning("[trading_kernel] Boucle annulée par Signal Quality Engine (score<threshold ou hard_block).")
+            return
+
+    # Imports locaux  ok, orch_available = _check_orchestrator_gate()
+    if not ok:
+        return
+
+    # Signal Quality gate (sécurité supplémentaire / fallback)
+    if not _check_signal_quality_gate():
+        logger.warning("[trading_kernel] Boucle annulée par Signal Quality Engine (score<threshold ou hard_block).")
+        return
+
+    # Imports locaux pour éviter les cycles d'import
+    from src.v2.analysis.momentum_scoring import main as momentum_main
+    from src.v2.analysis.signal_voting import main as signal_voting_main
+    from src.v2.analysis.capital_allocator import main as capital_allocator_main
+    from src.v2.trading.position_manager import main as position_manager_main
+
+    logger.info("[trading_kernel] Démarrage de la boucle hedge fund light (run_once).")
+
+    # Étape 1 : momentum
+    logger.info("[trading_kernel] Étape 1/4 : momentum_scoring")
+    try:
+        momentum_main()
+    except Exception:
+        logger.exception("[trading_kernel] Erreur lors de momentum_scoring.main()")
+        return
+
+    # Étape 2 : signal voting
+    logger.info("[trading_kernel] Étape 2/4 : signal_voting")
+    try:
+        signal_voting_main()
+    except Exception:
+        logger.exception("[trading_kernel] Erreur lors de signal_voting.main()")
+        return
+
+
+
+    # Étape 2.4/4 : risk_engine_pro (global + per-asset compat)
+    try:
+        logger.info("[trading_kernel] Étape 2.4/4 : risk_engine_pro")
+        import src.v2.analysis.risk_engine_pro as risk_engine_pro
+        risk_engine_pro.main()
+    except Exception:
+        logger.exception("[trading_kernel] risk_engine_pro a échoué (on continue en mode dégradé).")
+
+    # Étape 2.5/4 : position_sizing_institutionnel (écrit trading/sized_signals.json, même si vide)
+    logger.info("[trading_kernel] Étape 2.5/4 : position_sizing_institutionnel")
+    try:
+        # FUND MODE / deterministic runs:
+        # if NSC_REUSE_EXISTING_SIZED_SIGNALS=1 and sized_signals.json exists & non-empty,
+        # do NOT regenerate it (avoid overwriting manual test fixtures).
+        _reuse = str(os.environ.get("NSC_REUSE_EXISTING_SIZED_SIGNALS", "0")).strip().lower() in ("1","true","yes")
+        sized_path = TRADING_DIR / "sized_signals.json"
+        _existing = []
+        if _reuse:
+            try:
+                _existing = load_json_file(str(sized_path), default=[])
+            except Exception:
+                _existing = []
+        if _reuse and isinstance(_existing, list) and len(_existing) > 0:
+            logger.warning("[trading_kernel] REUSE sized_signals.json (len=%d) => skip position_sizing_institutionnel", len(_existing))
+        else:
+            import src.v2.trading.position_sizing_institutionnel as position_sizing_institutionnel
+            position_sizing_institutionnel.main()
+    except Exception:
+        logger.exception("[trading_kernel] position_sizing_institutionnel a échoué (ANTI-STALE).")
+        try:
+            sized_path = TRADING_DIR / "sized_signals.json"
+            _write_json_safe(sized_path, [])
+            _write_json_safe(TRADING_DIR / "execution_plan.json", {
+                "writer": "trading_kernel",
+                "status": "blocked",
+                "note": "ANTI-STALE => position_sizing_institutionnel crashed => cleared",
+                "reasons": ["core:position_sizing_failed"],
+            })
+            logger.warning("[trading_kernel] ANTI-STALE => position_sizing_institutionnel failed => sized_signals.json & execution_plan.json écrasés")
+        except Exception:
+            pass
+
+    # Étape 2.6/4 : execution_engine_pro (lit sized_signals.json -> écrit trading/execution_plan.json)
+    logger.info("[trading_kernel] Étape 2.6/4 : execution_engine_pro")
+    import src.v2.analysis.execution_engine_pro as execution_engine_pro
+    execution_engine_pro.main()
+
+    logger.info("[trading_kernel] Étape 3/4 : capital_allocator")
+    try:
+        capital_allocator_main()
+    except Exception:
+        logger.exception("[trading_kernel] Erreur lors de capital_allocator.main()")
+        return
+
+    # Étape 4 : position manager
+    logger.info("[trading_kernel] Étape 4/4 : position_manager")
+    try:
+        # max_new_positions pas encore utilisé, mais gardé pour évolutions futures
+        position_manager_main()
+    except Exception:
+        logger.exception("[trading_kernel] Erreur lors de position_manager.main()")
+        return
+
+
+    # ───────────────────────────────────────────────────────────
+    # Kernel Run Summary (logs lisibles en timer)
+    # ───────────────────────────────────────────────────────────
+    signal_candidates_path = DATA_DIR / "analysis" / "signal_candidates.json"
+    sized_signals_path = DATA_DIR / "trading" / "sized_signals.json"
+    execution_plan_path = DATA_DIR / "trading" / "execution_plan.json"
+    capital_alloc_path = DATA_DIR / "trading" / "capital_allocation.json"
+    risk_path = DATA_DIR / "analysis" / "risk_engine_pro.json"
+    sq_path = DATA_DIR / "analysis" / "signal_quality_engine_pro.json"
+    sq = _safe_read_json(sq_path, default={}) or {}
+    sq_flag = sq.get("flag")
+    sq_score = sq.get("score")
+
+    nb_raw = _safe_len_json_list(signal_candidates_path)
+    nb_sized = _safe_len_json_list(sized_signals_path)
+
+    exec_plan = _safe_read_json(execution_plan_path, default={}) or {}
+    orders = exec_plan.get("orders", [])
+    nb_orders = len(orders) if isinstance(orders, list) else 0
+
+    cap = _safe_read_json(capital_alloc_path, default={}) or {}
+    capital_per_trade = cap.get("capital_per_trade")
+    max_positions = cap.get("max_positions") or cap.get("max_concurrent_positions")
+    risk = _safe_read_json(risk_path, default={}) or {}
+    risk_flag = risk.get("global_flag") or risk.get("flag")
+
+    logger.info(
+        "[trading_kernel][SUMMARY] raw=%s sized=%s orders=%s capital_per_trade=%s max_positions=%s risk=%s signal_quality=%s/%s",
+        nb_raw, nb_sized, nb_orders, capital_per_trade, max_positions, risk_flag, sq_flag, sq_score
+    )
+
+    logger.info("[trading_kernel] Boucle hedge fund light terminée.")
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    run_once()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,22 @@
+from pathlib import Path
+import json
+from datetime import datetime, timezone
+
+LEDGER_PATH = Path("data/trading/execution_decisions.jsonl")
+
+def append_execution_decision(payload: dict):
+    """Append une décision d'exécution dans data/trading/execution_decisions.jsonl (JSONL)."""
+    import json
+    from datetime import datetime, timezone
+
+    try:
+        LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(payload, dict) and 'timestamp' not in payload:
+            payload['timestamp'] = datetime.now(timezone.utc).isoformat()
+        line = json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
+        with LEDGER_PATH.open('a', encoding='utf-8') as f:
+            f.write(line + "\n")
+            f.flush()
+    except Exception:
+        return
+

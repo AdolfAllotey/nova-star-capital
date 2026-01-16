@@ -1,0 +1,799 @@
+# src/v2/trading/position_manager.py
+
+from __future__ import annotations
+
+import os
+
+def is_dry_run_enabled() -> bool:
+    v = (os.getenv("NSC_DRY_RUN") or "").strip().lower()
+    return v in ("1", "true", "yes", "y", "on")
+
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Tuple, Optional
+
+from src.v2.utils.file_utils import get_data_dir, load_json_file, save_json_file
+from src.v2.utils.logger import get_logger
+
+logger = get_logger("position_manager")
+
+# --- Execution plan gate (institutional) ---
+def _load_execution_plan(data_dir: str):
+    try:
+        from pathlib import Path
+        from src.v2.utils.file_utils import load_json_file
+        p = Path(data_dir) / "trading" / "execution_plan.json"
+        obj = load_json_file(str(p), default={})
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        logger.exception("[position_manager] Impossible de charger execution_plan.json")
+        return {}
+
+
+def _is_final_safe_plan(plan: dict) -> tuple[bool, str]:
+    # Must be written by execution_engine_pro with governance block
+    if not isinstance(plan, dict) or not plan:
+        return False, "plan_missing"
+    if plan.get("writer") != "execution_engine_pro":
+        return False, "writer_not_execution_engine_pro"
+    if plan.get("status") != "ok":
+        return False, "status_not_ok"
+    gov = plan.get("governance")
+    if not isinstance(gov, dict) or gov.get("source") != "execution_engine_pro":
+        return False, "governance_missing_or_wrong_source"
+    if gov.get("hard_block") is True:
+        return False, "hard_block_true"
+    if not plan.get("run_id"):
+        return False, "run_id_missing"
+    gov_run_id = gov.get("run_id")
+    if gov_run_id is None or str(gov_run_id) != str(plan.get("run_id")):
+        return False, "governance_run_id_mismatch"
+    gov_gen = gov.get("generated_at")
+    if gov_gen is None or str(gov_gen) != str(plan.get("generated_at")):
+        return False, "governance_generated_at_mismatch"
+    return True, "ok"
+
+
+
+
+
+
+def _pm_state_path(data_dir: str) -> str:
+    from pathlib import Path
+    return str(Path(data_dir) / "trading" / "position_manager_state.json")
+
+
+def _load_pm_state(data_dir: str) -> dict:
+    try:
+        from src.v2.utils.file_utils import load_json_file
+        return load_json_file(_pm_state_path(data_dir), default={}) or {}
+    except Exception:
+        logger.exception("[position_manager] Impossible de charger position_manager_state.json")
+        return {}
+
+
+def _save_pm_state(data_dir: str, obj: dict) -> None:
+    try:
+        from src.v2.utils.file_utils import save_json_file
+        save_json_file(_pm_state_path(data_dir), obj)
+    except Exception:
+        logger.exception("[position_manager] Impossible de sauvegarder position_manager_state.json")
+
+    try:
+        from src.v2.utils.file_utils import save_json_file
+        save_json_file(_pm_state_path(data_dir), obj)
+    except Exception:
+        logger.exception("[position_manager] Impossible de sauvegarder position_manager_state.json")
+# ============================================================================
+# Helpers OHLCV / ATR
+# ============================================================================
+
+def _compute_atr_from_bars(
+    bars: List[Dict[str, Any]],
+    period: int = 14,
+) -> Tuple[Optional[float], Optional[float]]:
+    """
+    Calcule un ATR simple à partir d'une liste de barres (high/low/close).
+    Retourne (last_close, atr).
+    """
+    if not bars:
+        return None, None
+
+    bars = bars[-period:]
+    if len(bars) < 2:
+        last_close = bars[-1].get("close")
+        if last_close is None:
+            return None, None
+        high = bars[-1].get("high")
+        low = bars[-1].get("low")
+        if high is None or low is None:
+            return float(last_close), None
+        return float(last_close), float(high) - float(low)
+
+    trs: List[float] = []
+    prev_close: Optional[float] = None
+
+    for i, bar in enumerate(bars):
+        high = bar.get("high")
+        low = bar.get("low")
+        close = bar.get("close")
+        if high is None or low is None or close is None:
+            continue
+
+        high = float(high)
+        low = float(low)
+        close = float(close)
+
+        if i == 0 or prev_close is None:
+            tr = high - low
+        else:
+            tr = max(
+                high - low,
+                abs(high - prev_close),
+                abs(low - prev_close),
+            )
+        trs.append(tr)
+        prev_close = close
+
+    if not trs or prev_close is None:
+        return None, None
+
+    atr = sum(trs) / len(trs)
+    return prev_close, atr
+
+
+def get_last_close_and_atr(
+    ohlcv_symbol: Any,
+    period: int = 14,
+) -> Tuple[Optional[float], Optional[float]]:
+    """
+    Best-effort pour récupérer dernier close + ATR à partir de différents formats OHLCV :
+    - list[dict] avec high/low/close
+    - dict avec 'candles': [...]
+    - dict avec 'high'/'low'/'close' sous forme de listes
+    """
+    if not ohlcv_symbol:
+        return None, None
+
+    if isinstance(ohlcv_symbol, dict) and "candles" in ohlcv_symbol:
+        bars = ohlcv_symbol.get("candles") or []
+        if not isinstance(bars, list):
+            return None, None
+        return _compute_atr_from_bars(bars, period)
+
+    if isinstance(ohlcv_symbol, dict) and all(k in ohlcv_symbol for k in ("high", "low", "close")):
+        highs = ohlcv_symbol.get("high") or []
+        lows = ohlcv_symbol.get("low") or []
+        closes = ohlcv_symbol.get("close") or []
+        bars = [{"high": h, "low": l, "close": c} for h, l, c in zip(highs, lows, closes)]
+        return _compute_atr_from_bars(bars, period)
+
+    if isinstance(ohlcv_symbol, list):
+        return _compute_atr_from_bars(ohlcv_symbol, period)
+
+    return None, None
+
+
+# ============================================================================
+# Chargement des fichiers
+# ============================================================================
+
+def _path(data_dir: str, *parts: str) -> str:
+    return os.path.join(data_dir, *parts)
+
+
+def load_open_positions(data_dir: str) -> List[Dict[str, Any]]:
+    path = _path(data_dir, "trading", "open_positions.json")
+    positions = load_json_file(path, default=[])
+    if isinstance(positions, dict):
+        positions = positions.get("positions", [])
+    if not isinstance(positions, list):
+        logger.warning("[position_manager] open_positions.json inattendu (%s) -> []", type(positions))
+        return []
+    return [p for p in positions if isinstance(p, dict)]
+
+
+def load_exit_events(data_dir: str) -> List[Dict[str, Any]]:
+    path = _path(data_dir, "trading", "exit_events.json")
+    events = load_json_file(path, default=[])
+    if isinstance(events, dict):
+        events = events.get("events", [])
+    if not isinstance(events, list):
+        logger.warning("[position_manager] exit_events.json inattendu (%s) -> []", type(events))
+        return []
+    return [e for e in events if isinstance(e, dict)]
+
+
+def load_execution_plan_orders(data_dir: str) -> List[Dict[str, Any]]:
+    """
+    execution_plan.json peut être :
+      - dict {generated_at, orders: [...], stats: {...}}
+      - list [...]
+    Retourne orders (liste de dicts).
+    """
+    path = _path(data_dir, "trading", "execution_plan.json")
+    data = load_json_file(path, default=None)
+    orders: List[Dict[str, Any]] = []
+
+    if isinstance(data, dict) and isinstance(data.get("orders"), list):
+        orders = data["orders"]
+    elif isinstance(data, list):
+        orders = data
+
+    orders = [o for o in orders if isinstance(o, dict)]
+    logger.info("[position_manager] execution_plan chargé: %d ordres.", len(orders))
+    return orders
+
+
+def load_signals(data_dir: str) -> List[Dict[str, Any]]:
+    """
+    Charge les signaux depuis plusieurs emplacements possibles.
+
+    Priorité :
+      1) data/trading/execution_plan.json  (dict.orders ou list)
+      2) data/trading/sized_signals.json   (liste)
+      3) legacy: data/analysis/signal_candidates_filtered.json
+      4) legacy: data/analysis/signal_candidates.json
+      5) legacy: data/trading/signals.json
+
+    Retourne toujours une liste de dicts.
+    """
+    candidates = [
+        _path(data_dir, "trading", "sized_signals.json"),
+        _path(data_dir, "trading", "execution_plan.json"),
+        _path(data_dir, "analysis", "signal_candidates_filtered.json"),
+        _path(data_dir, "analysis", "signal_candidates.json"),
+        _path(data_dir, "trading", "signals.json"),
+    ]
+
+    chosen: Optional[str] = None
+    signals: List[Dict[str, Any]] = []
+
+    for path in candidates:
+        data = load_json_file(path, default=None)
+        if data is None:
+            continue
+
+        chosen = path
+
+        if isinstance(data, dict):
+            if "orders" in data and isinstance(data["orders"], list):
+                signals = data["orders"]
+            elif "signals" in data and isinstance(data["signals"], list):
+                signals = data["signals"]
+            else:
+                # fallback : première valeur list
+                for v in data.values():
+                    if isinstance(v, list):
+                        signals = v
+                        break
+
+        elif isinstance(data, list):
+            signals = data
+
+        if signals:
+            break
+
+    signals = [s for s in signals if isinstance(s, dict)]
+
+    # Guard anti-simulation: filtrer les fills simulés dès le chargement
+    if signals:
+        before = len(signals)
+        filtered = []
+        skipped = 0
+        for s in signals:
+            srcv = (s.get("source") or "").lower().strip()
+            if srcv == "derived_from_simulated_fills":
+                skipped += 1
+                continue
+            filtered.append(s)
+        signals = filtered
+        if skipped:
+            logger.warning("[position_manager] Skipped %d simulated-fill signals (load_signals).", skipped)
+            logger.info("[position_manager] Signals: %d -> %d after simulated-fill filter.", before, len(signals))
+
+    if chosen and signals:
+        logger.info(
+            "[position_manager] Signaux chargés (%s): %d lignes.",
+            os.path.basename(chosen),
+            len(signals),
+        )
+    else:
+        logger.warning("[position_manager] Aucun fichier de signaux trouvé (candidates=%s).",
+                       [os.path.basename(p) for p in candidates])
+
+    return signals
+
+
+def load_risk_engine(data_dir: str) -> Dict[str, Dict[str, Any]]:
+    """
+    Charge risk_engine_pro.json et renvoie un mapping symbol -> métriques de risque.
+    """
+    path = _path(data_dir, "analysis", "risk_engine_pro.json")
+    data = load_json_file(path, default={})
+    assets = data.get("assets", []) if isinstance(data, dict) else []
+
+    by_symbol: Dict[str, Dict[str, Any]] = {}
+    for a in assets:
+        if not isinstance(a, dict):
+            continue
+        symbol = a.get("symbol") or a.get("token") or a.get("asset")
+        if not symbol:
+            continue
+        by_symbol[str(symbol).lower()] = a
+
+    logger.info("[position_manager] Risk Engine chargé (%d assets).", len(by_symbol))
+    return by_symbol
+
+
+def load_ohlcv(data_dir: str) -> Dict[str, Any]:
+    path = _path(data_dir, "market", "ohlcv_combined.json")
+    ohlcv = load_json_file(path, default={})
+    if not isinstance(ohlcv, dict):
+        logger.warning("[position_manager] ohlcv_combined.json inattendu (%s) -> {}", type(ohlcv))
+        return {}
+    return ohlcv
+
+
+# ============================================================================
+# Logique de position : TP partiels + Trailing
+# ============================================================================
+
+PARTIAL_LEVELS = [0.15, 0.30]   # +15 %, +30 %
+PARTIAL_RATIOS = [0.40, 0.30]   # 40 %, puis 30 % (reste trailing)
+
+TRAILING_ATR_MULTIPLIER = 2.0
+TRAILING_MIN_PCT = 0.06  # 6 %
+TRAILING_MAX_PCT = 0.18  # 18 %
+
+
+def _normalize_side(side: Optional[str]) -> str:
+    s = (side or "long").lower().strip()
+    if s in ("buy", "long"):
+        return "long"
+    if s in ("sell", "short"):
+        return "short"
+    return "long"
+
+
+def _normalize_symbol(symbol: Optional[str]) -> Optional[str]:
+    if symbol is None:
+        return None
+    return str(symbol).lower().strip()
+
+
+def _get_price_and_atr_for_symbol(
+    ohlcv_all: Dict[str, Any],
+    symbol: str,
+) -> Tuple[Optional[float], Optional[float]]:
+    key = _normalize_symbol(symbol)
+    if key is None:
+        return None, None
+
+    candidates = {key}
+    if key.endswith("usdt"):
+        candidates.add(key.replace("usdt", ""))
+    if key.endswith("-usd"):
+        candidates.add(key.replace("-usd", ""))
+    if key.endswith("/usd"):
+        candidates.add(key.replace("/usd", ""))
+
+    for k in candidates:
+        if k in ohlcv_all:
+            return get_last_close_and_atr(ohlcv_all[k])
+
+    return None, None
+
+
+def _compute_trailing_params(
+    last_close: float,
+    atr: Optional[float],
+) -> Tuple[float, float]:
+    """
+    Renvoie (trailing_pct, trailing_price).
+    trailing_pct borné entre TRAILING_MIN_PCT et TRAILING_MAX_PCT.
+    """
+    if atr is None or last_close <= 0:
+        trailing_pct = 0.10  # fallback 10%
+    else:
+        raw_pct = (atr * TRAILING_ATR_MULTIPLIER) / float(last_close)
+        trailing_pct = max(TRAILING_MIN_PCT, min(TRAILING_MAX_PCT, raw_pct))
+
+    trailing_price = last_close * (1.0 - trailing_pct)
+    return trailing_pct, trailing_price
+
+
+def _compute_pnl(
+    entry_price: float,
+    exit_price: float,
+    size: float,
+    side: str = "long",
+) -> float:
+    if size <= 0 or entry_price <= 0:
+        return 0.0
+    direction = 1.0 if side.lower() != "short" else -1.0
+    return (exit_price - entry_price) * size * direction
+
+
+def _dedup_positions_keep_latest(positions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Dédup par (symbol_norm, side_norm) en conservant la position la plus récente (opened_at max).
+    """
+    best: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+    def _ts(p: Dict[str, Any]) -> str:
+        # string ISOZ comparables lexicographiquement si format stable
+        return str(p.get("opened_at") or p.get("timestamp") or "")
+
+    for p in positions:
+        if not isinstance(p, dict):
+            continue
+        sym = _normalize_symbol(p.get("symbol") or p.get("token") or p.get("asset"))
+        if not sym:
+            continue
+        side = _normalize_side(p.get("side"))
+        k = (sym, side)
+
+        if k not in best:
+            best[k] = p
+            continue
+
+        if _ts(p) >= _ts(best[k]):
+            best[k] = p
+
+    return list(best.values())
+
+
+def update_positions(
+    data_dir: str,
+    positions: List[Dict[str, Any]],
+    exit_events: List[Dict[str, Any]],
+    signals: List[Dict[str, Any]],
+    risk_by_symbol: Dict[str, Dict[str, Any]],
+    ohlcv_all: Dict[str, Any],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], int, int]:
+    """
+    Règles :
+    - TP1 : 40% à +15%
+    - TP2 : 30% à +30%
+    - Trailing ATR sur le reste
+    - Ouverture de nouvelles positions via signaux (execution_plan/sized_signals)
+      en tenant compte du Risk Engine (hard/soft veto, size_multiplier).
+    """
+    now_ts = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    new_exit_events = 0
+    new_positions = 0
+
+    # Dédup d'entrée (au cas où l'historique a déjà été pollué)
+    positions = _dedup_positions_keep_latest([p for p in positions if isinstance(p, dict)])
+
+    # Index positions actives par symbole
+    active_by_symbol: Dict[str, Dict[str, Any]] = {}
+    for pos in positions:
+        sym = _normalize_symbol(pos.get("symbol") or pos.get("token") or pos.get("asset"))
+        if not sym:
+            continue
+        rem = float(pos.get("remaining_size", pos.get("size", 0.0)) or 0.0)
+        if rem > 0 and not bool(pos.get("closed", False)):
+            active_by_symbol[sym] = pos
+
+    # ----------------------------------------------------------------------
+    # 1) Exits (TP1/TP2/Trailing)
+    # ----------------------------------------------------------------------
+    for pos in positions:
+        side = _normalize_side(pos.get("side"))
+        symbol_raw = pos.get("symbol") or pos.get("token") or pos.get("asset")
+        symbol_norm = _normalize_symbol(symbol_raw)
+
+        size = float(pos.get("size", 0.0) or 0.0)
+        remaining_size = float(pos.get("remaining_size", size) or 0.0)
+        entry_price = pos.get("entry_price") or pos.get("price")
+
+        if symbol_norm is None or remaining_size <= 0 or entry_price is None:
+            continue
+
+        entry_price = float(entry_price)
+        last_close, atr = _get_price_and_atr_for_symbol(ohlcv_all, str(symbol_raw))
+        if last_close is None or entry_price <= 0:
+            continue
+        last_close = float(last_close)
+
+        perf = (last_close - entry_price) / entry_price if side == "long" else (entry_price - last_close) / entry_price
+
+        tp1_done = bool(pos.get("tp1_done", False))
+        tp2_done = bool(pos.get("tp2_done", False))
+        realized_pnl = float(pos.get("realized_pnl", 0.0) or 0.0)
+
+        # TP1
+        if (not tp1_done) and perf >= PARTIAL_LEVELS[0] and remaining_size > 0:
+            exit_size = remaining_size * PARTIAL_RATIOS[0]
+            exit_pnl = _compute_pnl(entry_price, last_close, exit_size, side)
+            remaining_size -= exit_size
+            realized_pnl += exit_pnl
+            tp1_done = True
+            new_exit_events += 1
+            exit_events.append({
+                "timestamp": now_ts,
+                "symbol": symbol_raw,
+                "side": side,
+                "exit_type": "partial_tp1",
+                "reason": f"TP1 atteint (+{int(PARTIAL_LEVELS[0]*100)}%)",
+                "price": last_close,
+                "size": exit_size,
+                "pnl": exit_pnl,
+            })
+            logger.info("[position_manager] TP1 %s: size=%.6f price=%.6f pnl=%.4f",
+                        symbol_raw, exit_size, last_close, exit_pnl)
+
+        # TP2
+        if (not tp2_done) and perf >= PARTIAL_LEVELS[1] and remaining_size > 0:
+            # ratio appliqué sur le restant (après TP1) pour approx 30% initial
+            denom = max(1e-9, 1.0 - PARTIAL_RATIOS[0])
+            exit_size = remaining_size * (PARTIAL_RATIOS[1] / denom)
+            exit_size = min(exit_size, remaining_size)
+
+            exit_pnl = _compute_pnl(entry_price, last_close, exit_size, side)
+            remaining_size -= exit_size
+            realized_pnl += exit_pnl
+            tp2_done = True
+            new_exit_events += 1
+            exit_events.append({
+                "timestamp": now_ts,
+                "symbol": symbol_raw,
+                "side": side,
+                "exit_type": "partial_tp2",
+                "reason": f"TP2 atteint (+{int(PARTIAL_LEVELS[1]*100)}%)",
+                "price": last_close,
+                "size": exit_size,
+                "pnl": exit_pnl,
+            })
+            logger.info("[position_manager] TP2 %s: size=%.6f price=%.6f pnl=%.4f",
+                        symbol_raw, exit_size, last_close, exit_pnl)
+
+        # Trailing
+        trailing_active = bool(pos.get("trailing_active", False))
+        trailing_stop = pos.get("trailing_stop")
+
+        if (not trailing_active) and remaining_size > 0 and (tp2_done or perf >= PARTIAL_LEVELS[0] * 2):
+            trailing_pct, trailing_price = _compute_trailing_params(last_close, atr)
+            trailing_active = True
+            trailing_stop = trailing_price
+            logger.info("[position_manager] Trailing ON %s: pct=%.2f%% stop=%.6f",
+                        symbol_raw, trailing_pct * 100.0, trailing_price)
+
+        if trailing_active and trailing_stop is not None and remaining_size > 0:
+            trailing_stop = float(trailing_stop)
+            _, new_trailing_price = _compute_trailing_params(last_close, atr)
+
+            # Stop monotone
+            if side == "long":
+                if new_trailing_price > trailing_stop:
+                    trailing_stop = new_trailing_price
+                stop_hit = last_close <= trailing_stop
+            else:
+                # short: stop au-dessus, monotone "descendant" n'a pas de sens ici -> on garde simple
+                # (si tu veux short sérieux, on adaptera après)
+                stop_hit = last_close >= trailing_stop
+
+            if stop_hit:
+                exit_size = remaining_size
+                exit_pnl = _compute_pnl(entry_price, last_close, exit_size, side)
+                realized_pnl += exit_pnl
+                remaining_size = 0.0
+                trailing_active = False
+                new_exit_events += 1
+                exit_events.append({
+                    "timestamp": now_ts,
+                    "symbol": symbol_raw,
+                    "side": side,
+                    "exit_type": "trailing_stop",
+                    "reason": "Trailing stop déclenché",
+                    "price": last_close,
+                    "size": exit_size,
+                    "pnl": exit_pnl,
+                })
+                logger.info("[position_manager] Trailing HIT %s: size=%.6f price=%.6f pnl=%.4f",
+                            symbol_raw, exit_size, last_close, exit_pnl)
+
+        # update pos
+        pos["remaining_size"] = float(max(0.0, remaining_size))
+        pos["tp1_done"] = tp1_done
+        pos["tp2_done"] = tp2_done
+        pos["trailing_active"] = trailing_active
+        if trailing_stop is not None:
+            pos["trailing_stop"] = float(trailing_stop)
+        pos["realized_pnl"] = float(realized_pnl)
+
+        if pos["remaining_size"] <= 0:
+            pos["closed_at"] = now_ts
+            pos["closed"] = True
+    # Dry-run safe: en simulation, on gère exits/trailing mais on n'ouvre PAS de nouvelles positions
+    if is_dry_run_enabled():
+        logger.info("[position_manager] NSC_DRY_RUN=1 => skip ouverture nouvelles positions")
+        return positions, exit_events, 0, 0
+
+
+    # ----------------------------------------------------------------------
+    # 2) Ouverture nouvelles positions
+    # ----------------------------------------------------------------------
+    for sig in signals:
+        src = str(sig.get("source") or "").lower().strip()
+        if src == "derived_from_simulated_fills":
+            continue
+
+        symbol_raw = sig.get("symbol") or sig.get("token") or sig.get("asset")
+        symbol_norm = _normalize_symbol(symbol_raw)
+        if not symbol_norm:
+            continue
+
+        if symbol_norm in active_by_symbol:
+            continue
+
+        side = _normalize_side(sig.get("side"))
+
+        # Risk Engine
+        risk = risk_by_symbol.get(symbol_norm, {})
+        risk_flag = str(risk.get("risk_flag", "unknown"))
+        size_multiplier = float(risk.get("size_multiplier", 1.0) or 1.0)
+        flags = risk.get("flags") or {}
+        hard_veto = bool(flags.get("hard_veto", False))
+        soft_veto = bool(flags.get("soft_veto", False))
+
+        if hard_veto or risk_flag == "danger":
+            continue
+
+        # Entry price
+        entry_price = sig.get("entry_price") or sig.get("price")
+        if entry_price is None:
+            last_close, _ = _get_price_and_atr_for_symbol(ohlcv_all, str(symbol_raw))
+            if last_close is None:
+                continue
+            entry_price = last_close
+
+        entry_price_f = float(entry_price)
+        if entry_price_f <= 0:
+            continue
+
+        # Sizing: notional_eur prioritaire, sinon size/amount * multiplier
+        size = 0.0
+        notional_eur = sig.get("notional_eur")
+
+        if notional_eur is not None:
+            try:
+                notional_f = float(notional_eur)
+            except Exception:
+                notional_f = 0.0
+            if notional_f > 0:
+                size = (notional_f / entry_price_f) * max(0.0, size_multiplier)
+        else:
+            base_size = float(sig.get("size", sig.get("amount", 0.0) or 0.0) or 0.0)
+            if base_size <= 0:
+                base_size = 1.0
+            size = base_size * max(0.0, size_multiplier)
+
+        if size <= 0:
+            continue
+
+        pos = {
+            "symbol": symbol_raw,
+            "side": side,
+            "size": float(size),
+            "remaining_size": float(size),
+            "entry_price": float(entry_price_f),
+            "opened_at": now_ts,
+            "risk_flag": risk_flag,
+            "size_multiplier": float(size_multiplier),
+            "soft_veto": soft_veto,
+            "hard_veto": hard_veto,
+            "source": sig.get("source"),
+            "strategy": sig.get("strategy"),
+            "meta_score": sig.get("meta_score"),
+            "notional_eur": notional_eur,
+            "tp1_done": False,
+            "tp2_done": False,
+            "trailing_active": False,
+            "realized_pnl": 0.0,
+        }
+
+        positions.append(pos)
+        active_by_symbol[symbol_norm] = pos
+        new_positions += 1
+
+    # Dédup final + save
+    positions = _dedup_positions_keep_latest(positions)
+
+    open_pos_path = _path(data_dir, "trading", "open_positions.json")
+    exit_events_path = _path(data_dir, "trading", "exit_events.json")
+
+    save_json_file(open_pos_path, positions)
+    nb_active = len([p for p in positions if float(p.get("remaining_size", p.get("size", 0.0)) or 0.0) > 0 and not p.get("closed", False)])
+    logger.info("[position_manager] Positions ouvertes sauvegardées (%s, n=%d).", open_pos_path, nb_active)
+
+    save_json_file(exit_events_path, exit_events)
+    logger.info("[position_manager] Exit events sauvegardés (%s, total=%d).", exit_events_path, len(exit_events))
+
+    return positions, exit_events, new_positions, new_exit_events
+
+
+# ============================================================================
+# Entrée principale
+# ============================================================================
+
+def main() -> None:
+    data_dir = get_data_dir()
+    logger.info("[position_manager] DATA_DIR=%s", data_dir)
+    plan = _load_execution_plan(data_dir)
+    ok, reason = _is_final_safe_plan(plan)
+    if not ok:
+        # NSC_PATCH: position_manager_gate_reasons
+        # Enrich Gate: skip logs with plan.reasons + governance reasons
+        _top_reasons = None
+        _gov_reasons = None
+        try:
+            _top_reasons = plan.get('reasons') if isinstance(plan, dict) else None
+            _gov = plan.get('governance') if isinstance(plan, dict) else None
+            if isinstance(_gov, dict):
+                _gov_reasons = _gov.get('kill_switch_reasons') or _gov.get('reasons')
+        except Exception:
+            pass
+        logger.warning("[position_manager] Gate: skip (reason=%s) writer=%s status=%s gov_source=%s top_reasons=%s gov_reasons=%s", reason, plan.get("writer"), plan.get("status"), (plan.get("governance") or {}).get("source"), _top_reasons, _gov_reasons)
+        return
+
+    # --- Idempotence: do not re-apply on same execution_plan run_id ---
+    state = _load_pm_state(data_dir)
+    last_run_id = state.get("last_processed_run_id")
+    if last_run_id and str(last_run_id) == str(plan.get("run_id")):
+        # NSC_PATCH: force_reprocess_idempotence BEGIN
+        _force = str(os.environ.get('NSC_FORCE_REPROCESS', '0')).strip().lower() in ('1','true','yes')
+        _dry = str(os.environ.get('NSC_DRY_RUN', '0')).strip().lower() in ('1','true','yes')
+        if _force and _dry:
+            logger.warning('[position_manager] FORCE_REPROCESS enabled (DRY_RUN): bypass idempotence')
+        else:
+            logger.info("[position_manager] Idempotence: skip (run_id=%s already processed)", plan.get("run_id"))
+        # NSC_PATCH: force_reprocess_idempotence END
+
+        return
+
+
+    positions = load_open_positions(data_dir)
+    exit_events = load_exit_events(data_dir)
+    logger.info("[position_manager] Positions ouvertes initiales: %d", len(positions))
+
+    signals = load_signals(data_dir)
+    ohlcv_all = load_ohlcv(data_dir)
+    if not ohlcv_all:
+        logger.warning("[position_manager] Aucun OHLCV exploitable: %s", _path(data_dir, "market", "ohlcv_combined.json"))
+
+    risk_by_symbol = load_risk_engine(data_dir)
+
+    positions, exit_events, new_pos, new_exits = update_positions(
+        data_dir=data_dir,
+        positions=positions,
+        exit_events=exit_events,
+        signals=signals,
+        risk_by_symbol=risk_by_symbol,
+        ohlcv_all=ohlcv_all,
+    )
+
+
+    # --- Idempotence: persist last processed execution_plan run_id ---
+    try:
+        from datetime import datetime, timezone
+        _save_pm_state(data_dir, {
+            "last_processed_run_id": plan.get("run_id"),
+            "last_processed_generated_at": plan.get("generated_at"),
+            "saved_at": datetime.now(timezone.utc).isoformat(),
+        })
+        logger.info("[position_manager] Idempotence state saved (run_id=%s)", plan.get("run_id"))
+    except Exception:
+        logger.exception("[position_manager] Failed to persist idempotence state")
+    nb_active = len([p for p in positions if float(p.get("remaining_size", p.get("size", 0.0)) or 0.0) > 0 and not p.get("closed", False)])
+    logger.info(
+        "[position_manager] Update terminé: positions_actives=%d, new_positions=%d, new_exit_events=%d",
+        nb_active,
+        new_pos,
+        new_exits,
+    )
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,527 @@
+"""
+fvg_detector_light.py
+---------------------
+
+Détection "light" des Fair Value Gaps (FVG) par asset.
+
+Principe :
+- On inspecte les bougies OHLCV d'un asset.
+- On cherche des gaps du type (pattern 3 bougies) :
+    • FVG haussier : low[i+1] > high[i-1]
+    • FVG baissier : high[i+1] < low[i-1]
+- On regarde la taille du gap en % du prix, et sa récence.
+- On pondère un score 0–100 :
+    • Taille du gap
+    • Récence (plus récent = plus fort)
+    • Contexte de prix (au-dessus / au-dessous de MA20)
+
+Sortie :
+- data/analysis/fvg_overview.json
+    {
+      "bitcoin": {
+        "symbol": "bitcoin",
+        "timestamp": "...",
+        "fvg_score": 68.5,
+        "has_fvg": true,
+        "direction": "bullish" | "bearish" | "mixed" | "none",
+        "components": {
+          "largest_gap_pct": ...,
+          "recent_gap_pct": ...,
+          "recent_gap_age": ...,
+          "trend_factor": ...,
+          "nb_gaps_bullish": ...,
+          "nb_gaps_bearish": ...
+        },
+        "tags": ["fvg_bullish"]
+      },
+      ...
+    }
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import math
+
+try:
+    from src.v2.utils.logger import get_logger
+except ImportError:  # pragma: no cover
+    from src.v2.utils.logger import get_logger  # type: ignore
+
+logger = get_logger("fvg_detector_light")
+
+
+
+def _nsc_ohlcv_v2_to_legacy_rows(raw, max_points: int = 260):
+    """
+    v2 -> legacy:
+      {timestamp, env, assets:[{symbol, candles:[...]}]}
+    -> { "BTCUSDT":[{"close":..,"open":..,"high":..,"low":..,"volume":..,"ts":..}, ...], ... }
+    """
+    if not isinstance(raw, dict):
+        return raw
+    assets = raw.get("assets")
+    if not isinstance(assets, list):
+        return raw
+
+    def _f(x):
+        try:
+            return float(x)
+        except Exception:
+            return None
+
+    out = {}
+    for a in assets:
+        if not isinstance(a, dict):
+            continue
+        sym = a.get("symbol")
+        candles = a.get("candles")
+        if not isinstance(sym, str) or not isinstance(candles, list):
+            continue
+
+        rows = []
+        for c in candles[-max_points:]:
+            if not isinstance(c, dict):
+                continue
+            close = _f(c.get("close") if c.get("close") is not None else c.get("c"))
+            if close is None or close <= 0:
+                continue
+            rows.append({
+                "ts": c.get("ts"),
+                "open": _f(c.get("open")),
+                "high": _f(c.get("high")),
+                "low":  _f(c.get("low")),
+                "close": close,
+                "volume": _f(c.get("volume") if c.get("volume") is not None else c.get("v")),
+            })
+
+        if len(rows) >= 6:
+            out[sym] = rows
+
+    return out if out else raw
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+
+ROOT_DIR = Path(__file__).resolve().parents[3]  # /opt/nsc/app
+DATA_DIR = ROOT_DIR / "data"
+MARKET_DIR = DATA_DIR / "market"
+ANALYSIS_DIR = DATA_DIR / "analysis"
+
+MARKET_DIR.mkdir(parents=True, exist_ok=True)
+ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
+
+OHLCV_FILE = MARKET_DIR / "ohlcv_combined.json"
+OUTPUT_FILE = ANALYSIS_DIR / "fvg_overview.json"
+
+logger.info("[fvg_detector_light] ROOT_DIR=%s, DATA_DIR=%s", ROOT_DIR, DATA_DIR)
+
+# ---------------------------------------------------------------------------
+# file_utils fallback
+# ---------------------------------------------------------------------------
+
+try:
+    from src.v2.utils.file_utils import load_json_file, save_json_file  # type: ignore
+except Exception:  # pragma: no cover
+    load_json_file = None
+    save_json_file = None
+
+    import json
+
+    def _load_json(path: Path, default: Any = None) -> Any:
+        if not path.exists():
+            return default
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            logger.exception(
+                "[fvg_detector_light] Erreur lors du chargement JSON: %s",
+                path,
+            )
+            return default
+
+    def _save_json(path: Path, data: Any) -> None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("w", encoding="utf-8") as f:
+                import json as _json
+
+                _json.dump(data, f, indent=2, ensure_ascii=False)
+        except Exception:
+            logger.exception(
+                "[fvg_detector_light] Erreur lors de l'écriture JSON: %s",
+                path,
+            )
+else:
+
+    def _load_json(path: Path, default: Any = None) -> Any:
+        return load_json_file(str(path), default=default)
+
+    def _save_json(path: Path, data: Any) -> None:
+        save_json_file(str(path), data)
+
+
+# ---------------------------------------------------------------------------
+# Dataclasses & helpers
+# ---------------------------------------------------------------------------
+
+@dataclass
+class FVGResult:
+    symbol: str
+    timestamp: str
+    fvg_score: float
+    has_fvg: bool
+    direction: str  # bullish / bearish / mixed / none
+    components: Dict[str, Any]
+    tags: List[str]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+def _safe_float(x: Any, default: float = 0.0) -> float:
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+
+def _normalize_ohlcv_series(asset_data: Any) -> List[Dict[str, Any]]:
+    """
+    Accepte différents formats possibles (liste brute ou dict {candles: [...]})
+    et renvoie une liste triée par timestamp croissant.
+    """
+    series: List[Dict[str, Any]] = []
+
+    if isinstance(asset_data, list):
+        series = [c for c in asset_data if isinstance(c, dict)]
+    elif isinstance(asset_data, dict):
+        candles = asset_data.get("candles") or asset_data.get("data") or asset_data.get("ohlcv")
+        if isinstance(candles, list):
+            series = [c for c in candles if isinstance(c, dict)]
+
+    def _parse_ts(c: Dict[str, Any]) -> float:
+        ts = c.get("timestamp") or c.get("time") or c.get("t")
+        if isinstance(ts, (int, float)):
+            return float(ts)
+        if isinstance(ts, str):
+            try:
+                from datetime import datetime
+
+                return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+            except Exception:
+                return 0.0
+        return 0.0
+
+    series.sort(key=_parse_ts)
+    return series
+
+
+def _moving_average(values: List[float], window: int) -> Optional[float]:
+    if len(values) < window or window <= 0:
+        return None
+    return sum(values[-window:]) / float(window)
+
+
+# ---------------------------------------------------------------------------
+# FVG detection core
+# ---------------------------------------------------------------------------
+
+def _detect_fvgs(
+    highs: List[float],
+    lows: List[float],
+    closes: List[float],
+) -> Dict[str, Any]:
+    """
+    Détecte les FVG haussiers et baissiers.
+
+    Pattern classique (3 bougies) :
+      - FVG haussier : low[i+1] > high[i-1]
+      - FVG baissier : high[i+1] < low[i-1]
+
+    On renvoie :
+      - nb_gaps_bullish / bearish
+      - largest_gap_pct
+      - recent_gap_pct / age
+    """
+    n = len(highs)
+    if n < 3:
+        return {
+            "nb_gaps_bullish": 0,
+            "nb_gaps_bearish": 0,
+            "largest_gap_pct": 0.0,
+            "recent_gap_pct": 0.0,
+            "recent_gap_age": None,
+        }
+
+    gap_info: List[Dict[str, Any]] = []
+
+    for i in range(1, n - 1):
+        h_prev = highs[i - 1]
+        l_next = lows[i + 1]
+        l_prev = lows[i - 1]
+        h_next = highs[i + 1]
+        close_i = closes[i]
+
+        # FVG haussier : low[i+1] > high[i-1]
+        if l_next > h_prev and h_prev > 0:
+            gap_size = l_next - h_prev
+            gap_pct = gap_size / h_prev * 100.0
+            gap_info.append(
+                {
+                    "index": i,
+                    "type": "bullish",
+                    "gap_pct": gap_pct,
+                    "ref_price": close_i,
+                }
+            )
+
+        # FVG baissier : high[i+1] < low[i-1]
+        if h_next < l_prev and l_prev > 0:
+            gap_size = l_prev - h_next
+            gap_pct = gap_size / l_prev * 100.0
+            gap_info.append(
+                {
+                    "index": i,
+                    "type": "bearish",
+                    "gap_pct": gap_pct,
+                    "ref_price": close_i,
+                }
+            )
+
+    if not gap_info:
+        return {
+            "nb_gaps_bullish": 0,
+            "nb_gaps_bearish": 0,
+            "largest_gap_pct": 0.0,
+            "recent_gap_pct": 0.0,
+            "recent_gap_age": None,
+        }
+
+    nb_bullish = sum(1 for g in gap_info if g["type"] == "bullish")
+    nb_bearish = sum(1 for g in gap_info if g["type"] == "bearish")
+
+    # Plus grand gap
+    largest = max(gap_info, key=lambda g: g["gap_pct"])
+    largest_gap_pct = largest["gap_pct"]
+
+    # Gap le plus récent (plus grand index)
+    most_recent = max(gap_info, key=lambda g: g["index"])
+    recent_gap_pct = most_recent["gap_pct"]
+    recent_gap_age = n - most_recent["index"]  # nb de bougies depuis le gap
+
+    return {
+        "nb_gaps_bullish": nb_bullish,
+        "nb_gaps_bearish": nb_bearish,
+        "largest_gap_pct": largest_gap_pct,
+        "recent_gap_pct": recent_gap_pct,
+        "recent_gap_age": recent_gap_age,
+    }
+
+
+def _compute_fvg_score_for_asset(
+    symbol: str,
+    candles: List[Dict[str, Any]],
+) -> Optional[FVGResult]:
+    N_MIN = 40
+    if len(candles) < N_MIN:
+        logger.debug(
+            "[fvg_detector_light] %s: pas assez de candles (%d < %d), skip.",
+            symbol,
+            len(candles),
+            N_MIN,
+        )
+        return None
+
+    highs = [_safe_float(c.get("high") or c.get("h")) for c in candles]
+    lows = [_safe_float(c.get("low") or c.get("l")) for c in candles]
+    closes = [_safe_float(c.get("close") or c.get("c")) for c in candles]
+
+    last_close = closes[-1]
+    ma20 = _moving_average(closes, 20)
+
+    fvg_info = _detect_fvgs(highs, lows, closes)
+
+    nb_bull = fvg_info["nb_gaps_bullish"]
+    nb_bear = fvg_info["nb_gaps_bearish"]
+    largest_gap_pct = fvg_info["largest_gap_pct"]
+    recent_gap_pct = fvg_info["recent_gap_pct"]
+    recent_gap_age = fvg_info["recent_gap_age"]
+
+    if nb_bull + nb_bear == 0:
+        # aucun gap, score 0
+        direction = "none"
+        result = FVGResult(
+            symbol=symbol,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            fvg_score=0.0,
+            has_fvg=False,
+            direction=direction,
+            components={
+                "largest_gap_pct": 0.0,
+                "recent_gap_pct": 0.0,
+                "recent_gap_age": None,
+                "trend_factor": 0.0,
+                "nb_gaps_bullish": 0,
+                "nb_gaps_bearish": 0,
+                "ma20": ma20,
+                "last_close": last_close,
+            },
+            tags=[],
+        )
+        return result
+
+    # Direction dominante
+    if nb_bull > 0 and nb_bear == 0:
+        direction = "bullish"
+    elif nb_bear > 0 and nb_bull == 0:
+        direction = "bearish"
+    elif nb_bull > 0 and nb_bear > 0:
+        direction = "mixed"
+    else:
+        direction = "none"
+
+    # Score taille du gap (on privilégie le plus grand et le plus récent)
+    # clamp sur 0–20
+    size_score = max(0.0, min(20.0, largest_gap_pct))  # 1% => 1pt, 20% => 20pts
+
+    # Score récence : plus le gap est récent, plus il vaut
+    # recent_gap_age = nb de bougies depuis le gap, 1 => très récent
+    recency_score = 0.0
+    if isinstance(recent_gap_age, int) and recent_gap_age > 0:
+        if recent_gap_age <= 3:
+            recency_score = 25.0
+        elif recent_gap_age <= 10:
+            recency_score = 15.0
+        elif recent_gap_age <= 20:
+            recency_score = 8.0
+        else:
+            recency_score = 3.0
+    else:
+        recency_score = 0.0
+
+    # Trend factor : on donne un bonus si le sens du gap est aligné avec la tendance MA20
+    trend_factor = 0.0
+    if ma20 is not None and ma20 > 0:
+        if last_close > ma20 and direction == "bullish":
+            trend_factor = 15.0
+        elif last_close < ma20 and direction == "bearish":
+            trend_factor = 15.0
+        else:
+            trend_factor = 5.0  # pas aligné mais ok
+    else:
+        trend_factor = 5.0
+
+    # Densité de gaps : plus il y en a (raisonnablement) plus on donne un peu de poids
+    density = nb_bull + nb_bear
+    density_score = min(10.0, density * 2.0)  # 5+ gaps => 10 pts
+
+    # Score brut
+    score_raw = size_score + recency_score + trend_factor + density_score
+
+    # Normalisation / clamp
+    fvg_score = max(0.0, min(100.0, score_raw))
+
+    has_fvg = fvg_score >= 20.0  # petit seuil pour dire "il y a un FVG pertinent"
+
+    tags: List[str] = []
+    if has_fvg:
+        if direction == "bullish":
+            tags.append("fvg_bullish")
+        elif direction == "bearish":
+            tags.append("fvg_bearish")
+        else:
+            tags.append("fvg_mixed")
+
+    result = FVGResult(
+        symbol=symbol,
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        fvg_score=round(fvg_score, 2),
+        has_fvg=has_fvg,
+        direction=direction,
+        components={
+            "largest_gap_pct": largest_gap_pct,
+            "recent_gap_pct": recent_gap_pct,
+            "recent_gap_age": recent_gap_age,
+            "trend_factor": trend_factor,
+            "density_score": density_score,
+            "size_score": size_score,
+            "recency_score": recency_score,
+            "nb_gaps_bullish": nb_bull,
+            "nb_gaps_bearish": nb_bear,
+            "ma20": ma20,
+            "last_close": last_close,
+        },
+        tags=tags,
+    )
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def compute_fvg_overview() -> Dict[str, FVGResult]:
+    ohlcv = _load_json(OHLCV_FILE, default={})
+    if not isinstance(ohlcv, dict) or not ohlcv:
+        logger.warning(
+            "[fvg_detector_light] Aucun OHLCV trouvé dans %s.",
+            OHLCV_FILE,
+        )
+        return {}
+
+    results: Dict[str, FVGResult] = {}
+    for symbol, series in ohlcv.items():
+        candles = _normalize_ohlcv_series(series)
+        if not candles:
+            continue
+        try:
+            res = _compute_fvg_score_for_asset(symbol, candles)
+        except Exception:
+            logger.exception(
+                "[fvg_detector_light] Erreur lors du calcul FVG pour %s",
+                symbol,
+            )
+            res = None
+
+        if res is not None:
+            results[symbol] = res
+
+    logger.info(
+        "[fvg_detector_light] FVG calculé pour %d assets.",
+        len(results),
+    )
+    return results
+
+
+def save_fvg_overview(results: Dict[str, FVGResult]) -> None:
+    payload = {sym: res.to_dict() for sym, res in results.items()}
+    _save_json(OUTPUT_FILE, payload)
+    logger.info(
+        "[fvg_detector_light] Résultats FVG sauvegardés dans %s.",
+        OUTPUT_FILE,
+    )
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    results = compute_fvg_overview()
+    if not results:
+        logger.warning(
+            "[fvg_detector_light] Aucun FVG significatif détecté."
+        )
+    save_fvg_overview(results)
+
+
+if __name__ == "__main__":
+    main()

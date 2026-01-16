@@ -1,0 +1,458 @@
+from __future__ import annotations
+
+import os
+import math
+import datetime as dt
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from src.v2.utils.logger import get_logger
+from src.v2.utils.file_utils import load_json_file, save_json_file
+from src.v2.core.message_bus import publish_event
+
+logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Helpers env / data_dir
+# ---------------------------------------------------------------------------
+
+def get_data_dir() -> Path:
+    """
+    Renvoie le dossier data de NSC.
+
+    - Si NSC_DATA_DIR est défini : on l'utilise.
+    - Sinon : 'data' relatif au cwd (/opt/nsc/app).
+    """
+    base = os.getenv("NSC_DATA_DIR", "data")
+    return Path(base).resolve()
+
+
+def get_env() -> str:
+    """Renvoie l'environnement courant ('PREPROD' par défaut)."""
+    return os.getenv("NSC_ENV", "PREPROD")
+
+
+# ---------------------------------------------------------------------------
+# Dataclass & helpers
+# ---------------------------------------------------------------------------
+
+@dataclass
+class VolatilityMetrics:
+    realized_vol_20d: Optional[float]
+    realized_vol_5d: Optional[float]
+    implied_vol_index: Optional[float]
+    vol_of_vol: Optional[float]
+    cross_section_vol: Optional[float]
+
+
+def _get_float(value: Any) -> Optional[float]:
+    try:
+        v = float(value)
+        if math.isnan(v):
+            return None
+        return v
+    except (TypeError, ValueError):
+        return None
+
+
+def load_volatility_metrics(raw: Any) -> VolatilityMetrics:
+    """
+    Charge les métriques de volatilité à partir d'une structure flexible.
+
+    Structure recommandée (mais non obligatoire) :
+
+    {
+      "realized_vol_20d": 0.35,
+      "realized_vol_5d": 0.40,
+      "implied_vol_index": 0.30,
+      "vol_of_vol": 0.20,
+      "cross_section_vol": 0.25
+    }
+
+    Les valeurs sont attendues en vol annualisée (ex : 0.20 = 20 %).
+    """
+    if not isinstance(raw, dict):
+        raw = {}
+
+    return VolatilityMetrics(
+        realized_vol_20d=_get_float(raw.get("realized_vol_20d")),
+        realized_vol_5d=_get_float(raw.get("realized_vol_5d")),
+        implied_vol_index=_get_float(raw.get("implied_vol_index")),
+        vol_of_vol=_get_float(raw.get("vol_of_vol")),
+        cross_section_vol=_get_float(raw.get("cross_section_vol")),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Logic Volatility State Machine
+# ---------------------------------------------------------------------------
+
+def infer_vol_regime_and_score(
+    metrics: VolatilityMetrics,
+) -> Tuple[str, str, float, List[str]]:
+    """
+    Déduit un régime de volatilité + flag + score simple.
+
+    Intuition très simplifiée :
+    - vol faible & stable → "calm" → plutôt supportive
+    - vol modérée → "normal"
+    - vol élevée mais pas extrême → "stressed"
+    - vol très élevée / vol-of-vol élevée → "panic"
+    """
+
+    reasons: List[str] = []
+
+    rv20 = metrics.realized_vol_20d
+    rv5 = metrics.realized_vol_5d
+    iv = metrics.implied_vol_index
+    vov = metrics.vol_of_vol
+    xsec = metrics.cross_section_vol
+
+    # Cas sans données
+    if all(v is None for v in (rv20, rv5, iv, vov, xsec)):
+        reasons.append("Aucune donnée de volatilité exploitable – score neutre.")
+        return "unknown", "caution", 50.0, reasons
+
+    # On utilise rv20 comme anchor si dispo
+    anchor = rv20 if rv20 is not None else rv5 if rv5 is not None else iv
+
+    if anchor is None:
+        reasons.append("Volatilité partiellement renseignée – score neutre.")
+        return "unknown", "caution", 50.0, reasons
+
+    # Seuils grossiers mais cohérents avec un univers crypto/offensif :
+    # anchor ≈ 0.15 = calme, 0.20–0.40 normal/stressé, >0.40 très agité
+    panic = False
+    stressed = False
+    calm = False
+
+    if anchor <= 0.18:
+        calm = True
+    elif 0.18 < anchor <= 0.35:
+        stressed = False
+    elif 0.35 < anchor <= 0.55:
+        stressed = True
+    else:
+        panic = True
+
+    # On renforce panic si vol-of-vol très élevé
+    if vov is not None and vov >= 0.35:
+        panic = True
+        stressed = False
+
+    # On renforce stressed si dispersion forte
+    if not panic and xsec is not None and xsec >= 0.30:
+        stressed = True
+
+    if panic:
+        regime = "panic"
+        global_flag = "risk_off"
+        score = 30.0
+        reasons.append(
+            f"Régime de volatilité PANIC (anchor≈{anchor:.2f}, vol_of_vol={vov if vov is not None else 'N/A'}, "
+            f"cross_section_vol={xsec if xsec is not None else 'N/A'})."
+        )
+    elif stressed:
+        regime = "stressed"
+        global_flag = "caution"
+        score = 42.0
+        reasons.append(
+            f"Régime de volatilité STRESSED (anchor≈{anchor:.2f}, cross_section_vol={xsec if xsec is not None else 'N/A'})."
+        )
+    elif calm:
+        regime = "calm"
+        global_flag = "supportive"
+        score = 65.0
+        reasons.append(
+            f"Régime de volatilité CALM (anchor≈{anchor:.2f})."
+        )
+    else:
+        regime = "normal"
+        global_flag = "neutral"
+        score = 55.0
+        reasons.append(
+            f"Régime de volatilité NORMAL (anchor≈{anchor:.2f})."
+        )
+
+    return regime, global_flag, score, reasons
+
+
+def severity_from_flag(global_flag: str) -> str:
+    if global_flag == "risk_off":
+        return "critical"
+    if global_flag == "supportive":
+        return "info"
+    if global_flag == "neutral":
+        return "warning"
+    if global_flag == "caution":
+        return "warning"
+    return "info"
+
+
+def build_volatility_state(data_dir: Path, env: str) -> Tuple[Dict[str, Any], str]:
+    # Always initialize reasons early (used throughout the state machine)
+    reasons = []
+
+    """
+    Construit l'état de volatilité à partir de :
+
+    data/analysis/volatility_metrics.json
+
+    Exemple de structure attendue :
+
+    {
+      "timestamp": "...",
+      "realized_vol_20d": 0.35,
+      "realized_vol_5d": 0.40,
+      "implied_vol_index": 0.30,
+      "vol_of_vol": 0.20,
+      "cross_section_vol": 0.25
+    }
+    """
+    src_file = data_dir / "analysis" / "volatility_metrics.json"
+    metrics = load_json_file(src_file, default={})
+    # Fallback: si volatility_metrics.json absent / vide, utiliser volatility_engine_pro.json
+    if (not isinstance(metrics, dict)) or (len(metrics) == 0):
+        eng = load_json_file(str(data_dir / "analysis" / "volatility_engine_pro.json"), default={})
+        assets = eng.get("assets") if isinstance(eng, dict) else None
+        logger.info("[volatility_state_machine_pro] fallback(vol_engine) assets_len=%s", (len(assets) if isinstance(assets, list) else None))
+
+    logger.info(\"[volatility_state_machine_pro] fallback(vol_engine) assets_len=%s\", (len(assets) if isinstance(assets, list) else None))
+
+        if isinstance(assets, list) and len(assets) > 0:
+            v7  = []
+            v30 = []
+            regimes = []
+            spikes = 0
+            extreme = 0
+
+            for a in assets:
+                if not isinstance(a, dict):
+                    continue
+                if a.get("vol_7d") is not None:
+                    try: v7.append(float(a["vol_7d"]))
+                    except: pass
+                if a.get("vol_30d") is not None:
+                    try: v30.append(float(a["vol_30d"]))
+                    except: pass
+                r = a.get("vol_regime")
+                if isinstance(r, str):
+                    regimes.append(r.lower())
+                fl = a.get("flags") if isinstance(a.get("flags"), dict) else {}
+                if fl.get("vol_spike") is True:
+                    spikes += 1
+                if fl.get("extreme_vol") is True:
+                    extreme += 1
+
+            def _avg(xs):
+                return (sum(xs) / len(xs)) if xs else None
+
+            def _std(xs):
+                if not xs or len(xs) < 2:
+                    return None
+                mu = sum(xs) / len(xs)
+                var = sum((x - mu) ** 2 for x in xs) / (len(xs) - 1)
+                return var ** 0.5
+
+            rv5  = _avg(v7)   # proxy
+            rv20 = _avg(v30)  # proxy
+            logger.info("[volatility_state_machine_pro] fallback(vol_engine) rv20=%s rv5=%s xsec=%s vov=%s spikes=%s extreme=%s", rv20, rv5, xsec, vov, spikes, extreme)
+            logger.info(\"[volatility_state_machine_pro] fallback(vol_engine) rv20=%s rv5=%s xsec=%s vov=%s spikes=%s extreme=%s\", rv20, rv5, xsec, vov, spikes, extreme)
+            xsec = _std(v30)  # dispersion cross-asset
+            vov  = _std(v7)   # vol-of-vol proxy
+
+            # Build metrics payload from volatility_engine_pro fallback
+            metrics = {
+                'realized_vol_20d': rv20,
+                'realized_vol_5d': rv5,
+                'implied_vol_index': None,
+                'vol_of_vol': vov,
+                'cross_section_vol': xsec,
+                'source': 'derived_from_volatility_engine_pro',
+                'nb_assets': len(assets),
+                'nb_vol_spike': spikes,
+                'nb_extreme_vol': extreme,
+            }
+            reasons.append('volatility_metrics missing -> derived from volatility_engine_pro')
+
+            # score simple (0..100): plus rv20 est haut => score baisse
+            # On réutilise les thresholds du moteur si dispo, sinon fallback
+            th = ((eng.get("params") or {}).get("thresholds") or {}) if isinstance(eng, dict) else {}
+            calm_max   = float(th.get("calm_max")   or 0.02)
+            normal_max = float(th.get("normal_max") or 0.04)
+            high_max   = float(th.get("high_max")   or 0.08)
+
+            # Déduction régime global
+            # - si extreme_vol présent => panic
+            # - sinon si beaucoup de spikes => spike
+            # - sinon par niveau moyen
+            nb = len(assets)
+            spike_share = (spikes / nb) if nb else 0.0
+
+            if extreme > 0:
+                regime = "panic"
+                global_flag = "risk_off"
+                score = 20.0
+                reasons.append(f"Extreme volatility flags detected (extreme_vol={extreme}/{nb}).")
+            elif spike_share >= 0.5:
+                regime = "spike"
+                global_flag = "caution"
+                score = 40.0
+                reasons.append(f"Volatility spike widespread (vol_spike={spikes}/{nb}).")
+            else:
+                # régime basé sur rv20
+                if rv20 is None:
+                    regime = "unknown"
+                    global_flag = "caution"
+                    score = 50.0
+                    reasons.append("Volatility engine present but insufficient rv20 data – neutral.")
+                elif rv20 <= calm_max:
+                    regime = "calm"
+                    global_flag = "risk_on"
+                    score = 80.0
+                    reasons.append(f"Realized vol low (rv20≈{rv20:.6f} <= calm_max={calm_max}).")
+                elif rv20 <= normal_max:
+                    regime = "normal"
+                    global_flag = "risk_on"
+                    score = 65.0
+                    reasons.append(f"Realized vol normal (rv20≈{rv20:.6f} <= normal_max={normal_max}).")
+                elif rv20 <= high_max:
+                    regime = "high"
+                    global_flag = "caution"
+                    score = 45.0
+                    reasons.append(f"Realized vol high (rv20≈{rv20:.6f} <= high_max={high_max}).")
+                else:
+                    regime = "extreme"
+                    global_flag = "risk_off"
+                    score = 25.0
+                    reasons.append(f"Realized vol extreme (rv20≈{rv20:.6f} > high_max={high_max}).")
+
+            # Renseigne metrics attendus par le state machine
+            metrics = {
+                "realized_vol_20d": rv20,
+                "realized_vol_5d": rv5,
+                "implied_vol_index": None,
+                "vol_of_vol": vov,
+                "cross_section_vol": xsec,
+                "nb_assets": nb,
+                "spike_share": spike_share,
+                "extreme_flags": extreme,
+            }
+
+    # fallback: si volatility_metrics.json n'existe pas, utilise volatility_engine_pro.json
+    try:
+        if not src_file.exists():
+            _fallback = data_dir / "analysis" / "volatility_engine_pro.json"
+            if _fallback.exists():
+                src_file = _fallback
+    except Exception:
+        pass
+
+    raw = load_json_file(src_file, default={})
+
+    # --- Normalize volatility metrics schema (engine/state_machine compatibility) ---
+    try:
+        raw = raw
+        if isinstance(raw, dict) and isinstance(raw.get('metrics'), dict) and len(raw.get('metrics')) > 0:
+            raw = raw.get('metrics')
+        elif isinstance(raw, dict):
+            # If already in expected schema, keep as-is
+            if any(k in raw for k in ('realized_vol_20d','realized_vol_5d','implied_vol_index','vol_of_vol','cross_section_vol')):
+                raw = raw
+            else:
+                # Map short keys -> expected keys
+                mapped = {
+                    'realized_vol_20d': raw.get('rv20') or raw.get('realized_vol_20d') or raw.get('realized_vol20') or raw.get('rv_20d'),
+                    'realized_vol_5d':  raw.get('rv5')  or raw.get('realized_vol_5d')  or raw.get('realized_vol5')  or raw.get('rv_5d'),
+                    'implied_vol_index': raw.get('iv')  or raw.get('implied_vol_index') or raw.get('iv_index') or raw.get('implied_vol'),
+                    'vol_of_vol': raw.get('vov') or raw.get('vol_of_vol') or raw.get('volvol'),
+                    'cross_section_vol': raw.get('xsec') or raw.get('cross_section_vol') or raw.get('xsec_vol'),
+                }
+                if any(v is not None for v in mapped.values()):
+                    raw = mapped
+    except Exception:
+        pass
+
+
+    metrics = load_volatility_metrics(raw)
+    regime, global_flag, score, reasons = infer_vol_regime_and_score(metrics)
+    severity = severity_from_flag(global_flag)
+
+    now_ts = dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+    state: Dict[str, Any] = {
+        "timestamp": now_ts,
+        "env": env,
+        "symbol": "global",
+        "regime": regime,
+        "global_flag": global_flag,
+        "score": score,
+        "metrics": {
+            "realized_vol_20d": metrics.realized_vol_20d,
+            "realized_vol_5d": metrics.realized_vol_5d,
+            "implied_vol_index": metrics.implied_vol_index,
+            "vol_of_vol": metrics.vol_of_vol,
+            "cross_section_vol": metrics.cross_section_vol,
+        },
+        "reasons": reasons,
+    }
+
+    logger.info(
+        "[volatility_state_machine_pro] env=%s, regime=%s, global_flag=%s, "
+        "score=%.2f, rv20=%s, rv5=%s, iv=%s, vov=%s, xsec=%s",
+        env,
+        regime,
+        global_flag,
+        score,
+        f"{metrics.realized_vol_20d:.2f}" if metrics.realized_vol_20d is not None else "None",
+        f"{metrics.realized_vol_5d:.2f}" if metrics.realized_vol_5d is not None else "None",
+        f"{metrics.implied_vol_index:.2f}" if metrics.implied_vol_index is not None else "None",
+        f"{metrics.vol_of_vol:.2f}" if metrics.vol_of_vol is not None else "None",
+        f"{metrics.cross_section_vol:.2f}" if metrics.cross_section_vol is not None else "None",
+    )
+
+    return state, severity
+
+
+def main() -> None:
+    data_dir = get_data_dir()
+    env = get_env()
+
+    logger.info(
+        "[volatility_state_machine_pro] DATA_DIR=%s, env=%s",
+        data_dir,
+        env,
+    )
+
+    state, severity = build_volatility_state(data_dir=data_dir, env=env)
+
+    # Sauvegarde JSON
+    output_path = data_dir / "analysis" / "volatility_state_machine_pro.json"
+    save_json_file(output_path, state)
+    logger.info(
+        "[volatility_state_machine_pro] volatility_state_machine_pro.json sauvegardé "
+        "(regime=%s, global_flag=%s, score=%.2f)",
+        state.get("regime"),
+        state.get("global_flag"),
+        state.get("score"),
+    )
+
+    # Publication event
+    publish_event(
+        event_type="volatility.state_machine",
+        source="volatility_state_machine_pro",
+        severity=severity,
+        payload=state,
+    )
+    logger.info(
+        "[volatility_state_machine_pro] Event volatility.state_machine publié "
+        "(severity=%s, score=%.2f)",
+        severity,
+        state.get("score"),
+    )
+
+
+if __name__ == "__main__":
+    main()

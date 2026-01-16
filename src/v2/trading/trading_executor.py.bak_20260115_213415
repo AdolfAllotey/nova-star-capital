@@ -1,0 +1,88 @@
+import os
+from src.utils.telegram_bot import send_telegram_message
+
+from src.v2.utils.file_utils import get_data_dir, load_json_file
+
+# NSC_PATCH: ensure_logger_defined BEGIN
+import logging as _logging
+logger = globals().get("logger") or _logging.getLogger(__name__)
+# NSC_PATCH: ensure_logger_defined END
+
+# NSC_PATCH: execution_hard_gate BEGIN
+def _nsc_execution_hard_gate(data_dir):
+    """Retourne (ok_to_execute: bool, reason: str)."""
+    try:
+        dd = Path(data_dir)
+        plan = load_json_file(dd / "trading" / "execution_plan.json", default={})
+        gov  = load_json_file(dd / "analysis" / "governance_engine_pro.json", default={})
+        ks   = load_json_file(dd / "trading" / "kill_switch.json", default={})
+
+        # Kill-switch prioritaire
+        if isinstance(ks, dict):
+            if bool(ks.get("enabled")) is True and (bool(ks.get("hard_block")) or str(ks.get("mode")) == "hard_block"):
+                return False, "kill_switch_hard_block"
+
+        # Gouvernance (source-of-truth)
+        if isinstance(gov, dict) and bool(gov.get("hard_block")):
+            return False, "governance_hard_block"
+
+        # Execution plan
+        if isinstance(plan, dict):
+            st = str(plan.get("status") or "").lower()
+            if st in {"blocked", "hard_block", "hard_blocked"}:
+                return False, f"execution_plan_status={st}"
+            # si orders=0, on ne doit rien exécuter
+            orders = plan.get("orders")
+            if isinstance(orders, list) and len(orders) == 0:
+                return False, "execution_plan_orders=0"
+            # si un mode est précisé
+            mode = str(plan.get("execution_mode") or "").upper()
+            if mode in {"SIMULATED_ONLY", "PAPER", "DRY_RUN"}:
+                return False, f"execution_mode={mode}"
+
+        return True, "ok"
+    except Exception as e:
+        # en cas d'erreur de lecture : fail-safe = pas d'exécution
+        # NSC_PATCH: hard_gate_exception_details BEGIN
+        reason = f"hard_gate_exception:{type(e).__name__}:{e}"
+        logger.exception("[trading_executor] HARD GATE exception (reason=%s)", reason)
+        return False, reason
+        # NSC_PATCH: hard_gate_exception_details END
+# NSC_PATCH: execution_hard_gate END
+
+# Mode trading : True pour réel, False pour simulation
+REAL_TRADING = os.getenv("REAL_TRADING", "False").lower() == "true"
+
+def execute_trade(order):
+    """
+    Execute un ordre d'achat ou de vente.
+
+    order: dict avec au moins les clés :
+        - symbol (str) : token à trader
+        - side (str) : 'buy' ou 'sell'
+        - quantity (float) : quantité à acheter/vendre
+    """
+    symbol = order.get("symbol")
+    side = order.get("side")
+    quantity = order.get("quantity")
+
+    if REAL_TRADING:
+        # TODO: implémenter appel API exchange ici
+        # Exemple: binance_api.place_order(symbol, side, quantity)
+        send_telegram_message(f"🚀 Ordre {side.upper()} exécuté pour {quantity} {symbol} (REEL)")
+        print(f"[REEL] {side} {quantity} {symbol}")
+    else:
+        # Mode simulation : juste logging
+        send_telegram_message(f"📝 Ordre {side.upper()} simulé pour {quantity} {symbol}")
+        print(f"[SIMU] {side} {quantity} {symbol}")
+
+if __name__ == "__main__":
+    data_dir = get_data_dir()
+    ok, reason = _nsc_execution_hard_gate(data_dir)
+    if not ok:
+        logger.warning("[trading_executor] HARD GATE => no real execution. reason=%s", reason)
+        raise SystemExit(0)
+
+    # Test simple
+    test_order = {"symbol": "BTCUSDT", "side": "buy", "quantity": 0.001}
+    execute_trade(test_order)

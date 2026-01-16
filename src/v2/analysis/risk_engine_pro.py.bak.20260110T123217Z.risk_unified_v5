@@ -1,0 +1,737 @@
+# src/v2/analysis/risk_engine_pro.py
+from __future__ import annotations
+# NSC_FIX_CORR_GATE_REASONS_LITERAL_BRACES_V1
+# NSC_FIX_CORR_REGIME_REASON_SOURCE_UNIQUE_V1
+# NSC_FIX_CORR_GATE_STATE_REASONS_FSTRINGS_V1
+# NSC_FIX_EMPTY_ELSE_BLOCKS_V1
+# NSC_DEDUPE_CORR_REGIME_REASON_V1
+# NSC_FIX_CORR_GATE_ACTIVE_INACTIVE_FSTRINGS_V2
+# NSC_FIX_CORR_GATE_REASON_FSTRINGS_V1
+
+import os
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from src.v2.utils.logger import get_logger
+from src.v2.utils.file_utils import ensure_dir, load_json_file, save_json_file
+
+logger = get_logger("risk_engine_pro")
+
+
+# ---------------------------------------------------------------------------
+# Utils / Env
+# ---------------------------------------------------------------------------
+
+def _now_ts() -> int:
+    return int(time.time())
+
+
+def _get_env() -> str:
+    return os.environ.get("NSC_ENV", "PREPROD")
+
+
+def _get_data_dir() -> Path:
+    root = os.environ.get("NSC_ROOT_DIR") or os.getcwd()
+    return Path(os.environ.get("NSC_DATA_DIR", str(Path(root) / "data")))
+
+
+def _analysis_dir(data_dir: Path) -> Path:
+    return data_dir / "analysis"
+
+
+def _telemetry_dir(data_dir: Path) -> Path:
+    return data_dir / "telemetry"
+
+
+def _safe_float(x: Any, default: float = 0.0) -> float:
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+
+def _clamp(x: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, x))
+
+
+def _score_01(x: Any, default: float = 0.5) -> float:
+    v = _safe_float(x, default)
+    if v > 1.0:
+        v = v / 100.0
+    return _clamp(v, 0.0, 1.0)
+
+
+def _score_100(x: Any, default: float = 50.0) -> float:
+    v = _safe_float(x, default)
+    if v <= 1.0:
+        v = v * 100.0
+    return _clamp(v, 0.0, 100.0)
+
+
+def _load_json(path: Path, default: Any) -> Any:
+    return load_json_file(path)
+
+
+def _read_score(payload: Any, keys: Tuple[str, ...]) -> Optional[float]:
+    if not isinstance(payload, dict):
+        return None
+    for k in keys:
+        v = payload.get(k)
+        if isinstance(v, (int, float)):
+            return float(v)
+    return None
+
+
+def _publish_event(event_type: str, source: str, severity: str, payload: Dict[str, Any]) -> None:
+    """
+    Best effort publish (MessageBus / MessageBusPro).
+    """
+    try:
+        from src.v2.core.message_bus import MessageBus  # type: ignore
+        MessageBus().publish(event_type, source, severity, payload)
+        return
+    except Exception:
+        pass
+
+    try:
+        from src.v2.core.message_bus_pro import MessageBusPro  # type: ignore
+        MessageBusPro().publish(event_type, source, severity, payload)
+        return
+    except Exception:
+        pass
+
+    logger.debug("[risk_engine_pro] EventBus indisponible (skip publish)")
+
+
+def _severity(score_100: float) -> str:
+    # ici score élevé = risque faible, donc severity inverse
+    if score_100 >= 70:
+        return "info"
+    if score_100 >= 45:
+        return "warning"
+    return "critical"
+
+
+# ---------------------------------------------------------------------------
+# Risk scoring (light mais robuste)
+# ---------------------------------------------------------------------------
+
+# === NSC_CORR_SAFE_V1 ===
+def _load_corr_and_macro(analysis_dir: str) -> tuple[float, str]:
+    """
+    Returns (corr_score_0_100, macro_risk_level).
+    Always returns safe defaults.
+    """
+    try:
+        from src.v2.utils.file_utils import load_json_file
+        corr = load_json_file(f"{analysis_dir}/correlation_regime_engine_pro.json", default={}) or {}
+        corr_score = corr.get("score", 50.0)
+        try:
+            corr_score = float(corr_score)
+        except Exception:
+            corr_score = 50.0
+
+        macro = str(corr.get("macro_risk_level", "neutral")).lower().strip()
+        if macro not in ("low", "neutral", "medium", "high"):
+            macro = "neutral"
+        return corr_score, macro
+    except Exception:
+        return 50.0, "neutral"
+# === END NSC_CORR_SAFE_V1 ===
+
+
+
+def compute_risk_state(analysis_dir: Path, telemetry_dir: Path) -> Dict[str, Any]:
+    # Local DATA_DIR resolver (avoid NameError in this scope)
+    data_dir = (Path(__file__).resolve().parents[3] / "data")
+    reasons: List[str] = []
+    components: List[Dict[str, Any]] = []
+
+    # Defaults neutres
+    base = 50.0
+
+    # --- Inputs (best effort) ---
+    market_regime = _load_json(analysis_dir / "market_regime_detector.json", default={})
+    market_conditions = _load_json(analysis_dir / "market_conditions_engine_pro.json", default={})
+    volatility_state = _load_json(analysis_dir / "volatility_state_machine_pro.json", default={})
+    # NSC_VOL_SHOCK_HARD_VETO_V1
+    try:
+        _v = volatility_state if isinstance(volatility_state, dict) else {}
+        _v_reg = str(_v.get('regime') or _v.get('flag') or '').lower()
+        _v_sev = str(_v.get('severity') or '').lower()
+        _v_score = float(_v.get('score') or 0.0)
+        # If volatility is toxic: FORCE real risk_off (must propagate to trading_kernel hard gate)
+        if _v_reg in ('shock','vol_shock','volatility_shock') or _v_sev in ('critical','severe'):
+            # hard veto state
+            forced_flag = 'risk_off'
+            forced_score_cap = 20.0
+            # If variables exist later, we will cap them (best-effort).
+            os.environ['NSC_FORCED_RISK_FLAG'] = forced_flag
+            os.environ['NSC_FORCED_RISK_SCORE_CAP'] = str(forced_score_cap)
+    except Exception:
+        pass
+
+    coherence = _load_json(analysis_dir / "market_coherence_engine_pro.json", default={})
+    system_metrics = _load_json(telemetry_dir / "system_metrics.json", default={})
+
+    # --- Extract signals ---
+    # Market conditions score (0..100)
+    mc_score = _read_score(market_conditions, ("score",))
+    if mc_score is None:
+        mc_score = 50.0
+        reasons.append("market_conditions_score missing -> 50")
+    mc_score = _score_100(mc_score, 50.0)
+
+    # Volatility score (0..100) : si absent -> 50
+    vol_score = _read_score(volatility_state, ("score", "value"))
+    if vol_score is None:
+        vol_score = 50.0
+        reasons.append("volatility_score missing -> 50")
+    vol_score = _score_100(vol_score, 50.0)
+    # --- Volatility state gate (volatility_state_machine_pro) ---
+    try:
+        _vf = str((volatility_state or {}).get("global_flag") or "").strip().lower()
+        _vr = str((volatility_state or {}).get("regime") or "").strip().lower()
+        _vs = float(vol_score or 0.0)
+
+        # Hard gate ONLY on explicit risk_off/emergency OR very low score
+        if _vf in ("risk_off", "off", "emergency") or _vs <= 35.0:
+            global_flag = "risk_off"
+            reasons.append(f"volatility_state={_vr or _vf} score={_vs:.2f} => risk_off")
+        else:
+            reasons.append(f"volatility_state={_vr or _vf} score={_vs:.2f} => {_vf or 'ok'}")
+    except Exception:
+        logger.exception("[risk_engine_pro] volatility gate failed")
+
+
+    # Coherence score (souvent 0..100 ou 0..1)
+    coh_score = _read_score(coherence, ("score",))
+    if coh_score is None:
+        coh_score = 50.0
+        reasons.append("coherence_score missing -> 50")
+    coh_score = _score_100(coh_score, 50.0)
+
+    # Market regime / risk_mode
+    regime = None
+    risk_mode = None
+    if isinstance(market_regime, dict):
+        regime = market_regime.get("regime")
+        risk_mode = market_regime.get("risk_mode")
+
+    # Pipeline health (has errors -> malus)
+    steps_error = None
+    if isinstance(system_metrics, dict):
+        steps_error = system_metrics.get("steps_error")
+
+    # --- Risk model (simple mais explicable) ---
+    # score_final élevé = "risque faible / conditions OK"
+    # On combine conditions + cohérence, et on pénalise volatilité élevée (si ton vol_engine renvoie faible quand vol high, ça s’auto-équilibre).
+    # Pondérations : 40% conditions, 25% cohérence, 25% volatilité, 10% santé pipeline.
+    pipeline_score = 100.0
+    if isinstance(steps_error, int) and steps_error > 0:
+        pipeline_score = 40.0
+        reasons.append(f"pipeline errors={steps_error} -> pipeline_score=40")
+    elif isinstance(steps_error, int) and steps_error == 0:
+        pipeline_score = 100.0
+
+    score = (
+        0.40 * mc_score +
+        0.25 * coh_score +
+        0.25 * vol_score +
+        0.10 * pipeline_score
+    )
+
+    # Risk_mode override léger
+    if risk_mode in ("risk_off", "off", "emergency"):
+        score = min(score, 35.0)
+        reasons.append(f"risk_mode={risk_mode} -> cap score<=35")
+    elif risk_mode in ("caution",):
+        score = min(score, 55.0)
+        reasons.append(f"risk_mode={risk_mode} -> cap score<=55")
+
+    # Regime info (pas un veto ici, juste trace)
+    if regime:
+        reasons.append(f"market_regime={regime}")
+
+    # --- Correlation regime gate (contagion intra-crypto) ---
+    try:
+        corr = load_json_file(str(data_dir / "analysis" / "correlation_regime_engine_pro.json"))
+        if isinstance(corr, dict):
+            corr_flag = str(corr.get("global_flag") or "").strip().lower()
+            corr_reg  = str(corr.get("regime") or "").strip().lower()
+            corr_score = float(corr.get("score") or 0.0)
+            # NSC_RISK_ENGINE_CORR_HYSTERESIS_ANCHOR_LOAD_V1_2
+            # Correlation gate with hysteresis (ENTER<=35, EXIT>=45) + persistent state file
+            try:
+                _data_dir = Path(str(analysis_dir)).resolve().parent
+                _state_dir = _data_dir / 'state'
+                try:
+                    ensure_dir(str(_state_dir))
+                except Exception:
+                    pass
+                _gate_path = _state_dir / 'correlation_gate_state.json'
+            
+                _prev = load_json_file(str(_gate_path), default={})
+                _prev_active = bool(_prev.get('active')) if isinstance(_prev, dict) else False
+            
+                _cr = str(corr_reg or '').lower().strip() if corr_reg is not None else None
+                _cs = corr_score
+                try:
+                    _cs = float(_cs) if _cs is not None else None
+                except Exception:
+                    _cs = None
+            
+                _active = _prev_active
+                if _cr == 'high_corr' and _cs is not None:
+                    if (not _prev_active) and _cs <= 35.0:
+                        _active = True
+                    elif _prev_active and _cs >= 45.0:
+                        _active = False
+                else:
+                    _active = False
+            
+                # Always persist gate state (for explainability + flapping debug)
+                try:
+                    save_json_file(str(_gate_path), {
+                        'active': bool(_active),
+                        'prev_active': bool(_prev_active),
+                        'regime': _cr,
+                        'score': _cs,
+                        'run_id': str(os.environ.get('NSC_RUN_ID') or ''),
+                        'writer': 'risk_engine_pro',
+                        'timestamp': _now_ts(),
+                    })
+                except Exception:
+                    pass
+            
+                try:
+                    reasons.append(f'correlation_gate_state active={_active} (prev={_prev_active})')
+                except Exception:
+                    pass
+            
+                if _active:
+                    # Force HARD BLOCK (as requested)
+                    flag = 'risk_off'
+                    try:
+                        kill_switch_reasons.append('corr_caution_reduced')
+                    except Exception:
+                        pass
+                    if False:  # NSC_DISABLED_POLLUTING_HYSTERESIS_BLOCK_V1
+                        try:
+                            reasons.append(f'correlation_regime=high_corr score={_cs:.2f} -> risk_off (hysteresis)')
+                        except Exception:
+                            pass
+                    try:
+                        hard_block = True
+                        soft_veto = True
+                    except Exception:
+                        pass
+            except Exception:
+                # fail-open on hysteresis errors
+                pass
+            if corr_flag in ("risk_off", "critical", "panic"):
+                # Corrélation extrême => contagion => risk_off
+                global_flag = "risk_off"
+                # On écrase le score à la baisse pour refléter le veto
+                score = min(score, 30.0 if corr_score <= 30 else 40.0)
+                reasons.append(f"correlation_regime={corr_reg or corr_flag} score={float((state.get('correlation_regime') or {}).get('score') or corr_score or 0.0):.2f}")  # NSC_FIX_CORR_REGIME_REASON_SOURCE_UNIQUE_V1
+            else:
+                pass  # NSC_FIX_EMPTY_ELSE_BLOCKS_V1
+
+    except Exception:
+        logger.exception("[risk_engine_pro] Failed to load correlation_regime_engine_pro.json (ignored)")
+
+
+
+    # === NSC_MACRO_SCORE_CAP_V1 ===
+    try:
+        # Re-lit macro via helper (ne dépend pas de l'ordre d'exécution)
+        _corr_tmp, _macro_tmp = _load_corr_and_macro(str(analysis_dir))
+        _macro = str(_macro_tmp or '').lower().strip()
+        if _macro == 'high':
+            score = min(score, 55.0)
+            reasons.append('macro_risk_level=high -> cap score<=55')
+        elif _macro == 'medium':
+            score = min(score, 65.0)
+            reasons.append('macro_risk_level=medium -> cap score<=65')
+    except Exception:
+        pass
+    # === END NSC_MACRO_SCORE_CAP_V1 ===
+    score = _clamp(score, 0.0, 100.0)
+
+    # Flag exploitable par orchestrator / kernel
+    flag = "normal"
+    if score <= 35:
+        flag = "risk_off"
+    elif score <= 55:
+        flag = "caution"
+    else:
+        flag = "risk_on"
+
+    # Components debug
+    # Weights rééquilibrés (somme=1.00) avec ajout corrélation
+    # === NSC_MACRO_TOPLEVEL_AND_MINFLAG_V1 ===
+    # Force un minimum de prudence si le macro est défavorable
+    try:
+        _macro = str(locals().get('macro_risk_level', '') or '').strip().lower()
+        if _macro == 'high':
+            # au minimum 'caution' (on ne downgrade jamais un risk_off)
+            if flag == 'normal' or flag == 'risk_on':
+                flag = 'caution'
+            # si global_flag existe, on le force aussi au minimum
+            try:
+                _gf = str(locals().get('global_flag', '') or '').strip().lower()
+                if _gf in ('', 'normal', 'risk_on'):
+                    global_flag = 'caution'
+            except Exception:
+                pass
+    except Exception:
+        logger.exception('[risk_engine_pro] macro min-flag patch failed')
+    # === END NSC_MACRO_TOPLEVEL_AND_MINFLAG_V1 ===
+    components.append({"name": "market_conditions", "score": round(mc_score, 2), "weight": 0.35})
+    components.append({"name": "coherence", "score": round(coh_score, 2), "weight": 0.20})
+    components.append({"name": "volatility", "score": round(vol_score, 2), "weight": 0.20})
+    # === NSC_CORR_SAFE_READ_V1 ===
+    corr_score, macro_risk_level = _load_corr_and_macro(str(analysis_dir))
+    # === END NSC_CORR_SAFE_READ_V1 ===
+    components.append({"name": "correlation", "score": round(corr_score, 2), "weight": 0.15})
+    components.append({"name": "macro", "score": 0.0, "weight": 0.0, "note": f"macro_risk_level={macro_risk_level}"})
+    components.append({"name": "pipeline_health", "score": round(pipeline_score, 2), "weight": 0.10})
+
+    # --- HF-like Policy (gross exposure & selectivity) ---
+    # Objectif: si corrélation intra-crypto élevée => diversification en baisse => réduire gross + limiter nb positions
+    policy = {
+        "position_size_mult": 1.0,      # multiplicateur de sizing (gross exposure)
+        "max_open_positions": None,     # cap positions (None = pas de cap)
+        "min_meta_score": None,         # filtre qualité (None = pas de filtre)
+        "notes": [],
+    }
+
+    # NSC_APPLY_FORCED_RISK_FLAG_V1
+    # If volatility_state_machine_pro flagged a toxic regime, force real risk_off here.
+    try:
+        _forced_flag = str(os.environ.get('NSC_FORCED_RISK_FLAG') or '').strip().lower()
+        _cap = float(os.environ.get('NSC_FORCED_RISK_SCORE_CAP') or 0.0)
+        if _forced_flag in ('risk_off','off','emergency'):
+            # Override global flag + cap score (so trading_kernel HARD gate blocks execution)
+            flag = 'risk_off'
+            try:
+                if _cap > 0:
+                    score = min(float(score), float(_cap))
+                else:
+                    score = min(float(score), 20.0)
+            except Exception:
+                score = 20.0
+            # Ensure volatility component reflects toxicity for observability
+            try:
+                vol_score = 0.0
+            except Exception:
+                pass
+            # Explainability
+            try:
+                reasons.append('volatility_state=TOXIC => forced risk_off (NSC_FORCED_RISK_FLAG)')
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+    # Base sur le flag global
+    if flag == "risk_off":
+        policy["position_size_mult"] = 0.0
+        policy["max_open_positions"] = 0
+        policy["min_meta_score"] = 999
+        policy["notes"].append("risk_off -> no new positions")
+    elif flag == "caution":
+        policy["position_size_mult"] = 0.55
+        policy["max_open_positions"] = 2
+        policy["min_meta_score"] = 70
+        policy["notes"].append("caution -> reduce gross + more selective")
+
+    # Ajustement sur corrélation (si corr_score défini)
+    try:
+        _cs = float(locals().get("corr_score", 0.0) or 0.0)
+        _cr = str(locals().get("corr_reg", "") or locals().get("corr_flag", "") or "").lower()
+        if "high_corr" in _cr or _cs <= 45:
+            # corr élevée => réduire gross + cap positions
+            policy["position_size_mult"] = min(policy["position_size_mult"], 0.65)
+            policy["max_open_positions"] = 3 if (policy["max_open_positions"] is None or policy["max_open_positions"] > 3) else policy["max_open_positions"]
+            policy["min_meta_score"] = 65 if policy["min_meta_score"] is None else max(policy["min_meta_score"], 65)
+            policy["notes"].append(f"high_corr -> gross<=0.65 (corr_score={_cs:.2f})")
+        if _cs <= 30:
+            policy["position_size_mult"] = min(policy["position_size_mult"], 0.45)
+            policy["max_open_positions"] = 2 if (policy["max_open_positions"] is None or policy["max_open_positions"] > 2) else policy["max_open_positions"]
+            policy["min_meta_score"] = 75 if policy["min_meta_score"] is None else max(policy["min_meta_score"], 75)
+            policy["notes"].append(f"very_high_corr -> gross<=0.45 (corr_score={_cs:.2f})")
+    except Exception:
+        policy["notes"].append("corr_adjust_failed")
+
+    # Safety: policy jamais null
+    if not isinstance(policy, dict):
+        policy = {"position_size_mult": 1.0, "max_open_positions": None, "min_meta_score": None, "notes": ["policy_defaulted"]}
+
+
+    return {
+        "macro_risk_level": str(locals().get("macro_risk_level", "neutral") or "neutral"),
+        "timestamp": _now_ts(),
+        "env": _get_env(),
+        "score": round(score, 2),        # ✅ c’est ce champ que meta_score attend
+        "risk_score": round(score, 2),   # compat
+        "flag": flag,
+        "inputs": {
+            "market_regime": {"regime": regime, "risk_mode": risk_mode},
+            "market_conditions": {"score": round(mc_score, 2)},
+            "coherence": {"score": round(coh_score, 2)},
+            "volatility_state": {"score": round(vol_score, 2)},
+            "pipeline": {"steps_error": steps_error},
+        },
+        "components": components,
+        "policy": policy,
+        "reasons": reasons,
+    }
+
+
+def main() -> None:
+    data_dir = _get_data_dir()
+    env = _get_env()
+    analysis_dir = _analysis_dir(data_dir)
+    telemetry_dir = _telemetry_dir(data_dir)
+
+    ensure_dir(str(data_dir))
+    ensure_dir(str(analysis_dir))
+    ensure_dir(str(telemetry_dir))
+
+    logger.info("[risk_engine_pro] DATA_DIR=%s, env=%s", str(data_dir), env)
+
+    state = compute_risk_state(analysis_dir=analysis_dir, telemetry_dir=telemetry_dir)
+
+    # NSC_RISK_ENGINE_CORR_GATE_IN_MAIN_V1
+    # Apply correlation hysteresis gate at write-time (reload file now) so it cannot be overwritten later.
+    try:
+        # Always reload correlation_regime from canonical files (no stale locals)
+        _corr = load_json_file(str(analysis_dir / 'correlation_regime.json'), default={})
+        if not isinstance(_corr, dict) or not _corr:
+            _corr = load_json_file(str(analysis_dir / 'correlation_regime_engine_pro.json'), default={})
+        if not isinstance(_corr, dict):
+            _corr = {}
+    
+        _cr = str(_corr.get('regime') or '').lower().strip() or None
+        _cs = _corr.get('score')
+        try:
+            _cs = float(_cs) if _cs is not None else None
+        except Exception:
+            _cs = None
+    
+        # Persistent gate state
+        _state_dir = (data_dir / 'state')
+        try:
+            ensure_dir(str(_state_dir))
+        except Exception:
+            pass
+        _gate_path = _state_dir / 'correlation_gate_state.json'
+        _prev = load_json_file(str(_gate_path), default={})
+        _prev_active = bool(_prev.get('active')) if isinstance(_prev, dict) else False
+    
+        _active = _prev_active
+        if _cr == 'high_corr' and _cs is not None:
+            # ENTER <= 35, EXIT >= 45
+            if (not _prev_active) and _cs <= 35.0:
+                _active = True
+            elif _prev_active and _cs >= 45.0:
+                _active = False
+        else:
+            _active = False
+    
+        # Persist gate state every run
+        try:
+            # === NSC_RISK_EVENT_MACRO_FAILSAFE_V2 ===
+            try:
+                # 'state' existe normalement dans main() juste avant save_json_file
+                if isinstance(locals().get('state'), dict):
+                    _st = locals()['state']
+                    _st.setdefault('macro_risk_level', str(_st.get('macro_risk_level') or locals().get('macro_risk_level') or 'neutral'))
+                    _pub = globals().get('publish_event')
+                    if callable(_pub):
+                        _sev = 'warning' if str(_st.get('global_flag','')).lower() in ('caution','risk_off') else 'info'
+                        _pub(event_type='risk.engine.state', source='risk_engine_pro', severity=_sev, payload=_st)
+            except Exception:
+                try:
+                    logger.exception('[risk_engine_pro] failed to publish risk.engine.state with macro')
+                except Exception:
+                    pass
+            # === END NSC_RISK_EVENT_MACRO_FAILSAFE_V2 ===
+            save_json_file(str(_gate_path), {
+                'active': bool(_active),
+                'prev_active': bool(_prev_active),
+                'regime': _cr,
+                'score': _cs,
+                'run_id': str(os.environ.get('NSC_RUN_ID') or ''),
+                'writer': 'risk_engine_pro',
+                'timestamp': _now_ts(),
+            })
+        except Exception:
+            pass
+    
+        # Explainability: attach gate info into output
+        if isinstance(state, dict):
+            state.setdefault('correlation_gate', {})
+            state['correlation_gate'] = {'active': bool(_active), 'prev_active': bool(_prev_active), 'enter': 35.0, 'exit': 45.0}
+    
+            # Also expose the corr input used NOW
+            state['correlation_regime'] = {'regime': _cr, 'score': _cs}
+    
+            # FORCE HARD BLOCK if gate active
+            if _active:
+                # NSC_CORR_OPTION_A_NO_HARDBLOCK_CAUTION_V1_FIX
+                # Option A: correlation 'caution' never hard-blocks. It only reduces risk.
+                try:
+                    _prev_flag = state.get('flag')
+                    _prev_mode = state.get('risk_mode')
+                    # If something else already forced risk_off earlier, do not override.
+                    if _prev_flag != 'risk_off' and _prev_mode != 'risk_off':
+                        state['flag'] = 'caution'
+                        state['risk_mode'] = 'reduced'
+                        state['soft_veto'] = True
+                        state['hard_block'] = False
+                        # Replace risk_off_corr by a non-blocking reason
+                        ks = state.setdefault('kill_switch_reasons', [])
+                        # purge any lingering risk_off_corr
+                        ks[:] = [x for x in ks if x != 'risk_off_corr']
+                        if 'corr_caution_reduced' not in ks:
+                            ks.append('corr_caution_reduced')
+                        state.setdefault('reasons', []).append('correlation_gate ACTIVE => reduced (no hard block)')
+                    else:
+                        # keep existing risk_off
+                        pass
+                except Exception:
+                    pass
+    except Exception as _exc:
+        logger.warning('[risk_engine_pro] correlation hysteresis gate failed: %s', _exc)
+
+    out_path = analysis_dir / "risk_engine_pro.json"
+
+    # ───────────────────────────────────────────────────────────
+    # Compat sizing: produire un risk index par-asset (assets[])
+    # + alias global_flag pour les loaders existants
+    # ───────────────────────────────────────────────────────────
+    try:
+        if isinstance(state, dict):
+            # alias compat
+            if state.get("global_flag") is None and state.get("flag") is not None:
+                state["global_flag"] = state.get("flag")
+
+            if not state.get("assets"):
+                symbols = []
+
+                # 1) signal_candidates.json (prioritaire)
+                candidates = load_json_file(str(analysis_dir / "signal_candidates.json"), default=[])
+                if isinstance(candidates, list):
+                    for c in candidates:
+                        sym = str((c or {}).get("symbol") or (c or {}).get("asset") or "").strip().lower()
+                        if sym:
+                            symbols.append(sym)
+
+                # 2) weak_signals_engine_pro.json
+                if not symbols:
+                    weak = load_json_file(os.path.join(DATA_DIR, "analysis", "weak_signals_engine_pro.json"), default={})
+                    wk_assets = weak.get("assets") if isinstance(weak, dict) else None
+                    if isinstance(wk_assets, list):
+                        for w in wk_assets:
+                            sym = str((w or {}).get("symbol") or "").strip().lower()
+                            if sym:
+                                symbols.append(sym)
+
+                # 3) momentum_scores.json (fallback)
+                if not symbols:
+                    ms = load_json_file(os.path.join(DATA_DIR, "analysis", "momentum_scores.json"), default={})
+                    if isinstance(ms, dict):
+                        if isinstance(ms.get("scores"), dict):
+                            symbols.extend([str(k).strip().lower() for k in ms["scores"].keys()])
+                        elif isinstance(ms.get("assets"), list):
+                            for a in ms["assets"]:
+                                sym = str((a or {}).get("symbol") or "").strip().lower()
+                                # === NSC_RISK_DEDUP_DEBUG_V1 ===
+                                try:
+                                    logger.info('[risk_engine_pro] risk.state gate: score=%s flag=%s macro=%s env=%s',
+                                                (payload.get('score') if isinstance(payload, dict) else None),
+                                                (payload.get('global_flag') if isinstance(payload, dict) else None),
+                                                (payload.get('macro_risk_level') if isinstance(payload, dict) else None),
+                                                (payload.get('env') if isinstance(payload, dict) else None))
+                                except Exception:
+                                    pass
+
+                                if sym:
+                                    symbols.append(sym)
+
+                symbols = sorted(set([s for s in symbols if s]))
+
+                gflag = state.get("global_flag") or "caution"
+                assets = []
+                for sym in symbols:
+                    # conservateur: si global risk_on/ok -> ok, sinon caution
+                    risk_flag = "ok" if gflag in ("risk_on", "ok") else "caution"
+                    assets.append({
+                        "symbol": sym,
+                        "risk_flag": risk_flag,
+                        "risk_score": state.get("risk_score"),
+                        "size_multiplier": 1.0 if risk_flag == "ok" else 0.5,
+                        "flags": {"hard_veto": False, "soft_veto": False},
+                        "inputs": {"source": "derived_from_global_risk_engine", "global_flag": gflag},
+                    })
+
+                state["assets"] = assets
+                logger.info("[risk_engine_pro] Derived per-asset risk items: n=%d", len(assets))
+    except Exception:
+        logger.exception("[risk_engine_pro] Failed to derive per-asset risk items (assets[])")
+    save_json_file(str(out_path), state)
+
+    # === NSC_RISK_EVENT_PUBLISH_UNIFIED_V4 ===
+    # Publication unique vers le Message Bus PRO (ne doit JAMAIS faire planter main)
+    try:
+        import os
+        from src.v2.core.message_bus import publish_event
+
+        payload = state if isinstance(state, dict) else {}
+
+        # enrichissement standard
+        payload.setdefault("env", os.getenv("NSC_ENV", "UNKNOWN"))
+        payload.setdefault("writer", "risk_engine_pro")
+
+        # map global_flag -> severity
+        gf = str(payload.get("global_flag", "")).lower()
+        sev_map = {"caution": "warning", "danger": "error", "block": "critical"}
+        severity = sev_map.get(gf, "info")
+
+                # === NSC_RISK_STATE_DEDUPE_CALL_V1 ===
+        if _should_publish_risk_state(payload, data_dir=data_dir, score_eps=1.0, heartbeat_seconds=1800):
+            # === NSC_RISK_DEDUP_DECISION_V1 ===
+            try:
+                _p = _payload if isinstance(_payload, dict) else {}
+                logger.warning(
+                    '[risk_engine_pro] risk.state publish DECISION=PUBLISH severity=%s flag=%s score=%s macro=%s env=%s',
+                    _severity,
+                    _p.get('global_flag'),
+                    _p.get('score'),
+                    _p.get('macro_risk_level'),
+                    _p.get('env')
+                )
+            except Exception:
+                pass
+            publish_event(
+                        event_type="risk.state",
+                        source="risk_engine_pro",
+                        severity=severity,
+                        payload=payload,
+                    )
+
+    except Exception:
+        # jamais casser le loop pour un event
+        pass
+
+
+    logger.info("[risk_engine_pro] OK score=%.2f flag=%s -> %s", state["score"], state["flag"], str(out_path))
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,115 @@
+import os
+import time
+from pathlib import Path
+from src.v2.utils.file_utils import get_data_dir, load_json_file
+from src.v2.utils.logger import get_logger
+
+
+# NSC_PATCH: transfer_funds_disabled_until_binance_support BEGIN
+# Désarmé tant que binance_api ne supporte pas les transferts (fonction absente/commentée).
+# Fail-safe: ce module ne doit JAMAIS casser la pipeline.
+def _transfer_funds_guard():
+    import os
+    env = str(os.getenv("NSC_ENV", "PREPROD")).upper()
+    allow = os.getenv("ALLOW_FUNDS_TRANSFER", "false").lower() == "true"
+    return env, allow
+
+# NSC_PATCH: transfer_funds_disabled_until_binance_support END
+
+
+logger = get_logger("transfer_funds")
+
+
+def _hard_gate_transfers(data_dir: str) -> tuple[bool, str]:
+    """Fail-safe: refuse tout transfert si doute."""
+    env = os.getenv("NSC_ENV", "UNKNOWN").upper()
+
+    # Opt-in explicite
+    allow = os.getenv("ALLOW_FUNDS_TRANSFER", "false").lower() == "true"
+    if not allow:
+        return False, "ALLOW_FUNDS_TRANSFER!=true"
+
+    # En PREPROD on interdit par défaut (même si allow=true) sauf override explicite
+    # (tu peux commenter cette ligne si tu veux autoriser des transferts en preprod)
+    if env == "PREPROD":
+        return False, "NSC_ENV=PREPROD (transfers disabled)"
+
+    dd = Path(data_dir)
+
+    # Kill-switch (prioritaire)
+    ks = load_json_file(dd / "trading" / "kill_switch.json", default={})
+    if isinstance(ks, dict):
+        enabled = bool(ks.get("enabled"))
+        mode = str(ks.get("mode") or "").lower()
+        hard = bool(ks.get("hard_block")) or (mode == "hard_block")
+        if enabled and hard:
+            return False, "kill_switch_hard_block"
+
+    # Gouvernance (source-of-truth)
+    gov = load_json_file(dd / "analysis" / "governance_engine_pro.json", default={})
+    if isinstance(gov, dict) and bool(gov.get("hard_block")):
+        return False, "governance_hard_block"
+
+    return True, "ok"
+
+
+def execute_transfers():
+
+    # NSC_PATCH: transfer_funds_hard_gate BEGIN
+    import os
+    from pathlib import Path
+    from src.v2.utils.file_utils import get_data_dir, load_json_file
+    data_dir = get_data_dir()
+    env = str(os.getenv("NSC_ENV", "PREPROD")).upper()
+    allow = os.getenv("ALLOW_FUNDS_TRANSFER", "false").lower() == "true"
+    gov = load_json_file(Path(data_dir) / "analysis" / "governance_engine_pro.json", default={})
+    ks  = load_json_file(Path(data_dir) / "trading" / "kill_switch.json", default={})
+
+    if env != "PROD":
+        print(f"[transfer_funds] BLOCKED env={env} (only PROD allowed)")
+        return
+    if not allow:
+        print("[transfer_funds] BLOCKED ALLOW_FUNDS_TRANSFER!=true")
+        return
+    if isinstance(ks, dict) and bool(ks.get("hard_block")):
+        print("[transfer_funds] BLOCKED kill_switch hard_block")
+        return
+    if isinstance(gov, dict) and bool(gov.get("hard_block")):
+        print("[transfer_funds] BLOCKED governance hard_block")
+        return
+    # NSC_PATCH: transfer_funds_hard_gate END
+
+
+    data_dir = get_data_dir()
+    ok, reason = _hard_gate_transfers(data_dir)
+    if not ok:
+        logger.warning("[transfer_funds] HARD GATE => no transfers. reason=%s", reason)
+        return
+
+    logger.info("[transfer_funds] Démarrage du transfert automatique des fonds...")
+
+    allocation = get_capital_allocation() or {}
+    if not isinstance(allocation, dict) or not allocation:
+        logger.warning("[transfer_funds] allocation vide ou invalide: %s", type(allocation))
+        return
+
+    for purpose, amount in allocation.items():
+        try:
+            amt = float(amount)
+            if amt <= 0:
+                continue
+            transfer_to_subaccount(subaccount_label=str(purpose), amount=amt)
+            logger.info("[transfer_funds] ✅ %.4f USDT transférés vers '%s'", amt, purpose)
+        except Exception as e:
+            logger.exception("[transfer_funds] ❌ Erreur transfert vers '%s' (amount=%s): %s", purpose, amount, e)
+
+    logger.info("[transfer_funds] ✅ Tous les transferts ont été traités.")
+
+
+if __name__ == "__main__":
+    interval_h = float(os.getenv("TRANSFER_FUNDS_INTERVAL_HOURS", "6"))
+    interval_s = int(interval_h * 3600)
+
+    while True:
+        execute_transfers()
+        time.sleep(interval_s)

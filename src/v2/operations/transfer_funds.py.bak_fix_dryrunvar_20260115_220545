@@ -1,0 +1,181 @@
+import os
+import time
+from pathlib import Path
+from typing import Dict, Tuple, Any
+
+from src.v2.utils.file_utils import get_data_dir, load_json_file
+from src.v2.utils.logger import get_logger
+
+logger = get_logger("transfer_funds")
+
+DEFAULT_ASSET = os.getenv("TRANSFER_ASSET", "USDT")
+
+
+def _env_bool(name: str, default: str = "false") -> bool:
+    return str(os.getenv(name, default)).lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _hard_gate(data_dir: str) -> Tuple[bool, str]:
+    """
+    Fail-safe hard gate.
+    Requires:
+      - NSC_ENV=PROD
+      - ALLOW_FUNDS_TRANSFER=true
+      - CONFIRM_FUNDS_TRANSFER=YES
+    And blocks if:
+      - kill_switch enabled+hard_block
+      - governance hard_block
+    """
+    env = str(os.getenv("NSC_ENV", "PREPROD")).upper()
+    allow = _env_bool("ALLOW_FUNDS_TRANSFER", "false")
+    confirm = str(os.getenv("CONFIRM_FUNDS_TRANSFER", "")).strip().upper()
+
+    if env != "PROD":
+        return False, f"env={env} (only PROD allowed)"
+    if not allow:
+        return False, "ALLOW_FUNDS_TRANSFER!=true"
+    if confirm != "YES":
+        return False, "CONFIRM_FUNDS_TRANSFER!=YES"
+
+    dd = Path(data_dir)
+
+    # Kill-switch prioritaire
+    ks = load_json_file(dd / "trading" / "kill_switch.json", default={})
+    if isinstance(ks, dict):
+        enabled = bool(ks.get("enabled"))
+        mode = str(ks.get("mode") or "").lower()
+        hard = bool(ks.get("hard_block")) or (mode == "hard_block")
+        if enabled and hard:
+            return False, "kill_switch_hard_block"
+
+    # Gouvernance (source of truth)
+
+    gov = load_json_file(dd / "analysis" / "governance_engine_pro.json", default={})
+
+    gov_hard = bool(gov.get("hard_block")) if isinstance(gov, dict) else False
+
+    # En DRY_RUN on autorise le "plan" même en hard_block (zéro transfert réel).
+
+    if gov_hard and not dry_run:
+
+        return False, "governance_hard_block"
+
+    return True, "ok"
+
+
+def _load_allocation(data_dir: str) -> Dict[str, float]:
+    """
+    Loader robuste: tente plusieurs fichiers.
+    Attendu: dict {purpose: amount_usdt}.
+    """
+    dd = Path(data_dir)
+    candidates = [
+        dd / "trading" / "capital_allocation.json",
+        dd / "analysis" / "capital_allocation.json",
+        dd / "trading" / "allocation.json",
+        dd / "analysis" / "allocation.json",
+    ]
+
+    for path in candidates:
+        obj = load_json_file(path, default=None)
+        if isinstance(obj, dict) and obj:
+            out: Dict[str, float] = {}
+            for k, v in obj.items():
+                try:
+                    amt = float(v)
+                except Exception:
+                    continue
+                if amt > 0:
+                    out[str(k)] = amt
+            if out:
+                logger.info("[transfer_funds] allocation loaded from %s (%d keys)", str(path), len(out))
+                return out
+
+    # fallback: rien
+    return {}
+
+
+def _resolve_subaccount_email(purpose: str) -> str:
+    """
+    Mapping via env vars:
+      SUBACCOUNT_EMAIL_TRADING=...
+      SUBACCOUNT_EMAIL_LT=...
+    Fallback: SUBACCOUNT_EMAIL_DEFAULT
+    """
+    key = f"SUBACCOUNT_EMAIL_{purpose.upper()}"
+    email = str(os.getenv(key, "")).strip()
+    if email:
+        return email
+    return str(os.getenv("SUBACCOUNT_EMAIL_DEFAULT", "")).strip()
+
+
+def execute_transfers() -> None:
+    data_dir = get_data_dir()
+    ok, reason = _hard_gate(data_dir)
+    dry_run = _env_bool("TRANSFER_DRY_RUN", "true")
+
+    if not ok:
+        logger.warning("[transfer_funds] BLOCKED. reason=%s (dry_run=%s)", reason, dry_run)
+        return
+
+    allocation = _load_allocation(data_dir)
+    if not allocation:
+        logger.warning("[transfer_funds] allocation empty -> nothing to do")
+        return
+
+    # Lazy import Binance transfer only when needed
+    try:
+        from src.v2.integrations.binance_api import transfer_to_subaccount
+    except Exception as e:
+        logger.exception("[transfer_funds] cannot import binance_api.transfer_to_subaccount: %s", e)
+        return
+
+    logger.info("[transfer_funds] START (asset=%s, dry_run=%s, n=%d)", DEFAULT_ASSET, dry_run, len(allocation))
+
+    planned = 0
+    executed = 0
+    blocked = 0
+
+    for purpose, amount in allocation.items():
+        amt = float(amount)
+        if amt <= 0:
+            continue
+
+        to_email = _resolve_subaccount_email(purpose)
+        if not to_email:
+            blocked += 1
+            logger.warning(
+                "[transfer_funds] SKIP purpose=%s amount=%.4f => missing env SUBACCOUNT_EMAIL_%s (or SUBACCOUNT_EMAIL_DEFAULT)",
+                purpose, amt, purpose.upper()
+            )
+            continue
+
+        planned += 1
+
+        if dry_run:
+            logger.info("[transfer_funds] DRY_RUN plan: to=%s asset=%s amount=%.4f purpose=%s", to_email, DEFAULT_ASSET, amt, purpose)
+            continue
+
+        try:
+            res: Any = transfer_to_subaccount(to_email=to_email, asset=DEFAULT_ASSET, amount=amt)
+            executed += 1
+            logger.info("[transfer_funds] OK purpose=%s amount=%.4f to=%s res=%s", purpose, amt, to_email, res)
+        except Exception as e:
+            logger.exception("[transfer_funds] ERROR purpose=%s amount=%.4f to=%s err=%s", purpose, amt, to_email, e)
+
+    logger.info("[transfer_funds] DONE planned=%d executed=%d blocked=%d dry_run=%s", planned, executed, blocked, dry_run)
+
+
+if __name__ == "__main__":
+    # Par défaut: run once (sécuritaire). Pour boucle, set TRANSFER_FUNDS_RUN_FOREVER=true
+    run_forever = _env_bool("TRANSFER_FUNDS_RUN_FOREVER", "false")
+    interval_h = float(os.getenv("TRANSFER_FUNDS_INTERVAL_HOURS", "6"))
+    interval_s = int(interval_h * 3600)
+
+    if not run_forever:
+        execute_transfers()
+        raise SystemExit(0)
+
+    while True:
+        execute_transfers()
+        time.sleep(interval_s)

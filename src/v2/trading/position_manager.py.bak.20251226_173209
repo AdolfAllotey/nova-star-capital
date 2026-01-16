@@ -1,0 +1,40 @@
+# src/v2/trading/position_manager.py
+
+from __future__ import annotations
+
+import os
+
+def is_dry_run_enabled() -> bool:
+    v = (os.getenv("NSC_DRY_RUN") or "").strip().lower()
+    return v in ("1", "true", "yes", "y", "on")
+
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Tuple, Optional
+
+from src.v2.utils.file_utils import get_data_dir, load_json_file, save_json_file
+from src.v2.utils.logger import get_logger
+
+logger = get_logger("position_manager")
+
+# --- Execution plan gate (institutional) ---
+def _load_execution_plan(data_dir: str):
+  # NSC_PATCH: force_reprocess_no_state_write BEGIN
+  # --- Idempotence: persist last processed execution_plan run_id ---
+  try:
+      from datetime import datetime, timezone
+      _force = str(os.environ.get('NSC_FORCE_REPROCESS','0')).strip().lower() in ('1','true','yes')
+      _dry   = str(os.environ.get('NSC_DRY_RUN','0')).strip().lower() in ('1','true','yes')
+      state = _load_pm_state(data_dir)
+      if _force and _dry:
+          # DRY_RUN replay: do NOT overwrite last_processed_run_id
+          state['last_forced_reprocess_at'] = datetime.now(timezone.utc).isoformat()
+          state['forced_reprocess_count'] = int(state.get('forced_reprocess_count') or 0) + 1
+          state['forced_reprocess_last_run_id_seen'] = str(plan.get('run_id'))
+      else:
+          state['last_processed_run_id'] = str(plan.get('run_id'))
+          state['last_processed_at'] = datetime.now(timezone.utc).isoformat()
+      save_json_file(_path(data_dir, 'trading', 'position_manager_state.json'), state)
+      logger.info("[position_manager] Idempotence state saved (run_id=%s)", plan.get('run_id'))
+  except Exception:
+      pass
+  # NSC_PATCH: force_reprocess_no_state_write END

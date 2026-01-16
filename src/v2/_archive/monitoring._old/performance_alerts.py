@@ -1,0 +1,53 @@
+import os
+from datetime import datetime, timezone, timezone
+from src/v2.utils.file_utils import load_json_file, save_json_file
+from src/v2.utils.logger import get_logger
+
+logger = get_logger("performance_alerts")
+
+PERF_PATH = "src/v2/data/scores/global_performance.json"
+OUTPUT_PATH = "src/v2/data/risk/performance_alerts.json"
+
+# Seuils ajustables
+DRAWDOWN_THRESHOLD = -10  # en euros
+SURPERF_THRESHOLD = 20    # en euros
+LOOKBACK = 3              # nombre de jours à analyser
+
+def analyze_performance_trend():
+    try:
+        data = load_json_file(PERF_PATH)
+        if not data or len(data) < LOOKBACK:
+            logger.warning("Pas assez de données pour analyser la tendance")
+            return
+
+        last_entries = data[-LOOKBACK:]
+        variations = []
+
+        for i in range(1, len(last_entries)):
+            delta = last_entries[i]["total_pnl_eur"] - last_entries[i - 1]["total_pnl_eur"]
+            variations.append(delta)
+
+        avg_variation = sum(variations) / len(variations)
+
+        alert = {
+            "date": datetime.now(timezone.utc).isoformat(),
+            "status": "stable",
+            "message": "Aucune alerte",
+            "variation_eur": round(avg_variation, 2)
+        }
+
+        if avg_variation <= DRAWDOWN_THRESHOLD:
+            alert["status"] = "drawdown"
+            alert["message"] = f"Sous-performance détectée : {avg_variation} € en moyenne"
+        elif avg_variation >= SURPERF_THRESHOLD:
+            alert["status"] = "surperformance"
+            alert["message"] = f"Surperformance détectée : {avg_variation} € en moyenne"
+
+        save_json_file(alert, OUTPUT_PATH)
+        logger.info(f"Alerte de performance générée : {alert['status']}")
+
+    except Exception as e:
+        logger.exception("Erreur dans l'analyse des performances")
+
+if __name__ == "__main__":
+    analyze_performance_trend()
