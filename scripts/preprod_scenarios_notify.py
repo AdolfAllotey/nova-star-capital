@@ -18,11 +18,14 @@ def main() -> int:
     env = os.getenv("NSC_ENV", "UNKNOWN")
     ts = datetime.now(timezone.utc).isoformat()
 
-    last = _latest("data/telemetry/preprod_scenarios/preprod_scenarios_*.json")
+    last = _latest("data/telemetry/preprod_scenarios/preprod_scenarios_[0-9]*.json")
     if not last:
         return 0
 
     d = _load(last)
+    if not isinstance(d.get("scenarios"), list):
+        return 0
+
     overall_ok = bool(d.get("overall_ok"))
 
     # always compute KPIs if available
