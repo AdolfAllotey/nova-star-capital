@@ -175,6 +175,10 @@ jq -n \
 echo "✅ wrote $out_json"
 echo "✅ wrote $out_md"
 
+  # NSC_PATCH: scenarios_kpis_auto_v1 BEGIN
+  python scripts/preprod_scenarios_kpis.py >/dev/null || true
+  # NSC_PATCH: scenarios_kpis_auto_v1 END
+
 if [ "$overall_ok" != true ]; then
   echo "❌ scenarios failed"
   exit 1
