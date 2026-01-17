@@ -77,14 +77,16 @@ for f in "${files[@]}"; do
   trap '_restore_all' RETURN
 
   # Scenario-specific overrides
-  if [ "$id" = "40_killswitch_precedence" ]; then
+  if [ "${id:-}" = "40_killswitch_precedence" ]; then
     _backup_and_write_json "data/trading/kill_switch.json" '{"hard_block": true, "reason": "scenario_force_killswitch"}'
   fi
 
-  if [ "$id" = "50_correlation_gate_payload" ]; then
+  if [ "${id:-}" = "50_correlation_gate_payload" ]; then
     _backup_and_write_json "data/analysis/correlation_gate_state.json" '{"active": false, "reason": "scenario_payload_sanity"}'
   fi
   # NSC_PATCH: custom_scenarios_overrides_v1 END
+
+
 
   desc="$(jq -r '.desc // ""' "$f")"
   echo
