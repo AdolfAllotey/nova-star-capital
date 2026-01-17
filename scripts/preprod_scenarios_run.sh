@@ -41,10 +41,6 @@ overall_ok=true
 
 for f in "${files[@]}"; do
   sid="$(jq -r '.id // empty' "$f")"
-  desc="$(jq -r '.desc // ""' "$f")"
-  echo
-  echo "---- scenario: $sid ----"
-
   # NSC_PATCH: custom_scenarios_overrides_v1 BEGIN
   # Some scenarios need temporary JSON overrides; always restore (defense-in-depth).
   _restore_files=()
@@ -89,6 +85,11 @@ for f in "${files[@]}"; do
     _backup_and_write_json "data/analysis/correlation_gate_state.json" '{"active": false, "reason": "scenario_payload_sanity"}'
   fi
   # NSC_PATCH: custom_scenarios_overrides_v1 END
+
+  desc="$(jq -r '.desc // ""' "$f")"
+  echo
+  echo "---- scenario: $sid ----"
+
 
   echo "$desc"
 
