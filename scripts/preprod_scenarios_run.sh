@@ -3,7 +3,7 @@ set -euo pipefail
 
 export TZ=UTC
 
-SC_DIR="${1:-data/preprod_scenarios}"
+SC_DIR="${1:-scripts/preprod_scenarios}"
 OUT_DIR="data/telemetry/preprod_scenarios"
 mkdir -p "$OUT_DIR"
 
