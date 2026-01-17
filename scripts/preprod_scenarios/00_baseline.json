@@ -1,0 +1,12 @@
+{
+  "id": "00_baseline",
+  "desc": "Baseline PREPROD: simulate orders ON, hard gates must block real execution, simplan must be valid.",
+  "env": {
+    "NSC_ENV": "PREPROD",
+    "PREPROD_SIMULATE_ORDERS": "true"
+  },
+  "expect": {
+    "preprod_check_ok": true,
+    "safeguards_hold": true
+  }
+}

@@ -1,0 +1,4 @@
+{
+  "id": "40_killswitch_precedence",
+  "desc": "Force kill_switch.hard_block=true and assert exchange_router blocks with kill_switch_hard_block (precedence over governance)."
+}

@@ -1,0 +1,12 @@
+{
+  "id": "20_price_fetch",
+  "desc": "Ensure market_price_fetch_ok stays true and returns numeric BTCUSDT price.",
+  "env": {
+    "NSC_ENV": "PREPROD",
+    "PREPROD_SIMULATE_ORDERS": "true"
+  },
+  "expect": {
+    "preprod_check_ok": true,
+    "price_fetch_ok": true
+  }
+}

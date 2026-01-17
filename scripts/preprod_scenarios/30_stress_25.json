@@ -1,0 +1,15 @@
+{
+  "id": "30_stress_25",
+  "desc": "Run 25x preprod_check and assert open_positions immutability + all ok.",
+  "env": {
+    "NSC_ENV": "PREPROD",
+    "PREPROD_SIMULATE_ORDERS": "true"
+  },
+  "stress": {
+    "runs": 25
+  },
+  "expect": {
+    "stress_ok": true,
+    "open_positions_immutable": true
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "id": "10_no_simplan",
+  "desc": "PREPROD without simulated plan: check should still be OK but simplan assertions absent/null.",
+  "env": {
+    "NSC_ENV": "PREPROD",
+    "PREPROD_SIMULATE_ORDERS": "false"
+  },
+  "expect": {
+    "preprod_check_ok": true,
+    "safeguards_hold": true
+  }
+}
