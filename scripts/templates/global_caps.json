@@ -1,0 +1,6 @@
+{
+  "max_orders_per_run": 0,
+  "max_notional_eur_per_run": 0,
+  "max_symbol_notional_eur": 0,
+  "min_execution_plan_fresh_s": 180
+}
