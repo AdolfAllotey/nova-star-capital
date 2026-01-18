@@ -21,6 +21,8 @@
     "recharts": "^2.7.2"
   },
   "devDependencies": {
+    "@babel/eslint-parser": "^7.28.6",
+    "@babel/preset-react": "^7.28.5",
     "@tailwindcss/postcss": "^4.1.17",
     "@vitejs/plugin-react": "^4.3.2",
     "autoprefixer": "^10.4.21",
