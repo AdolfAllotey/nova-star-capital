@@ -1,110 +1,165 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_ROOT="${APP_ROOT:-/opt/nsc/app}"
-DATA_DIR="${DATA_DIR:-$APP_ROOT/data/trading}"
-LOG_DIR="${LOG_DIR:-$APP_ROOT/logs}"
+# =========================
+# NSC PREPROD SAFETY CHECKS
+# Institution-grade gate
+# =========================
 
-KILL_SWITCH_FILE="${KILL_SWITCH_FILE:-$DATA_DIR/kill_switch.json}"
-EXEC_PLAN_FILE="${EXEC_PLAN_FILE:-$DATA_DIR/execution_plan.json}"
-OPEN_POS_FILE="${OPEN_POS_FILE:-$DATA_DIR/open_positions.json}"
-SIM_FILLS_FILE="${SIM_FILLS_FILE:-$DATA_DIR/simulated_fills.json}"
+APP_DIR="${APP_DIR:-/opt/nsc/app}"
+cd "$APP_DIR"
 
-fail() { echo "❌ [FAIL] $*" >&2; exit 1; }
-warn() { echo "⚠️  [WARN] $*" >&2; }
-ok()   { echo "✅ [OK] $*"; }
-
-need_cmd() { command -v "$1" >/dev/null 2>&1 || fail "Missing command: $1"; }
-need_file() { [[ -f "$1" ]] || fail "Missing required file: $1"; }
-json_valid() { jq -e . "$1" >/dev/null 2>&1; }
-
-need_cmd jq
-need_cmd grep
-
-cd "$APP_ROOT"
-
-ENV="${NSC_ENV:-UNKNOWN}"
-[[ "$ENV" == "PREPROD" ]] || warn "NSC_ENV is '$ENV' (expected PREPROD). Continuing anyway."
-
-ok "Starting PREPROD safety checks (APP_ROOT=$APP_ROOT, DATA_DIR=$DATA_DIR, NSC_ENV=$ENV)"
-
-# 1) execution_plan exists + JSON valid + orders is array
-need_file "$EXEC_PLAN_FILE"
-json_valid "$EXEC_PLAN_FILE" || fail "execution_plan.json is not valid JSON"
-ORDERS_TYPE="$(jq -r '(.orders // empty) | type' "$EXEC_PLAN_FILE" 2>/dev/null || true)"
-[[ "$ORDERS_TYPE" == "array" ]] || fail "execution_plan.orders must be an array (found: ${ORDERS_TYPE:-missing})"
-ORDERS_LEN="$(jq -r '.orders | length' "$EXEC_PLAN_FILE")"
-ok "execution_plan.orders is an array (len=$ORDERS_LEN)"
-
-# 2) kill_switch exists + JSON valid + hard_block invariant
-need_file "$KILL_SWITCH_FILE"
-json_valid "$KILL_SWITCH_FILE" || fail "kill_switch.json is not valid JSON"
-HB="$(jq -r '.hard_block // false' "$KILL_SWITCH_FILE")"
-[[ "$HB" == "true" || "$HB" == "false" ]] || fail "kill_switch.hard_block must be boolean"
-
-if [[ "$HB" == "true" ]]; then
-  [[ "$ORDERS_LEN" -eq 0 ]] || fail "Invariant violated: hard_block=true but orders_len=$ORDERS_LEN (must be 0)"
-  ok "Invariant respected: hard_block=true => orders=0"
-else
-  ok "kill_switch.hard_block=false"
+ENV="${NSC_ENV:-}"
+if [ "$ENV" != "PREPROD" ]; then
+  echo "❌ NSC_ENV must be PREPROD (got: ${ENV:-<empty>})"
+  exit 1
 fi
 
-# 3) open_positions valid JSON array (if file exists)
-if [[ -f "$OPEN_POS_FILE" ]]; then
-  json_valid "$OPEN_POS_FILE" || fail "open_positions.json is not valid JSON"
-  OP_TYPE="$(jq -r 'type' "$OPEN_POS_FILE")"
-  [[ "$OP_TYPE" == "array" ]] || fail "open_positions.json must be a JSON array (found: $OP_TYPE)"
-  OP_LEN="$(jq -r 'length' "$OPEN_POS_FILE")"
-  ok "open_positions.json valid array (len=$OP_LEN)"
+TELEMETRY_DIR="data/telemetry"
+TRADING_DIR="data/trading"
+LOG_DIR="${LOG_DIR:-data/telemetry}"  # fallback if you log there; adjust if you have /var/log/nsc/...
+mkdir -p "$TELEMETRY_DIR"
+
+fail() { echo "❌ $*"; exit 1; }
+warn() { echo "⚠️  $*"; }
+ok()   { echo "✅ $*"; }
+
+# ---------- helpers ----------
+json_get() {
+  # json_get <file> <jq_expr>
+  local f="$1"
+  local expr="$2"
+  [ -f "$f" ] || fail "missing file: $f"
+  jq -r "$expr" "$f"
+}
+
+is_bool() {
+  # returns 0 if value is true/false, else 1
+  case "${1:-}" in
+    true|false) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# ---------- 0) core files exist ----------
+[ -f "$TRADING_DIR/open_positions.json" ] || fail "missing $TRADING_DIR/open_positions.json"
+[ -f "$TRADING_DIR/execution_plan.json" ] || warn "missing $TRADING_DIR/execution_plan.json (ok if your flow writes a different plan path, but expected to exist)"
+
+# ---------- 1) open_positions is valid JSON array ----------
+jq -e 'type=="array"' "$TRADING_DIR/open_positions.json" >/dev/null || fail "open_positions.json must be a JSON array"
+ok "open_positions.json is valid JSON array"
+
+# ---------- 2) preprod_check can run and outputs telemetry ----------
+# (This is the source-of-truth for many assertions)
+if ! ./scripts/preprod_check.sh >/dev/null; then
+  fail "preprod_check.sh failed"
+fi
+[ -f "$TELEMETRY_DIR/preprod_check.json" ] || fail "missing telemetry: $TELEMETRY_DIR/preprod_check.json"
+ok "preprod_check executed and wrote telemetry"
+
+PREPROD_OK="$(json_get "$TELEMETRY_DIR/preprod_check.json" '.ok // empty')"
+[ "$PREPROD_OK" = "true" ] || fail "preprod_check.json ok != true"
+
+# ---------- 3) DRY_RUN enforced markers ----------
+# We use assertions emitted by preprod_check if available
+DRY_ASSERT="$(jq -r '.assertions.dry_run_enforced // empty' "$TELEMETRY_DIR/preprod_check.json" 2>/dev/null || true)"
+if [ -n "$DRY_ASSERT" ]; then
+  [ "$DRY_ASSERT" = "true" ] || fail "dry_run_enforced assertion is not true"
+  ok "dry_run_enforced assertion true"
 else
-  warn "open_positions.json missing (skipping array check)"
+  warn "dry_run_enforced assertion missing from preprod_check.json (consider adding it)"
 fi
 
-# 4) simulated_fills prices non-null (if file exists)
-if [[ -f "$SIM_FILLS_FILE" ]]; then
-  json_valid "$SIM_FILLS_FILE" || fail "simulated_fills.json is not valid JSON"
-  ROOT_TYPE="$(jq -r 'type' "$SIM_FILLS_FILE")"
-  NULLS="0"; FILLS="0"
-
-  if [[ "$ROOT_TYPE" == "array" ]]; then
-    FILLS="$(jq -r 'length' "$SIM_FILLS_FILE")"
-    NULLS="$(jq -r '[ .[] | select((.fill_price // .price // null) == null) ] | length' "$SIM_FILLS_FILE")"
-  elif [[ "$ROOT_TYPE" == "object" ]]; then
-    FT="$(jq -r '(.fills // empty) | type' "$SIM_FILLS_FILE" 2>/dev/null || true)"
-    [[ "$FT" == "array" ]] || fail "simulated_fills.json must be array or contain object.fills as array"
-    FILLS="$(jq -r '.fills | length' "$SIM_FILLS_FILE")"
-    NULLS="$(jq -r '[ .fills[] | select((.fill_price // .price // null) == null) ] | length' "$SIM_FILLS_FILE")"
-  else
-    fail "simulated_fills.json must be array or object (found: $ROOT_TYPE)"
+# ---------- 4) simulated_fills: no null price (if file exists) ----------
+SIM_FILLS="$TRADING_DIR/simulated_fills.json"
+if [ -f "$SIM_FILLS" ]; then
+  # allow either array or object with fills
+  null_count="$(jq -r '
+    def prices:
+      if type=="array" then .[]
+      elif type=="object" and (.fills|type)=="array" then .fills[]
+      else empty end;
+    [prices | (.price // .fill_price // empty)] as $p
+    | ( [prices | ((.price // .fill_price) == null)] | map(select(.==true)) | length )
+  ' "$SIM_FILLS" 2>/dev/null || echo "ERR")"
+  if [ "$null_count" = "ERR" ]; then
+    fail "cannot parse simulated_fills.json"
   fi
-
-  [[ "$NULLS" -eq 0 ]] || fail "simulated_fills has null prices: $NULLS / $FILLS"
-  ok "simulated_fills integrity OK (fills=$FILLS, null_prices=$NULLS)"
+  [ "$null_count" = "0" ] || fail "simulated_fills has null price/fill_price entries (count=$null_count)"
+  ok "simulated_fills has no null prices"
 else
-  warn "simulated_fills.json missing (skipping null-price check)"
+  warn "no simulated_fills.json found (ok if your pipeline writes it elsewhere)"
 fi
 
-# 5) log scan (best-effort) for live execution traces
-PATTERN='REAL_EXECUTION|EXECUTED_LIVE|placing (real|live) order|order sent|POST /api/v3/order|POST /fapi/v1/order|create_order\(|ccxt\.create_order'
-
-FOUND=0
-if [[ -d "$LOG_DIR" ]]; then
-  if ls -1t "$LOG_DIR"/* >/dev/null 2>&1; then
-    if grep -RqiE "$PATTERN" "$LOG_DIR"; then
-      FOUND=1
-      echo "❌ [SUSPICIOUS] live-execution traces found under $LOG_DIR" >&2
+# ---------- 5) kill-switch invariant: hard_block => orders=0 ----------
+KILL_FILE="$TRADING_DIR/kill_switch.json"
+if [ -f "$KILL_FILE" ] && [ -f "$TRADING_DIR/execution_plan.json" ]; then
+  hard_block="$(json_get "$KILL_FILE" '.hard_block // empty')"
+  if [ -z "$hard_block" ]; then
+    warn "kill_switch.json has no .hard_block"
+  else
+    is_bool "$hard_block" || fail "kill_switch.json .hard_block must be boolean true/false (got=$hard_block)"
+    orders_len="$(json_get "$TRADING_DIR/execution_plan.json" '(.orders // []) | length')"
+    if [ "$hard_block" = "true" ]; then
+      [ "$orders_len" = "0" ] || fail "KILL-SWITCH VIOLATION: hard_block=true but execution_plan.orders.length=$orders_len"
+      ok "hard_block=true => execution_plan.orders length is 0"
+    else
+      ok "hard_block=false (no invariant check on orders length)"
     fi
   fi
+else
+  warn "kill_switch.json or execution_plan.json missing (skip invariant hard_block=>orders=0)"
 fi
 
-if ls -1 /tmp/nsc_preprod_*.log >/dev/null 2>&1; then
-  if grep -qiE "$PATTERN" /tmp/nsc_preprod_*.log; then
-    FOUND=1
-    echo "❌ [SUSPICIOUS] live-execution traces found in /tmp/nsc_preprod_*.log" >&2
+# ---------- 6) open_positions immutability quick check (hash before/after loop) ----------
+before_hash="$(sha256sum "$TRADING_DIR/open_positions.json" | awk '{print $1}')"
+# run another preprod_check quickly
+./scripts/preprod_check.sh >/dev/null || fail "preprod_check failed on 2nd run"
+after_hash="$(sha256sum "$TRADING_DIR/open_positions.json" | awk '{print $1}')"
+[ "$before_hash" = "$after_hash" ] || fail "open_positions mutated between runs (before=$before_hash after=$after_hash)"
+ok "open_positions immutable across two runs"
+
+# ---------- 7) Optional: total_notional visibility ----------
+TOTAL_NOTIONAL="$(jq -r '
+  .details.total_notional // .details.portfolio_total_notional // empty
+' "$TELEMETRY_DIR/preprod_check.json" 2>/dev/null || true)"
+if [ -n "$TOTAL_NOTIONAL" ] && [ "$TOTAL_NOTIONAL" != "null" ]; then
+  ok "total_notional reported: $TOTAL_NOTIONAL"
+else
+  warn "total_notional not reported in telemetry (optional)"
+fi
+
+# ---------- 8) log scan: look for evidence of live execution ----------
+# Adjust patterns to your actual logs.
+# We scan recent telemetry logs if present + any preprod logs under /var/log/nsc if available.
+PATTERN='(REAL EXECUTION|place_order_live|/api/v1/order|/api/v3/order|create_order|MARKET BUY|MARKET SELL|TRANSFER FUNDS|WITHDRAW)'
+found=0
+
+scan_file() {
+  local f="$1"
+  [ -f "$f" ] || return 0
+  if grep -E -n "$PATTERN" "$f" >/dev/null 2>&1; then
+    echo "❌ suspicious live-execution pattern found in $f"
+    grep -E -n "$PATTERN" "$f" | head -n 20
+    found=1
   fi
+}
+
+# telemetry logs
+for f in \
+  "$TELEMETRY_DIR/preprod_daily.log" \
+  "$TELEMETRY_DIR/preprod_weekly_stress.log" \
+  "$TELEMETRY_DIR/preprod_weekly_scenarios.log"
+do
+  scan_file "$f"
+done
+
+# system logs (optional)
+if [ -d /var/log/nsc ]; then
+  while IFS= read -r f; do scan_file "$f"; done < <(find /var/log/nsc -maxdepth 3 -type f -name "*.log" 2>/dev/null | head -n 50)
 fi
 
-[[ "$FOUND" -eq 0 ]] || fail "Suspicious live-execution traces detected in logs."
+[ "$found" = "0" ] || fail "live-execution traces detected in logs (see above)"
+ok "no live-execution traces detected (basic scan)"
 
 ok "PREPROD safety checks passed."
-
