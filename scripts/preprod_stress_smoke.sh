@@ -14,7 +14,6 @@ before_pos="$(sha256sum data/trading/open_positions.json 2>/dev/null | awk '{pri
 
 ok_count=0
 for i in $(seq 1 "$runs"); do
-  echo "-- run $i/$runs"
   echo "-- stress run ${i}/${runs} (timeout=${PREPROD_CHECK_TIMEOUT_S}s)"
   if ! timeout "${PREPROD_CHECK_TIMEOUT_S}" ./scripts/preprod_check.sh >/dev/null; then
     echo "❌ preprod_check timed out/failed (run=${i}/${runs}, timeout=${PREPROD_CHECK_TIMEOUT_S}s)"
