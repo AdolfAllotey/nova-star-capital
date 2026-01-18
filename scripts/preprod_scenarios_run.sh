@@ -45,6 +45,7 @@ for f in "${files[@]}"; do
   STRESS_WRAP_TIMEOUT="0"
   if [ "${sid:-}" = "30_stress_25" ]; then
     STRESS_WRAP_TIMEOUT="1"
+    STRESS_ITER=0
   fi
 
   # NSC_PATCH: custom_scenarios_overrides_v1 BEGIN
@@ -118,19 +119,8 @@ PREPROD_CHECK_TIMEOUT_S="${PREPROD_CHECK_TIMEOUT_S:-120}"
       fi
     fi
   done < <(jq -r '.env // {} | to_entries[] | "\(.key)\t\(.value)"' "$f")
-
   # run baseline check
-  # NSC_PATCH: wrapped_preprod_check_v1
-  if [ "${STRESS_WRAP_TIMEOUT:-0}" = "1" ]; then
-    echo "-- stress run ${i:-?}/${runs:-?} (timeout=${PREPROD_CHECK_TIMEOUT_S}s)"
-    if ! timeout "${PREPROD_CHECK_TIMEOUT_S}" ./scripts/preprod_check.sh >/dev/null; then
-      echo "❌ preprod_check timed out/failed (run=${i:-?}/${runs:-?}, timeout=${PREPROD_CHECK_TIMEOUT_S}s)"
-      stress_ok="false"
-      break
-    fi
-  else
-    ./scripts/preprod_check.sh >/dev/null
-  fi
+  ./scripts/preprod_check.sh >/dev/null
   ok="$(jq -r '.ok' data/telemetry/preprod_check.json)"
   assertions="$(jq -c '.assertions' data/telemetry/preprod_check.json)"
   details="$(jq -c '.details' data/telemetry/preprod_check.json)"

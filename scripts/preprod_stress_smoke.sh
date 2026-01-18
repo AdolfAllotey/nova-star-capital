@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+
+PREPROD_CHECK_TIMEOUT_S="${PREPROD_CHECK_TIMEOUT_S:-120}"
 set -euo pipefail
 
 export NSC_ENV=PREPROD
@@ -13,7 +15,11 @@ before_pos="$(sha256sum data/trading/open_positions.json 2>/dev/null | awk '{pri
 ok_count=0
 for i in $(seq 1 "$runs"); do
   echo "-- run $i/$runs"
-  ./scripts/preprod_check.sh >/dev/null
+  echo "-- stress run ${i}/${runs} (timeout=${PREPROD_CHECK_TIMEOUT_S}s)"
+  if ! timeout "${PREPROD_CHECK_TIMEOUT_S}" ./scripts/preprod_check.sh >/dev/null; then
+    echo "❌ preprod_check timed out/failed (run=${i}/${runs}, timeout=${PREPROD_CHECK_TIMEOUT_S}s)"
+    exit 1
+  fi
   ok="$(jq -r '.ok' data/telemetry/preprod_check.json)"
   if [ "$ok" = "true" ]; then ok_count=$((ok_count+1)); fi
 done
