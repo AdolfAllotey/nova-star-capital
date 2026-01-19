@@ -5,41 +5,61 @@ import reactRefresh from "eslint-plugin-react-refresh";
 import babelParser from "@babel/eslint-parser";
 
 export default [
-  { ignores: ["dist/**", "node_modules/**"] },
+  {
+    ignores: [
+      "dist/**",
+      "node_modules/**",
+      "**/*.backup.*",
+      "**/*_min.*",
+      "src/App.backup.jsx",
+      "src/App_min.jsx",
+    ],
+  },
 
   js.configs.recommended,
 
   {
-    files: ["**/*.{js,jsx,ts,tsx}"],
+    files: ["**/*.{js,jsx}"],
     languageOptions: {
       parser: babelParser,
       parserOptions: {
         requireConfigFile: false,
-        babelOptions: {
-          presets: ["@babel/preset-react"],
-        },
         ecmaVersion: "latest",
         sourceType: "module",
         ecmaFeatures: { jsx: true },
+        babelOptions: {
+          plugins: ["jsx"],
+        },
+},
+      globals: {
+        ...globals.browser,
+        ...globals.node,
       },
-      globals: globals.browser,
     },
     plugins: {
       "react-hooks": reactHooks,
       "react-refresh": reactRefresh,
     },
     rules: {
-      ...(reactHooks.configs?.recommended?.rules ?? {}),
+      // React Hooks rules
+      ...reactHooks.configs.recommended.rules,
+
+      // Vite/React refresh
       "react-refresh/only-export-components": ["warn", { allowConstantExport: true }],
-    },
-  },
-  ,
-  {
-    name: "preprod-nonblocking",
-    rules: {
+
+      // Make preprod lint non-blocking
       "no-empty": "warn",
       "no-constant-binary-expression": "warn",
-    },
-  }
 
+      // Keep warnings only for unused
+      "no-unused-vars": [
+        "warn",
+        {
+          argsIgnorePattern: "^_",
+          varsIgnorePattern: "^(React|_)",
+          caughtErrorsIgnorePattern: "^_",
+        },
+      ],
+    },
+  },
 ];
