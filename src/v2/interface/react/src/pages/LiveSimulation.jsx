@@ -1,4 +1,5 @@
 // src/pages/LiveSimulation.jsx
+
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { connectLive } from "../lib/live";
 import Sparkline from "../components/Sparkline";
@@ -17,7 +18,9 @@ const WS_URL =
  * { type: "regime", payload: { mode: "bull|bear|neutral", score: <number>, t: <iso> } }
  */
 export default function LiveSimulation() {
-  const [pnl, setPnl] = useState([]);         // [{t, v}]
+  
+  const [nowEpochMs] = useState(() => Date.now());
+const [pnl, setPnl] = useState([]);         // [{t, v}]
   const [events, setEvents] = useState([]);   // feed des derniers trades/infos
   const [regime, setRegime] = useState(null); // dernier mode reçu
   const connRef = useRef(null);
@@ -153,7 +156,7 @@ export default function LiveSimulation() {
                   )}
                 </div>
                 <div className="text-xs text-zinc-500">
-                  {new Date(e._t || Date.now()).toLocaleTimeString()}
+                  {new Date(e._t || 0).toLocaleTimeString()}
                 </div>
               </div>
             ))
