@@ -33,4 +33,13 @@ export default [
       "react-refresh/only-export-components": ["warn", { allowConstantExport: true }],
     },
   },
+  ,
+  {
+    name: "preprod-nonblocking",
+    rules: {
+      "no-empty": "warn",
+      "no-constant-binary-expression": "warn",
+    },
+  }
+
 ];
