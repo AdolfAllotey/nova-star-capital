@@ -7,6 +7,10 @@ import pkgutil
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import FastAPI
+from src.v2.api.routes.governance import router as governance_router
+from src.v2.api.routes.risk import router as risk_router
+from src.v2.api.routes.monitoring import router as monitoring_router
+
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.v2.utils.logger import get_logger
@@ -106,6 +110,7 @@ _try_include_router(app, "src.v2.api.dev_router", prefix="/dev")
 
 # Assistant router (si présent)
 _try_include_router(app, "src.v2.api.assistant_router", prefix="")
+_try_include_router(app, "src.v2.api.ico_router", prefix="")
 
 # ─────────────────────────────────────────────────────────────
 # Auto-discovery des routes métiers
