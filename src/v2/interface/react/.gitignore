@@ -22,3 +22,18 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# local backups / scratch
+_local_backups/
+**/*.BAK_*
+**/*.bak
+**/*.bak2
+**/*.GOOD_*
+
+# UI build artifacts
+src/v2/interface/react/node_modules/
+src/v2/interface/react/dist/
+src/v2/interface/react/renvoie/
+
+# misc
+npm-debug.log*
