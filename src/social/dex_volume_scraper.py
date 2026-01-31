@@ -1,25 +1,34 @@
+"""
+Dex volume scraper (placeholder import-safe version).
+Original file had indentation/syntax issues.
+"""
+
+from __future__ import annotations
+import os
+import logging
 import requests
 
-def fetch_hot_dex_tokens(limit=10):
-    """
-    Récupère les tokens en tendance sur DexScreener en se basant sur le volume.
-    """
-    url = "url = "https://api.dexscreener.com/latest/dex/pairs/ethereum""
+logger = logging.getLogger("dex_volume_scraper")
+
+DEXSCREENER_URL = "https://api.dexscreener.com/latest/dex/pairs/ethereum"
+
+
+def fetch_pair() -> dict:
+    r = requests.get(DEXSCREENER_URL, timeout=20)
+    r.raise_for_status()
+    return r.json()
+
+
+def main() -> int:
+    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
     try:
-        response = requests.get(url)
-        data = response.json()
-
-        pairs = data.get("pairs", [])[:limit]
-        tokens = []
-        for pair in pairs:
-            tokens.append({
-                "symbol": pair.get("baseToken", {}).get("symbol", "N/A"),
-                "volume_usd": float(pair.get("volume", {}).get("h24", 0)),
-                "change_pct": float(pair.get("priceChange", {}).get("h1", 0)),
-                "url": pair.get("url", "#")
-            })
-
-        return tokens
+        data = fetch_pair()
+        logger.info("dex_volume_scraper ok keys=%s", list(data.keys())[:10])
+        return 0
     except Exception as e:
-        print(f"❌ Erreur DEX API : {e}")
-        return []
+        logger.exception("dex_volume_scraper failed: %s", e)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

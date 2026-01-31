@@ -34,3 +34,11 @@ echo " - data/telemetry/preprod_runs/preprod_kpis.json"
 
 # notify on failure (best-effort)
 python scripts/preprod_notify.py >/dev/null 2>&1 || true
+
+# Telegram Daily Summary (PREPROD)
+set -a
+[ -f /etc/nsc/nsc.env ] && source /etc/nsc/nsc.env
+set +a
+export DAILY_SUMMARY_ENABLED=${DAILY_SUMMARY_ENABLED:-1}
+rc=$?
+true
