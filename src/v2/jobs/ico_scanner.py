@@ -117,7 +117,7 @@ def main():
     }
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     with open(OUT, "w") as f:
-        json.dump(payload, f, indent=2)
+        json.dump({"items": [x.to_dict() if hasattr(x, "to_dict") else (x.__dict__ if hasattr(x, "__dict__") else x) for x in all_items], "updated_at": iso_now_utc()}, f, indent=2)
     log.info("[ICO] wrote %s items -> %s", len(all_items), OUT)
 
 if __name__ == "__main__":

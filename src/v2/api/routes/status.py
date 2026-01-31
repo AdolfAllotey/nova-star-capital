@@ -4,6 +4,11 @@ import os, time, platform, socket
 router = APIRouter(tags=["meta"])
 _STARTED_AT = time.time()
 
+@router.get("/status")
+def status():
+    # Alias stable pour l'UI (Go/No-Go) — même payload que /metrics
+    return metrics()
+
 @router.get("/metrics")
 def metrics():
     return {

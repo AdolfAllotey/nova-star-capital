@@ -1,25 +1,31 @@
-sudo tee /opt/nsc/app/src/v2/api/rate_limit.py >/dev/null <<'PY'
-from slowapi import Limiter
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
-from starlette.requests import Request
-from starlette.responses import JSONResponse
+"""
+Minimal rate limit helper.
+If you don't use it yet, it stays harmless and import-safe.
+"""
 
-# Limites par défaut (ajuste selon tes besoins)
-# Exemples: "100/minute", "1000/hour"
-limiter = Limiter(key_func=get_remote_address, default_limits=["100/minute"])
+from __future__ import annotations
+import time
+from collections import defaultdict, deque
+from typing import Deque, DefaultDict
 
-def rate_limit_handler(request: Request, exc: RateLimitExceeded):
-    retry_after = getattr(exc, "retry_after", None)
-    headers = {}
-    if retry_after is not None:
-        try:
-            headers["Retry-After"] = str(int(retry_after))
-        except Exception:
-            pass
-    return JSONResponse(
-        status_code=429,
-        content={"detail": "Rate limit exceeded. Try again later."},
-        headers=headers,
-    )
-PY
+
+class SimpleRateLimiter:
+    """
+    In-memory sliding-window limiter: max_calls per window_seconds per key.
+    """
+    def __init__(self, max_calls: int = 60, window_seconds: int = 60):
+        self.max_calls = int(max_calls)
+        self.window_seconds = int(window_seconds)
+        self._calls: DefaultDict[str, Deque[float]] = defaultdict(deque)
+
+    def allow(self, key: str) -> bool:
+        now = time.time()
+        q = self._calls[key]
+        # purge old
+        cutoff = now - self.window_seconds
+        while q and q[0] < cutoff:
+            q.popleft()
+        if len(q) >= self.max_calls:
+            return False
+        q.append(now)
+        return True

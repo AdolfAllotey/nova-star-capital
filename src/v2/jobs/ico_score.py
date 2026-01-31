@@ -5,6 +5,9 @@ Entrée:  data/ico/ico_screened.json + social data (si présents)
 Sortie:  data/ico/ico_scored.json
 """
 from __future__ import annotations
+
+import json
+from pathlib import Path
 import os, json, re
 from typing import List, Dict, Any
 from src.v2.utils.logsafe import get_logger
@@ -26,14 +29,25 @@ TW  = os.path.join(DATA, "monitoring", "twitter_data.json")
 RD  = os.path.join(DATA, "monitoring", "reddit_data.json")
 
 def load_screened() -> List[ScreenedICO]:
-    if not os.path.exists(IN):
+    # Supporte: liste brute OU {"items": [...]} 
+    try:
+        p = Path(IN)
+        if not p.exists():
+            return []
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
         return []
-    with open(IN, "r") as f:
-        raw = json.load(f)
-    out = []
-    for x in raw.get("items", []):
-        s = ScreenedICO(**x)
-        out.append(s)
+
+    items = raw.get("items") if isinstance(raw, dict) else raw
+    if not isinstance(items, list):
+        items = []
+
+    out: List[ScreenedICO] = []
+    for x in items:
+        try:
+            out.append(ScreenedICO(**x))
+        except Exception:
+            continue
     return out
 
 def count_mentions(symbol: str, files: List[str]) -> int:
@@ -92,7 +106,7 @@ def main():
     }
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     with open(OUT, "w") as f:
-        json.dump(payload, f, indent=2)
+        json.dump({"items": [x.to_dict() if hasattr(x,"to_dict") else x for x in out], "updated_at": iso_now_utc()}, f, indent=2)
     log.info("[ICO] scored=%s -> %s", len(out), OUT)
 
 if __name__ == "__main__":

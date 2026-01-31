@@ -1,78 +1,65 @@
-# app/src/v2/api/routes/risk.py
+from __future__ import annotations
+
+import os
+from pathlib import Path
 from fastapi import APIRouter
-from pydantic import BaseModel
-from typing import List, Optional, Any, Dict
-import os, json, datetime as dt
+
+from src.v2.utils.file_utils import load_json_file
 
 router = APIRouter(prefix="/risk", tags=["risk"])
 
-DATA_ROOT = os.environ.get("NSC_DATA_ROOT", "/opt/nsc/app/data")
-WORST_PATH = os.path.join(DATA_ROOT, "risk", "worst_trades.json")
 
-class WorstTrade(BaseModel):
-    token: str
-    loss_eur: float
-    reason: Optional[str] = None
-    ts: Optional[str] = None
+def _data_root() -> Path:
+    dr = os.getenv("DATA_ROOT")
+    if dr:
+        return Path(dr)
+    p = Path("/opt/nsc/app/data")
+    if p.exists():
+        return p
+    return Path.cwd() / "data"
 
-class WorstTradesResp(BaseModel):
-    updated_at: Optional[str] = None
-    items: List[WorstTrade] = []
-    message: Optional[str] = None
 
-def _read_json(path: str) -> Any:
-    try:
-        with open(path, "r") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return None
-    except Exception:
-        return None
+@router.get("/status")
+def risk_status():
+    data_root = _data_root()
+    path_state = data_root / "analysis" / "risk_state_last.json"
+    path_engine = data_root / "analysis" / "risk_engine_pro.json"
 
-@router.get("/worst-trades", response_model=WorstTradesResp)
-def get_worst_trades():
-    raw = _read_json(WORST_PATH)
-    items: List[Dict] = []
-    if isinstance(raw, dict) and "items" in raw and isinstance(raw["items"], list):
-        items = raw["items"]
-    elif isinstance(raw, list):
-        items = raw
-    else:
-        return WorstTradesResp(
-            updated_at=dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
-            items=[],
-            message="Aucune donnée (risk/worst_trades.json).",
-        )
+    state = load_json_file(path_state, default={})
+    engine = load_json_file(path_engine, default={})
 
-    norm: List[WorstTrade] = []
-    for it in items:
-        if not isinstance(it, dict):
-            continue
-        token = str(it.get("token") or it.get("symbol") or it.get("asset") or "").upper()
-        # accepte loss ou pnl négatif
-        loss = it.get("loss_eur")
-        if loss is None:
-            pnl = it.get("pnl_eur") or it.get("pnl") or 0
-            try:
-                pnl = float(pnl)
-            except Exception:
-                pnl = 0.0
-            loss = pnl if pnl < 0 else -abs(pnl)
-        try:
-            loss = float(loss)
-        except Exception:
-            continue
-        norm.append(WorstTrade(
-            token=token or "UNKNOWN",
-            loss_eur=float(loss),
-            reason=it.get("reason") or it.get("explain"),
-            ts=it.get("ts") or it.get("timestamp"),
-        ))
+    flag = None
+    risk_mode = None
+    hard_block = None
+    soft_veto = None
 
-    # trier par perte la plus forte (plus négatif d'abord)
-    norm.sort(key=lambda x: x.loss_eur)
-    return WorstTradesResp(
-        updated_at=dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
-        items=norm,
-        message=None if norm else "Fichier présent mais vide.",
-    )
+    if isinstance(state, dict) and state:
+        flag = state.get("flag") or state.get("global_flag")
+        risk_mode = state.get("risk_mode")
+        hard_block = state.get("hard_block")
+        soft_veto = state.get("soft_veto")
+
+    if flag is None and isinstance(engine, dict) and engine:
+        flag = engine.get("flag") or engine.get("global_flag")
+    if risk_mode is None and isinstance(engine, dict) and engine:
+        risk_mode = engine.get("risk_mode")
+    if hard_block is None and isinstance(engine, dict) and engine:
+        hard_block = engine.get("hard_block")
+    if soft_veto is None and isinstance(engine, dict) and engine:
+        soft_veto = engine.get("soft_veto")
+
+    return {
+        "ok": True,
+        "env": os.getenv("NSC_ENV", "UNKNOWN"),
+        "data_root": str(data_root),
+        "risk_state_path": str(path_state),
+        "risk_engine_path": str(path_engine),
+        "risk_state_exists": path_state.exists(),
+        "risk_engine_exists": path_engine.exists(),
+        "flag": flag,
+        "risk_mode": risk_mode,
+        "hard_block": hard_block,
+        "soft_veto": soft_veto,
+        "as_of": (state.get("as_of") if isinstance(state, dict) else None)
+                or (engine.get("timestamp") if isinstance(engine, dict) else None),
+    }

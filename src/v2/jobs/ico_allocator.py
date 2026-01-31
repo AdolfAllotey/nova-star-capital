@@ -48,24 +48,48 @@ def main():
     budget = base * mult
 
     # Pondération par score (>=0.5)
+    fallback_mode = False
     cand = [x for x in scored if (x.get("score") or 0) >= 0.50]
-    ssum = sum([x["score"] for x in cand]) or 1.0
+
+    # Fallback PREPROD : aucun score >= 0.5
+    if not cand:
+        fallback_mode = True
+        valid_items = [x for x in scored if bool(x.get("valid", True))]
+        valid_items.sort(key=lambda z: float(z.get("score") or 0.0), reverse=True)
+        top_n = int(os.environ.get("NSC_ICO_FALLBACK_TOPN", "3"))
+        cand = valid_items[:top_n]
+
+    ssum = sum([float(x.get("score") or 0.0) for x in cand]) or 1.0
+
 
     # garde-fous
     cap_min = float(os.environ.get("NSC_ICO_MIN_TICKET", "150"))
     cap_max = float(os.environ.get("NSC_ICO_MAX_TICKET", "1000"))
 
+    fallback_cap = float(os.environ.get("NSC_ICO_FALLBACK_MAX_TICKET", "250"))
     items: List[Allocation] = []
     for x in cand:
         w = (x["score"] / ssum)
         amt = max(cap_min, min(cap_max, budget * w))
+        if fallback_mode:
+            amt = min(amt, fallback_cap)
         items.append(Allocation(symbol=x["symbol"], amount_usd=round(amt,2),
                                 rationale=f"score={x['score']}, regime={regime}"))
 
-    plan = AllocationPlan(generated_at=iso_now_utc(), regime=regime, budget_usd=budget, items=items)
+    plan = AllocationPlan(
+        generated_at=iso_now_utc(),
+        regime=regime,
+        budget_usd=budget,
+        items=items,
+    )
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
-    with open(OUT, "w") as f:
-        json.dump(plan.to_dict(), f, indent=2)
+    d = plan.to_dict()
+    # compat UI: même logique que les autres flux (updated_at)
+    d["updated_at"] = d.get("generated_at")
+    tmp = OUT + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(d, f, indent=2)
+    os.replace(tmp, OUT)
     log.info("[ICO] allocation %s -> %s", len(items), OUT)
 
 if __name__ == "__main__":

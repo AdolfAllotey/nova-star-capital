@@ -57,7 +57,7 @@ def main():
     }
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     with open(OUT, "w") as f:
-        json.dump(payload, f, indent=2)
+        json.dump({"items": [x.to_dict() for x in scr], "updated_at": iso_now_utc()}, f, indent=2)
     log.info("[ICO] screened=%s -> %s", len(scr), OUT)
 
 if __name__ == "__main__":
