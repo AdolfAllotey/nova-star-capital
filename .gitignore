@@ -165,3 +165,18 @@ scripts/preprod_check.sh.bak*
 # accidental marker files
 mode=risk_off
 *.bak_*
+
+# local backups / scratch
+_local_backups/
+**/*.BAK_*
+**/*.bak
+**/*.bak2
+**/*.GOOD_*
+
+# UI build artifacts
+src/v2/interface/react/node_modules/
+src/v2/interface/react/dist/
+src/v2/interface/react/renvoie/
+
+# misc
+npm-debug.log*
