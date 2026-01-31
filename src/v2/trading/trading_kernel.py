@@ -36,7 +36,7 @@ from __future__ import annotations
 import time
 
 import secrets
-from src.v2.utils.file_utils import load_json_file, save_json_file
+from src.v2.utils.file_utils import load_json_file, save_json_file, get_data_dir
 
 
 
@@ -252,7 +252,7 @@ def is_kill_switch_enabled() -> bool:
     """Compat: retourne True si kill-switch activé (enabled)."""
     try:
         from src.v2.governance.kill_switch import load_kill_switch
-        ks = load_kill_switch()
+        ks = load_kill_switch(os.path.join(str(get_data_dir()), "trading", "kill_switch.json"))
         if ks.enabled:
             logger.warning("[trading_kernel] Kill-switch ENABLED (source=%s reasons=%s)", ks.source, ks.reasons or [])
         return bool(ks.enabled)
@@ -472,7 +472,7 @@ def _check_orchestrator_gate() -> tuple[bool, bool]:
 def run_once(max_new_positions: Optional[int] = None) -> None:
 
     # 0) Kill-switch (single source of truth)
-    ks = load_kill_switch()
+    ks = load_kill_switch(os.path.join(str(get_data_dir()), "trading", "kill_switch.json"))
 
     if ks.hard_block:
         logger.warning("[trading_kernel] HARD BLOCK active -> no trading. %s", ks.explain())
@@ -903,7 +903,7 @@ def run_once(max_new_positions: Optional[int] = None) -> None:
             _risk_now = load_json_file(str(DATA_DIR / 'analysis' / 'risk_engine_pro.json'), default={}) or {}
             _risk_hb = bool(_risk_now.get('hard_block') is True)
             _risk_flag = str(_risk_now.get('flag') or _risk_now.get('global_flag') or '')
-            if (_prev_hb or _prev_note.startswith('blocked_by_risk_engine_pro')) and (not _risk_hb) and _risk_flag:
+            if False and (_prev_hb or _prev_note.startswith('blocked_by_risk_engine_pro')) and (not _risk_hb) and _risk_flag:
                 try:
                     os.environ['NSC_ALLOW_PLAN_OVERWRITE'] = '1'
                 except Exception:

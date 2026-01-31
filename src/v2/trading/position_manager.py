@@ -2,8 +2,44 @@
 
 from __future__ import annotations
 
+
 import os
 from collections import Counter
+
+
+def _is_hard_block(data_dir, plan):
+    """
+    Source unique: HARD BLOCK uniquement si hard_block==True (jamais sur soft_veto/caution).
+    Priorité:
+      1) execution_plan.json -> plan["governance"]["hard_block"]
+      2) kill_switch.json    -> KillSwitchState.hard_block (ou dict["hard_block"])
+    """
+    reasons = []
+
+    # 1) execution_plan.json governance.hard_block
+    try:
+        if isinstance(plan, dict):
+            gov = plan.get("governance") or {}
+            if isinstance(gov, dict) and bool(gov.get("hard_block", False)):
+                reasons.append("execution_plan.governance.hard_block=true")
+                return True, reasons
+    except Exception:
+        pass
+
+    # 2) kill_switch.json hard_block
+    try:
+        ks_file = load_kill_switch(str(_path(data_dir, "trading", "kill_switch.json")))
+        # support dataclass-like + dict
+        hb = getattr(ks_file, "hard_block", None)
+        if hb is None and isinstance(ks_file, dict):
+            hb = ks_file.get("hard_block", False)
+        if bool(hb):
+            reasons.append("kill_switch.hard_block=true")
+            return True, reasons
+    except Exception:
+        pass
+
+    return False, reasons
 
 def is_dry_run_enabled() -> bool:
     v = (os.getenv("NSC_DRY_RUN") or "").strip().lower()
@@ -65,6 +101,7 @@ def _load_hf_policy(data_dir: str):
             "min_meta_score": mmeta,
         }
     except Exception:
+        # neutre
         # neutre
         return {"position_size_mult": 1.0, "max_open_positions": None, "min_meta_score": None}
 
@@ -1015,10 +1052,14 @@ def update_positions(
             try:
 
 
+
+
                 sp = sim_prices.get(symbol_norm)
 
 
             except Exception:
+
+
 
 
                 sp = None
@@ -1077,8 +1118,6 @@ def update_positions(
                 size = (notional_f / entry_price_f) * max(0.0, size_multiplier)
         else:
             base_size = float(sig.get("size", sig.get("amount", 0.0) or 0.0) or 0.0)
-            if base_size <= 0:
-                base_size = 1.0
             size = base_size * max(0.0, size_multiplier)
 
         if size <= 0:
@@ -1119,19 +1158,22 @@ def update_positions(
     positions = _dedup_positions_keep_latest(positions)
 
     open_pos_path = _path(data_dir, "trading", "open_positions.json")
-    exit_events_path = _path(data_dir, "trading", "exit_events.json")
-
-    # NSC_PATCH: governance_hard_block_gate BEGIN
+    exit_events_path = _path(data_dir, "trading", "exit_events.json")    # NSC_PATCH: governance_hard_block_gate BEGIN
+    # Source unique: _is_hard_block(data_dir, plan)
     try:
-        gov = load_json_file(_path(data_dir, "analysis", "governance_engine_pro.json"), default={})
-        if isinstance(gov, dict) and bool(gov.get("hard_block")):
-            rs = gov.get("reasons") if isinstance(gov.get("reasons"), list) else []
-            logger.warning("[position_manager] HARD BLOCK active => skip writes open_positions/exit_events. reasons=%s", rs)
-            return
+        hard_block_active, hb_reasons = _is_hard_block(data_dir, plan)
     except Exception:
-        logger.exception("[position_manager] governance hard block gate failed (continuing)")
-    # NSC_PATCH: governance_hard_block_gate END
+        hard_block_active, hb_reasons = False, []
 
+    if hard_block_active:
+        logger.warning(
+            "[position_manager] HARD BLOCK active => skip writes open_positions/exit_events. reasons=%s",
+            hb_reasons,
+        )
+        # IMPORTANT: update_positions() must return cleanly; no _next here.
+        return positions, exit_events, [], []
+
+    # NSC_PATCH: governance_hard_block_gate END
     save_json_file(open_pos_path, positions)
     nb_active = len([p for p in positions if float(p.get("remaining_size", p.get("size", 0.0)) or 0.0) > 0 and not p.get("closed", False)])
     logger.info("[position_manager] Positions ouvertes sauvegardées (%s, n=%d).", open_pos_path, nb_active)
@@ -1154,19 +1196,52 @@ def main() -> None:
     if not ok:
         pass  # auto-fix empty if
         # NSC_PATCH: position_manager_gate_reasons
-        # Enrich Gate: skip logs with plan.reasons + governance reasons
+        # Enrich Gate: skip logs with plan.reasons + governance reasons + hard_block reasons
         _top_reasons = None
         _gov_reasons = None
+        _hb_reasons = None
+        _hb_active = False
+
         try:
-            _top_reasons = plan.get('reasons') if isinstance(plan, dict) else None
-            _gov = plan.get('governance') if isinstance(plan, dict) else None
+            _hb_active, _hb_reasons = _is_hard_block(data_dir, plan)
+        except Exception:
+            _hb_active, _hb_reasons = False, []
+
+        try:
+            _top_reasons = plan.get("reasons") if isinstance(plan, dict) else None
+            _gov = plan.get("governance") if isinstance(plan, dict) else None
             if isinstance(_gov, dict):
-                _gov_reasons = _gov.get('kill_switch_reasons') or _gov.get('reasons')
+                _gov_reasons = _gov.get("kill_switch_reasons") or _gov.get("reasons")
+                # explicite: si execution_plan.governance.hard_block est True, on le loggue aussi
+                if bool(_gov.get("hard_block", False)):
+                    if not isinstance(_top_reasons, list):
+                        _top_reasons = [] if _top_reasons is None else [str(_top_reasons)]
+                    _top_reasons = ["execution_plan.governance.hard_block=true"] + list(_top_reasons)
         except Exception:
             pass
-        logger.warning("[position_manager] Gate: skip (reason=%s) writer=%s status=%s gov_source=%s top_reasons=%s gov_reasons=%s", reason, plan.get("writer"), plan.get("status"), (plan.get("governance") or {}).get("source"), _top_reasons, _gov_reasons)
-        return
 
+        # Merge hard_block reasons into top_reasons (unique-ish, preserving order)
+        try:
+            if _hb_active and _hb_reasons:
+                if not isinstance(_top_reasons, list):
+                    _top_reasons = [] if _top_reasons is None else [str(_top_reasons)]
+                for r in _hb_reasons:
+                    if r not in _top_reasons:
+                        _top_reasons.insert(0, r)
+        except Exception:
+            pass
+
+        logger.warning(
+            "[position_manager] Gate: skip (reason=%s) writer=%s status=%s gov_source=%s hard_block=%s top_reasons=%s gov_reasons=%s",
+            reason,
+            plan.get("writer"),
+            plan.get("status"),
+            (plan.get("governance") or {}).get("source"),
+            _hb_active,
+            _top_reasons,
+            _gov_reasons,
+        )
+        return
     # --- Idempotence: do not re-apply on same execution_plan run_id ---
     state = _load_pm_state(data_dir)
     last_run_id = state.get("last_processed_run_id")
@@ -1277,7 +1352,7 @@ def main() -> None:
         _next['last_processed_generated_at'] = plan.get('generated_at')
         _next['saved_at'] = datetime.now(timezone.utc).isoformat()
     
-        _save_pm_state(data_dir, _next)
+        _save_pm_state(data_dir, {"hard_block_skip_writes": True})
         logger.info("[position_manager] Idempotence state saved (run_id=%s)", plan.get('run_id'))
         if not _dry and not _force:
             logger.info("[position_manager][IDEMPOTENCE] commit run_id=%s", _current_run)
@@ -1286,10 +1361,10 @@ def main() -> None:
         logger.exception("[position_manager] Failed to persist idempotence state")
     nb_active = len([p for p in positions if float(p.get("remaining_size", p.get("size", 0.0)) or 0.0) > 0 and not p.get("closed", False)])
     logger.info(
-        "[position_manager] Update terminé: positions_actives=%d, new_positions=%d, new_exit_events=%d",
-        nb_active,
-        new_pos,
-        new_exits,
+    "[position_manager] Update terminé: positions_actives=%d, new_positions=%d, new_exit_events=%d",
+    len(positions) if isinstance(positions, list) else 0,
+    len(new_pos) if isinstance(new_pos, list) else int(new_pos or 0),
+    len(new_exits) if isinstance(new_exits, list) else int(new_exits or 0),
     )
 
 

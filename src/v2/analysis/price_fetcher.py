@@ -199,7 +199,7 @@ def merge_token_lists() -> List[str]:
     return merged
 
 
-def fetch_binance_klines(symbol: str, interval: str = "1h", limit: int = 200) -> List[List[Any]]:
+def fetch_binance_klines(symbol: str, interval: str = "1d", limit: int = 365) -> List[List[Any]]:
     """
     Récupère les klines Binance pour un symbole donné.
     Retour brut : liste de listes.
@@ -226,7 +226,7 @@ def fetch_binance_klines(symbol: str, interval: str = "1h", limit: int = 200) ->
         return []
 
 
-def fetch_mexc_klines(symbol: str, interval: str = "1h", limit: int = 200) -> List[List[Any]]:
+def fetch_mexc_klines(symbol: str, interval: str = "1d", limit: int = 365) -> List[List[Any]]:
     """
     Récupère les klines MEXC pour un symbole donné.
     Retour brut : liste de listes.

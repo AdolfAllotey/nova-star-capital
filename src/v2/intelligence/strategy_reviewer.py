@@ -2,7 +2,7 @@ import os
 import openai
 import csv
 from dotenv import load_dotenv
-from src/v2.utils.logger import get_logger
+from src.v2.utils.logger import get_logger
 
 load_dotenv()
 logger = get_logger("strategy_reviewer")

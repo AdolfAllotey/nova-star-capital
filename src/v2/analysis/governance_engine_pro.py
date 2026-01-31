@@ -409,14 +409,72 @@ def main() -> None:
     }
 
 
-    # NSC_PATCH: correlation_gate_hard_block_v3 BEGIN
+    # NSC_PATCH: governance_contract_fields_v1 BEGIN
+    # Contract fields (king / source-of-truth) for downstream engines.
+    try:
+        # mode = gov.flag (ok/caution/risk_off/etc.)
+        result["mode"] = str(result.get("flag") or "")
+        # soft_veto: caution or risk_off => soft_veto true
+        _mode = str(result.get("mode") or "").lower()
+        result["soft_veto"] = bool(result.get("soft_veto")) or (_mode in ("caution", "risk_off"))
+        # hard_block: always present boolean
+        result["hard_block"] = bool(result.get("hard_block", False))
+
+        # action_policy (PREPROD default)
+        if result["soft_veto"] and str(env).upper() == "PREPROD":
+            result["action_policy"] = "SIMULATED_ONLY"
+        elif result["soft_veto"] and str(env).upper() != "PREPROD":
+            # future-prod preference (keep exits allowed, block entries) – but not activated now by default
+            result["action_policy"] = result.get("action_policy") or "EXIT_ONLY"
+        else:
+            result["action_policy"] = result.get("action_policy") or "NORMAL"
+
+        # caps: read from trading/risk_limits.json, fallback to capital_per_trade if missing
+        # (this makes governance the single source-of-truth for caps)
+        rl = risk_limits if isinstance(risk_limits, dict) else {}
+        cap_alloc = load_json_file(Path(data_dir) / "trading" / "capital_allocation.json", default={}) or {}
+        cpt = float(cap_alloc.get("capital_per_trade") or 0.0)
+
+        def _sf(x, d=0.0):
+            try:
+                return float(x)
+            except Exception:
+                return float(d)
+
+        max_orders = int(_sf(rl.get("max_orders_per_run", 0), 0))
+        max_notional_run = _sf(rl.get("max_notional_eur_per_run", 0), 0.0)
+        max_notional_asset = _sf(rl.get("max_notional_eur_per_asset", 0), 0.0)
+
+        # PREPROD safety defaults if caps are unset
+        if str(env).upper() == "PREPROD":
+            if max_orders <= 0:
+                max_orders = 2
+            if max_notional_run <= 0 and cpt > 0:
+                max_notional_run = cpt
+            if max_notional_asset <= 0 and max_notional_run > 0:
+                max_notional_asset = max_notional_run / 2.0
+
+        result["caps"] = {
+            "max_orders_per_run": int(max_orders),
+            "max_notional_eur_per_run": float(max_notional_run),
+            "max_notional_eur_per_asset": float(max_notional_asset),
+        }
+    except Exception:
+        logger.exception("[governance_engine_pro] governance_contract_fields_v1 failed")
+    # NSC_PATCH: governance_contract_fields_v1 END
+
+
+    
+    # NSC_PATCH: correlation_gate_soft_veto_v4 BEGIN
+    # Correlation gate must be a SOFT veto (Option A in PREPROD): SIMULATED_ONLY.
     try:
         _data_dir = Path(data_dir) if isinstance(data_dir, Path) else Path(str(data_dir))
-        _corr = load_json_file(_data_dir / "analysis" / "correlation_regime_engine_pro.json", default={})
-        _gate = load_json_file(_data_dir / "state" / "correlation_gate_state.json", default={})
+        _corr = load_json_file(_data_dir / "analysis" / "correlation_regime_engine_pro.json", default={}) or {}
+        _gate = load_json_file(_data_dir / "state" / "correlation_gate_state.json", default={}) or {}
         gate_active = bool(_gate.get("active")) if isinstance(_gate, dict) else False
-    
+
         if isinstance(result, dict):
+            # Keep a compact correlation summary (optional, but useful)
             cm = _corr.get("metrics") if isinstance(_corr, dict) and isinstance(_corr.get("metrics"), dict) else {}
             result["correlation"] = {
                 "regime": (_corr.get("regime") if isinstance(_corr, dict) else None),
@@ -432,18 +490,91 @@ def main() -> None:
                     "score": (_gate.get("score") if isinstance(_gate, dict) else None),
                 },
             }
-    
+
+            # Publish full state for downstream + telemetry
+            if isinstance(_gate, dict) and _gate:
+                result["correlation_gate_state"] = _gate
+
             if gate_active:
-                result["hard_block"] = True
+                # Contract: soft_veto is bool
+                result["soft_veto"] = True
+                result["soft_veto_mode"] = "SIMULATED_ONLY"
+                result["soft_veto_reason"] = "correlation_gate_state.active=true"
+                if env == "PREPROD":
+                    result["action_policy"] = "SIMULATED_ONLY"
+
                 rs = result.get("reasons")
                 if not isinstance(rs, list):
                     rs = []
                 if "correlation_gate_state.active=true" not in rs:
                     rs.append("correlation_gate_state.active=true")
                 result["reasons"] = rs
+
     except Exception:
-        logger.exception("[governance_engine_pro] correlation gate hard_block failed")
-    # NSC_PATCH: correlation_gate_hard_block_v3 END
+        logger.exception("[governance_engine_pro] correlation gate soft_veto failed")
+    # NSC_PATCH: correlation_gate_soft_veto_v4 END
+
+
+    
+    # NSC_PATCH: governance_contract_normalize BEGIN
+    # Ensure contract fields exist with stable types (never null)
+    if isinstance(result, dict):
+        # hard_block must be boolean
+        hb = result.get("hard_block", False)
+        result["hard_block"] = bool(hb) if hb is not None else False
+
+        # soft_veto must be boolean
+        sv = result.get("soft_veto", False)
+        result["soft_veto"] = bool(sv) if sv is not None else False
+
+        # action_policy must be explicit when soft_veto in PREPROD
+        if env == "PREPROD" and result.get("soft_veto") and not result.get("action_policy"):
+            result["action_policy"] = "SIMULATED_ONLY"
+    # NSC_PATCH: governance_contract_normalize END
+    # NSC_PATCH: governance_caps_king BEGIN
+    # Governance is the single source-of-truth for caps (downstream engines must follow these).
+    try:
+        # risk_limits is already loaded earlier as input; we reuse it to seed caps.
+        rl = risk_limits if isinstance(risk_limits, dict) else {}
+        caps = {
+            "max_orders_per_run": int(float(rl.get("max_orders_per_run", 2) or 2)),
+            "max_notional_eur_per_run": float(rl.get("max_notional_eur_per_run", 9.0) or 9.0),
+            "max_notional_eur_per_asset": float(rl.get("max_notional_eur_per_asset", 4.5) or 4.5),
+        }
+
+        # If governance is in soft_veto (Option A), keep caps conservative in PREPROD.
+        if isinstance(result, dict) and result.get("soft_veto") and env == "PREPROD":
+            caps["max_orders_per_run"] = min(caps["max_orders_per_run"], 2)
+            caps["max_notional_eur_per_run"] = min(caps["max_notional_eur_per_run"], 9.0)
+            caps["max_notional_eur_per_asset"] = min(caps["max_notional_eur_per_asset"], 4.5)
+
+        if isinstance(result, dict):
+            result["caps"] = caps
+    except Exception:
+        logger.exception("[governance_engine_pro] caps_king failed")
+    # NSC_PATCH: governance_caps_king END
+    # NSC_CORR_GATE_FINALIZE_V1 BEGIN
+    try:
+        _gate = load_json_file(data_dir / "state" / "correlation_gate_state.json", default={}) or {}
+        if isinstance(result, dict) and isinstance(_gate, dict) and _gate:
+            # Persist correlation gate state inside the saved governance payload
+            result["correlation_gate_state"] = _gate
+
+            if bool(_gate.get("active")):
+                # Keep contract: soft_veto is boolean
+                result["soft_veto"] = True
+                # Extra fields (non-breaking) for downstream consumers
+                result["soft_veto_mode"] = "SIMULATED_ONLY"
+                result["soft_veto_reason"] = "correlation_gate_state.active=true"
+                # Ensure action_policy aligns with PREPROD Option A
+                if not result.get("action_policy"):
+                    result["action_policy"] = "SIMULATED_ONLY"
+    except Exception:
+        pass
+    # NSC_CORR_GATE_FINALIZE_V1 END
+
+
+
 
     out_path = data_dir / "analysis" / "governance_engine_pro.json"
 

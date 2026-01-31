@@ -1,58 +1,23 @@
-# src/v2/analysis/execution_engine_pro.py
+# -*- coding: utf-8 -*-
+"""
+Execution Engine Pro — SAFE / PREPROD minimal implementation.
 
+Goal (institutional safety):
+- Always write execution_plan.json (avoid stale plans).
+- Enforce KING governance from data/analysis/governance_engine_pro.json at write time.
+- Never allow kill_switch seeds to override KING. Keep kill_switch reasons only for observability.
+- Apply caps (risk_limits) with possible override from KING.caps.
+- PREPROD-friendly: can annotate orders with SIMULATED_ONLY when action_policy demands it.
 
-# NSC: canonical DATA_DIR resolution (works in /opt/nsc/app and in dev)
+This file intentionally keeps the surface-area small to avoid drift during preprod.
+"""
+
 from __future__ import annotations
+
 import os
 from pathlib import Path
-try:
-    _APP_ROOT = Path(__file__).resolve().parents[3]  # /opt/nsc/app
-except Exception:
-    _APP_ROOT = Path.cwd()
-DATA_DIR = Path(os.environ.get("NSC_DATA_DIR") or (_APP_ROOT / "data")).resolve()
-kill_switch = {}
-"""
-Execution Engine PRO – Version microstructure avancée (préprod, simulation uniquement)
-
-Objectifs :
-- Lire les signaux sizés (sized_signals.json)
-- Prendre en compte le kill-switch global (sans bloquer en préprod sauf hard block)
-- Ajouter une couche "microstructure" (spread, profondeur, volatilité) SI disponible
-- Modéliser le slippage de façon un peu plus réaliste
-- Produire :
-    - trading/execution_attempts.json
-    - trading/simulated_fills.json
-
-    - analysis/execution_engine_pro.json
-
-Compatibilité :
-- Si aucun fichier de microstructure n’est présent, l’engine se comporte comme avant :
-  tous les signaux sont exécutés en simulé, avec un slippage par défaut.
-"""
-
-
-import os as _os
-import os
-
-
-import time
-DRY_RUN = os.environ.get("NSC_DRY_RUN","0") == "1"
-from pathlib import Path
-
-
-def _load_current_run_id(data_dir: str):
-    """Lit le run_id du stub execution_plan.json écrit par trading_kernel."""
-    try:
-        p = Path(data_dir) / "trading" / "execution_plan.json"
-        from src.v2.utils.file_utils import load_json_file
-        obj = load_json_file(str(p), default={}) or {}
-        rid = obj.get("run_id")
-        return str(rid) if rid else None
-    except Exception:
-        return None
-
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple
 
 from src.v2.utils.logger import get_logger
 from src.v2.utils.file_utils import load_json_file, save_json_file
@@ -60,465 +25,161 @@ from src.v2.utils.file_utils import load_json_file, save_json_file
 logger = get_logger("execution_engine_pro")
 
 
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
-
-def _nsc_get_gov_mode(plan_obj: dict) -> tuple[str, bool, list]:
-    """
-    Retourne (mode, soft_veto, reasons) à partir de plan_obj["governance"].
-    hard_block est géré ailleurs.
-    """
-    gov = (plan_obj or {}).get("governance") or {}
-    if not isinstance(gov, dict):
-        return "normal", False, []
-
-    mode = str(gov.get("mode") or "normal").lower()
-    soft_veto = bool(gov.get("soft_veto", False)) or (mode in ("caution", "risk_off"))
-
-    reasons = gov.get("reasons") or []
-    if isinstance(reasons, list):
-        reasons = [str(r) for r in reasons if r]
-    else:
-        reasons = [str(reasons)] if reasons else []
-
-    return mode, soft_veto, reasons
+def _as_list(x) -> List[str]:
+    if x is None:
+        return []
+    if isinstance(x, list):
+        return [str(v) for v in x if v]
+    return [str(x)]
 
 
-def _nsc_is_entry_order(o: dict) -> bool:
-    """Heuristique robuste : détecte une entrée."""
-    if not isinstance(o, dict):
-        return False
-
-    action = str(o.get("action") or "").lower()
-    typ = str(o.get("type") or o.get("order_type") or "").lower()
-    side = str(o.get("side") or "").lower()
-
-    if action in ("open", "enter", "entry"):
-        return True
-    if typ in ("entry", "open"):
-        return True
-
-    # Buy = entrée par défaut, sauf reduce_only explicite
-    reduce_only = str(o.get("reduce_only") or o.get("reduceOnly") or "").lower()
-    if side == "buy" and reduce_only not in ("true", "1", "yes"):
-        return True
-
-    return False
-
-
-def _nsc_is_momentum_like(o: dict) -> bool:
-    """Détecte une entrée de type momentum/breakout via champs textuels (robuste)."""
-    if not isinstance(o, dict):
-        return False
-
-    s = " ".join([
-        str(o.get("strategy") or ""),
-        str(o.get("signal_type") or ""),
-        str(o.get("tag") or ""),
-        str(o.get("source") or ""),
-        str(o.get("reason") or ""),
-        str(o.get("notes") or ""),
-    ]).lower()
-
-    return any(k in s for k in ("momentum", "breakout", "momo"))
-
-def _estimate_notional_eur(order: dict) -> float:
-    """
-    Estime un notional EUR pour caps/gouvernance à partir de formats d'ordres hétérogènes.
-    Priorité:
-      1) notional_eur / notional / cost / quote_qty / funds
-      2) price * qty (qty/quantity/amount/size/base_qty, price/limit_price/entry_price/px)
-    """
-    def _f(x):
-        try:
-            return float(x)
-        except Exception:
-            return 0.0
-
-    # Direct quote/notional fields
-    for k in ("notional_eur", "notional", "cost", "quote_qty", "quoteQuantity", "funds", "quote_amount", "amount_quote"):
-        v = order.get(k)
-        if v is not None:
-            val = _f(v)
-            if val > 0:
-                return val
-
-    # price * qty fallback
-    price = 0.0
-    for pk in ("price", "limit_price", "limitPrice", "entry_price", "entryPrice", "px"):
-        if order.get(pk) is not None:
-            price = _f(order.get(pk))
-            if price > 0:
-                break
-
-    qty = 0.0
-    for qk in ("qty", "quantity", "amount", "size", "base_qty", "baseQuantity"):
-        if order.get(qk) is not None:
-            qty = _f(order.get(qk))
-            if qty > 0:
-                break
-
-    if price > 0 and qty > 0:
-        return price * qty
-
-    return 0.0
-# ---------------------------------------------------------------------------
-# NSC_GOVERNANCE_GUARD_APPLIED
-# Hard rules for execution_plan.json (institutional safety)
-# ---------------------------------------------------------------------------
-
-def _nsc_safe_float(x, default=0.0):
+def _safe_float(x, default=0.0) -> float:
     try:
-        if x is None:
-            return default
         return float(x)
     except Exception:
-        return default
+        return float(default)
 
-def _nsc_read_json(path, default=None):
+
+def _read_json(path: Path, default):
     try:
-        from src.v2.utils.file_utils import load_json_file
-        return load_json_file(str(path), default=default)
+        if path.exists():
+            return load_json_file(str(path))
     except Exception:
-        return default
+        logger.exception("[execution_engine_pro] failed to read %s", path)
+    return default
 
 
-
-def _nsc_auto_governance(data_dir: Path) -> tuple[str, bool, list]:
-    """
-    Gouvernance auto (mode fonds) basée sur les régimes.
-    Objectif: dériver un mode cohérent AVANT governance_engine_pro.
-    Retour: (mode, soft_veto, reasons)
-      - mode in {"normal","caution","risk_off"}
-      - soft_veto True si mode caution/risk_off
-    """
-    def _read(rel: str):
-        try:
-            return _nsc_read_json(data_dir / rel, default=None)
-        except Exception:
-            return None
-
-    def _get_flag(d):
-        if not isinstance(d, dict):
-            return ""
-        # accepte plusieurs schémas
-        v = d.get("global_flag") or d.get("flag") or d.get("mode") or d.get("risk_flag")
-        return str(v or "").strip().lower()
-
-    def _get_score(d):
-        if not isinstance(d, dict):
-            return None
-        try:
-            return float(d.get("score")) if d.get("score") is not None else None
-        except Exception:
-            return None
-
-    reasons = []
-    mode = "normal"
-
-    # 1) risk_engine_pro (priorité sur risk_off)
-    risk = _read("analysis/risk_engine_pro.json")
-    rf = _get_flag(risk)
-    rs = _get_score(risk)
-    if rf in ("risk_off","off","emergency"):
-        mode = "risk_off"
-        reasons.append(f"risk_engine_pro={rf}")
-    elif rs is not None and rs <= 35.0:
-        mode = "risk_off"
-        reasons.append(f"risk_engine_pro:score={rs:.2f}<=35")
-
-    # 2) correlation_regime (caution)
-    # supporte les 2 fichiers
-    corr = _read("analysis/correlation_regime_engine_pro.json")
-    if not isinstance(corr, dict):
-        corr = _read("analysis/correlation_regime.json")
-    cf = _get_flag(corr)
-    cs = _get_score(corr)
-    if mode != "risk_off":
-        if cf in ("caution","high_corr","warning"):
-            mode = "caution"
-            reasons.append(f"correlation_regime={cf} => caution")
-        elif cs is not None and cs <= 35.0:
-            mode = "caution"
-            reasons.append(f"correlation_regime:score={cs:.2f}<=35 => caution")
-
-    # 3) market_regime (optionnel: si bear/risk_off etc à brancher plus tard)
-    mr = _read("analysis/market_regime_detector.json")
-    mf = _get_flag(mr)
-    if mode == "normal" and mf in ("caution","risk_off"):
-        mode = mf
-        reasons.append(f"market_regime_detector={mf}")
-
-    soft_veto = mode in ("caution","risk_off")
-    return mode, soft_veto, reasons
+def _load_data_dir() -> Path:
+    # Prefer global env / existing conventions
+    base = os.getenv("NSC_DATA_DIR") or os.getenv("DATA_DIR")
+    if base:
+        return Path(base)
+    # fallback: project layout (/opt/nsc/app/data)
+    return Path("/opt/nsc/app/data")
 
 
-def _nsc_is_hard_block(data_dir: Path) -> tuple[bool, list]:
+def _load_king_governance(data_dir: Path) -> Tuple[Dict[str, Any], bool]:
+    king_path = data_dir / "analysis" / "governance_engine_pro.json"
+    king = _read_json(king_path, default={}) or {}
+    if not isinstance(king, dict):
+        return {}, False
+    king["_king_source"] = str(king_path)
+    return king, True
 
-    # --- governance hard block (source-of-truth) ---
-    try:
-        gov = load_json_file(Path(data_dir) / "analysis" / "governance_engine_pro.json", default={})
-        if isinstance(gov, dict) and bool(gov.get("hard_block")):
-            rs = gov.get("reasons") if isinstance(gov.get("reasons"), list) else []
-            return True, (rs if rs else ["governance_hard_block=true"])
-    except Exception:
-        logger.exception("[execution_engine_pro] governance_hard_block read failed")
 
-    # --- correlation gate hard block (backup) ---
-    try:
-        gate = load_json_file(Path(data_dir) / "state" / "correlation_gate_state.json", default={})
-        if isinstance(gate, dict) and bool(gate.get("active")):
-            return True, ["correlation_gate_state.active=true"]
-    except Exception:
-        logger.exception("[execution_engine_pro] correlation gate read failed")
-    # --- end governance/correlation hard block ---
-    """
-    Source de vérité hard rules (fail-safe):
-      - kill_switch.json enabled==true OR hard_block==true OR mode=="hard_block" => HARD BLOCK
-      - orchestrator_pro.json can_trade==False => HARD BLOCK
-      - signal_quality_engine_pro.json hard_block/flag/score<threshold => HARD BLOCK
+def _load_kill_switch(data_dir: Path) -> Dict[str, Any]:
+    ks = _read_json(data_dir / "trading" / "kill_switch.json", default={}) or {}
+    return ks if isinstance(ks, dict) else {}
 
-    IMPORTANT (fund-mode):
-      - Les "reasons" du kill_switch NE déclenchent PAS un hard block si enabled/hard_block/mode hard_block sont false.
-        (risk_off/caution = soft veto, géré ailleurs)
-    """
-    reasons: list[str] = []
-    hard_block = False
 
-    trading_dir = data_dir / "trading"
-    analysis_dir = data_dir / "analysis"
-    telemetry_dir = data_dir / "telemetry"
+def _derive_hard_block(king: Dict[str, Any], ks: Dict[str, Any], data_dir: Path) -> Tuple[bool, List[str]]:
+    reasons: List[str] = []
 
-    kill = _nsc_read_json(trading_dir / "kill_switch.json", default={}) or {}
-    if isinstance(kill, dict):
-        mode = str(kill.get("mode") or "normal").lower()
-        enabled = bool(kill.get("enabled", False))
-        hard = bool(kill.get("hard_block", False)) or (mode == "hard_block")
+    # KING hard block wins
+    if bool(king.get("hard_block")):
+        reasons.extend(_as_list(king.get("reasons")) or ["king_hard_block=true"])
+        return True, reasons
 
-        # Collect reasons but do NOT hard-block on them alone
-        ks_reasons = kill.get("reasons")
-        if isinstance(ks_reasons, list):
-            ks_reasons_list = [str(r) for r in ks_reasons if r]
+    # kill_switch hard block (still respected), but doesn't override KING fields
+    mode = str(ks.get("mode") or "normal").lower()
+    hard = bool(ks.get("hard_block", False)) or (mode == "hard_block")
+    enabled = bool(ks.get("enabled", False))
+    if hard or enabled:
+        rr = ks.get("reasons") if isinstance(ks.get("reasons"), list) else None
+        if rr:
+            reasons.extend(_as_list(rr))
         else:
-            r = kill.get("reason")
-            ks_reasons_list = [str(r)] if r else []
+            r = ks.get("reason")
+            if r:
+                reasons.append(str(r))
+        if not reasons:
+            reasons.append("kill_switch_hard_block=true")
+        return True, reasons
 
-        # Hard conditions
-        if enabled:
-            hard_block = True
-            reasons.append("kill_switch:enabled")
-        if hard:
-            hard_block = True
-            reasons.append("kill_switch:hard_block")
+    # Optional: Risk engine guard (if present)
+    try:
+        rs = _read_json(data_dir / "analysis" / "risk_engine_pro.json", default={}) or {}
+        if isinstance(rs, dict):
+            flag = str(rs.get("global_flag") or "").strip().lower()
+            score = _safe_float(rs.get("score"), 0.0)
+            if flag in ("risk_off", "off", "emergency") or score <= 35.0:
+                reasons.append(f"auto:risk_engine={flag or 'risk_off'} score={score:.2f}")
+                return True, reasons
+    except Exception:
+        logger.exception("[execution_engine_pro] risk_engine_pro guard failed")
 
-        # Append user reasons only if we are actually hard-blocking (avoid false hard blocks)
-        if hard_block and ks_reasons_list:
-            reasons.extend(ks_reasons_list)
+    return False, []
 
-    orch = _nsc_read_json(telemetry_dir / "orchestrator_pro.json", default=None)
-    if isinstance(orch, dict):
-        if orch.get("can_trade") is False:
-            hard_block = True
-            reasons.append("orchestrator.can_trade=false")
 
-    # Signal quality gate (redundant with trading_kernel but enforced here)
-    sq = _nsc_read_json(analysis_dir / "signal_quality_engine_pro.json", default=None)
-    rl = _nsc_read_json(trading_dir / "risk_limits.json", default={}) or {}
-    threshold = _nsc_safe_float(rl.get("signal_quality_hard_block_score", 45.0), 45.0)
+def _apply_caps(orders: List[Dict[str, Any]], data_dir: Path, king: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    rl = _read_json(data_dir / "trading" / "risk_limits.json", default={}) or {}
+    if not isinstance(rl, dict):
+        rl = {}
 
-    if isinstance(sq, dict):
-        flag = str(sq.get("flag") or "").lower()
-        score = _nsc_safe_float(sq.get("score", 100.0), 100.0)
-        sq_hard = bool(sq.get("hard_block", False))
+    max_orders = int(_safe_float(rl.get("max_orders_per_run", 0), 0))
+    max_notional_run = _safe_float(rl.get("max_notional_eur_per_run", 0.0), 0.0)
+    max_notional_asset = _safe_float(rl.get("max_notional_eur_per_asset", 0.0), 0.0)
 
-        if sq_hard:
-            hard_block = True
-            reasons.append("signal_quality.hard_block=true")
-        if flag == "hard_block":
-            hard_block = True
-            reasons.append("signal_quality.flag=hard_block")
-        if score < threshold:
-            hard_block = True
-            reasons.append(f"signal_quality.score<threshold({score:.2f}<{threshold:.2f})")
+    # KING can override caps
+    kc = king.get("caps") if isinstance(king, dict) else None
+    if isinstance(kc, dict) and kc:
+        max_orders = int(_safe_float(kc.get("max_orders_per_run", max_orders), max_orders))
+        max_notional_run = _safe_float(kc.get("max_notional_eur_per_run", max_notional_run), max_notional_run)
+        max_notional_asset = _safe_float(kc.get("max_notional_eur_per_asset", max_notional_asset), max_notional_asset)
 
-    return (hard_block, reasons)
-
-def _nsc_apply_caps_to_orders(orders: list, data_dir: Path) -> tuple[list, dict]:
-    """
-    Caps globaux (defaults SAFE):
-      - max_orders_per_run (default: 0 = no cap)
-      - max_notional_eur_per_run (default: 0 = no cap)
-      - max_notional_eur_per_asset (default: 0 = no cap)
-    Notional estimation:
-      - prefer order.notional_eur
-      - else price * size if both exist
-    """
-    rl = _nsc_read_json(data_dir / "trading" / "risk_limits.json", default={}) or {}
-    max_orders = int(_nsc_safe_float(rl.get("max_orders_per_run", 0), 0))
-    max_notional_run = _nsc_safe_float(rl.get("max_notional_eur_per_run", 0), 0.0)
-    max_notional_asset = _nsc_safe_float(rl.get("max_notional_eur_per_asset", 0), 0.0)
-    # Capital per trade (pour estimer le notional quand on a seulement un "weight")
-    cap = _nsc_read_json(data_dir / "trading" / "capital_allocation.json", default={}) or {}
-    capital_per_trade = _nsc_safe_float(cap.get("capital_per_trade"), 0.0)
-
-    capital = _nsc_read_json(data_dir / "trading" / "capital_allocation.json", default={}) or {}
-    capital_per_trade = _nsc_safe_float(capital.get("capital_per_trade"), 0.0)
-
-    kept = []
-    dropped = 0
-
-    dropped_orders = []  # explainability for caps
-
-    def _drop(order_obj, reason: str, **extra):
-        # Snapshot explainability at drop time
-        rec = {
-            "run_id": extra.get("run_id"),
-            "generated_at": extra.get("generated_at"),
-            "drop_stage": extra.get("drop_stage"),
-            "order": order_obj,
-            "reason": reason,
-            "index": idx if "idx" in locals() else None,
-            "kept_so_far": len(kept) if "kept" in locals() else None,
-            "total_notional_eur_est_at_drop": float(total_notional) if "total_notional" in locals() else None,
-            "notional_by_asset_est_at_drop": dict(notional_by_asset) if isinstance(locals().get("notional_by_asset"), dict) else {},
-        }
-        rec.update(extra or {})
-        # NSC_PATCH: drop_record_repair_weights BEGIN
-        # If caps (or upstream) zeroed weights, restore for explainability.
-        try:
-            if isinstance(rec.get('order'), dict):
-                _o = dict(rec['order'])
-                _i = rec.get('index')
-                # 1) Prefer snapshot of original orders at same index
-                try:
-                    if _i is not None:
-                        _ii = int(_i)
-                        if 0 <= _ii < len(_orders_snapshot) and isinstance(_orders_snapshot[_ii], dict):
-                            _src = _orders_snapshot[_ii]
-                            for k in ('requested_weight','weight','filled_weight'):
-                                if _nsc_safe_float(_o.get(k), 0.0) == 0.0 and _nsc_safe_float(_src.get(k), 0.0) > 0.0:
-                                    _o[k] = _src.get(k)
-                except Exception:
-                    pass
-                # 2) Fallback: sized_signals at same index (your fixture)
-                try:
-                    if _i is not None and isinstance(sized_signals, list):
-                        _ii = int(_i)
-                        if 0 <= _ii < len(sized_signals) and isinstance(sized_signals[_ii], dict):
-                            sw = _nsc_safe_float(sized_signals[_ii].get('requested_weight'), 0.0)
-                            if sw > 0.0:
-                                for k in ('requested_weight','weight','filled_weight'):
-                                    if _nsc_safe_float(_o.get(k), 0.0) == 0.0:
-                                        _o[k] = sw
-                except Exception:
-                    pass
-                rec['order'] = _o
-        except Exception:
-            pass
-        # NSC_PATCH: drop_record_repair_weights END
-
-        dropped_orders.append(rec)
+    # If max_orders == 0 => no cap
+    kept: List[Dict[str, Any]] = []
+    dropped_orders: List[Dict[str, Any]] = []
 
     total_notional = 0.0
-    notional_by_asset = {}
+    by_asset: Dict[str, float] = {}
 
-    # Fallback notional: sized_signals.json (disponible avant capital_allocator)
-    sized_signals = _nsc_read_json(data_dir / "trading" / "sized_signals.json", default=[]) or []
-    sized_notional_by_asset = {}
-    if isinstance(sized_signals, list):
-        for s in sized_signals:
-            if not isinstance(s, dict):
-                continue
-            _sym = str(s.get("symbol") or s.get("asset") or s.get("token") or "").lower().strip()
-            _n = _nsc_safe_float(s.get("notional_eur") or s.get("target_notional_eur"), 0.0)
-            if _sym and _n > 0:
-                sized_notional_by_asset[_sym] = _n
-
-
-    # NSC_PATCH: caps_func_snapshot BEGIN
-    # Snapshot original orders BEFORE any caps mutation (used for dropped_orders)
-    _orders_snapshot = [dict(o) if isinstance(o, dict) else o for o in orders]
-    # NSC_PATCH: caps_func_snapshot END
-    for idx, o in enumerate(orders):
-        # NSC_PATCH: caps_use_orig_for_all_drops
-        _orig = _orders_snapshot[idx] if idx < len(_orders_snapshot) else o
-        _orig = dict(_orig) if isinstance(_orig, dict) else _orig
-        if isinstance(o, dict):
-            o = dict(o)  # copy to ensure mutations (notional_eur) persist in kept/plan
-
+    def est_notional(o: Dict[str, Any]) -> float:
         if not isinstance(o, dict):
-            _drop(_orig, 'cap:invalid_order', drop_stage='validate')
-            dropped += 1
+            return 0.0
+        n = o.get("notional_eur")
+        if n is not None:
+            return _safe_float(n, 0.0)
+        # If notional missing, attempt basic estimate from capital_per_trade + weight
+        cap = _read_json(data_dir / "trading" / "capital_allocation.json", default={}) or {}
+        cpt = _safe_float((cap or {}).get("capital_per_trade"), 0.0)
+        w = _safe_float(o.get("weight") or o.get("requested_weight") or 0.0, 0.0)
+        if cpt > 0 and w > 0:
+            return cpt * w
+        return 0.0
+
+    for idx, o in enumerate(orders or []):
+        if not isinstance(o, dict):
             continue
-        symbol = (o.get("symbol") or o.get("asset") or o.get("token"))
-        side = (o.get("side") or o.get("action") or "")
-        if not symbol or not str(side).strip():
-            _drop(_orig, 'cap:missing_symbol_or_side', drop_stage='validate')
-            dropped += 1
-            continue
 
-        sym = str(symbol).lower().strip()
+        sym = (o.get("symbol") or o.get("asset") or "").lower()
+        n = est_notional(o)
 
-        # Fallback: si ordre sans notional (weight-based), on prend celui du sizing
-        sized_fallback_notional = _nsc_safe_float(sized_notional_by_asset.get(sym, 0.0), 0.0)
-
-
-        notional = _nsc_safe_float(o.get("notional_eur"), 0.0)
-        if notional <= 0 and sized_fallback_notional > 0:
-            notional = sized_fallback_notional
-            try:
-                o["notional_eur"] = round(float(notional), 8)
-            except Exception:
-                pass
-
-        if notional <= 0:
-            w = _nsc_safe_float(o.get("weight") or o.get("requested_weight"), 0.0)
-            if capital_per_trade > 0 and w > 0:
-                notional = capital_per_trade * w
-                # On remplit aussi l\'order pour la traçabilité + caps_meta
-                try:
-                    o["notional_eur"] = round(float(notional), 8)
-                except Exception:
-                    pass
-        if notional <= 0:
-            # Weight-based orders: estimate notional from capital_per_trade
-            w = _nsc_safe_float(o.get("weight") or o.get("requested_weight") or o.get("filled_weight"), 0.0)
-            if capital_per_trade > 0 and w > 0:
-                notional = capital_per_trade * w
-        if notional <= 0:
-            price = _nsc_safe_float(o.get("price"), 0.0)
-            size = _nsc_safe_float(o.get("size") or o.get("amount"), 0.0)
-            if price > 0 and size > 0:
-                notional = price * size
-
-
-        notional_est = notional
-        if notional <= 0:
-            price = _nsc_safe_float(o.get("price"), 0.0)
-            size = _nsc_safe_float(o.get("size") or o.get("amount"), 0.0)
-            if price > 0 and size > 0:
-                notional = price * size
-
-        # If still unknown, allow but treat as 0 (won't break caps)
+        # max_orders
         if max_orders > 0 and len(kept) >= max_orders:
-            _drop(_orig, 'cap:max_orders_per_run', cap=max_orders, drop_stage='max_orders')
-            dropped += 1
+            dropped_orders.append({"index": idx, "reason": "cap:max_orders_per_run", "order": o})
             continue
 
-        if max_notional_run > 0 and (total_notional + notional) > max_notional_run:
-            dropped_orders.append({"order": (dict(_orders_snapshot[idx]) if isinstance(_orders_snapshot[idx], dict) else {'raw': str(_orders_snapshot[idx])}), "reason": "cap:max_notional_eur_per_run", "cap": max_notional_run, "total_before": total_notional, "order_notional": notional})
-            dropped += 1
+        # max_notional_run
+        if max_notional_run > 0 and (total_notional + n) > max_notional_run:
+            dropped_orders.append({"index": idx, "reason": "cap:max_notional_eur_per_run", "order": o, "notional_eur": n})
             continue
 
-        if max_notional_asset > 0:
-            cur = notional_by_asset.get(sym, 0.0)
-            if (cur + notional) > max_notional_asset:
-                dropped += 1
+        # max_notional_asset
+        if max_notional_asset > 0 and sym:
+            prev = by_asset.get(sym, 0.0)
+            if (prev + n) > max_notional_asset:
+                dropped_orders.append({"index": idx, "reason": "cap:max_notional_eur_per_asset", "order": o, "notional_eur": n})
                 continue
 
         kept.append(o)
-        total_notional += notional_est
-        notional_by_asset[sym] = notional_by_asset.get(sym, 0.0) + notional_est
+        total_notional += n
+        if sym:
+            by_asset[sym] = by_asset.get(sym, 0.0) + n
 
     meta = {
         "caps": {
@@ -527,1109 +188,140 @@ def _nsc_apply_caps_to_orders(orders: list, data_dir: Path) -> tuple[list, dict]
             "max_notional_eur_per_asset": max_notional_asset,
         },
         "kept": len(kept),
-        "dropped": dropped,
-        "total_notional_eur_est": round(total_notional, 6),
-        "notional_by_asset_est": {k: round(v, 6) for k, v in notional_by_asset.items()},
+        "dropped": len(dropped_orders),
+        "total_notional_eur_est": float(total_notional),
+        "notional_by_asset_est": dict(by_asset),
+        "dropped_orders": dropped_orders,
     }
-
-    try:
-        if isinstance(meta, dict):
-            meta['dropped_orders'] = dropped_orders
-    except Exception:
-        pass
     return kept, meta
-# ---------------------------------------------------------------------------
-# Helper local pour DATA_DIR (même logique que orchestrator_pro / production_protocol)
-# ---------------------------------------------------------------------------
-
-def get_data_dir() -> str:
-    """
-    Détermine le répertoire DATA de NSC.
-
-    Priorité :
-    1. Variable d'env NSC_DATA_DIR si définie
-    2. <racine_projet>/data (en remontant depuis ce fichier)
-    """
-    env_dir = _os.environ.get("NSC_DATA_DIR")
-    if env_dir:
-        return os.path.abspath(env_dir)
-
-    # Remonte : src/v2/analysis/execution_engine_pro.py → /opt/nsc/app
-    base_dir = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "..", "..", "..")
-    )
-    data_dir = os.path.join(base_dir, "data")
-    return data_dir
 
 
-# ---------------------------------------------------------------------------
-# Config microstructure / exécution
-# ---------------------------------------------------------------------------
-
-MICROSTRUCTURE_FILE_CANDIDATES = [
-    # On essaie plusieurs chemins, le premier qui existe est utilisé
-    ("analysis", "microstructure_snapshot.json"),
-    ("market", "microstructure_snapshot.json"),
-]
-
-# Limites "institutionnelles" par défaut (mais non bloquantes en préprod)
-MAX_SPREAD_BPS = 60.0         # au-delà → spread élevé
-MIN_DEPTH_USD = 20_000.0      # en-dessous → profondeur jugée faible
-MAX_IMPACT_BPS = 50.0         # placeholder / futur calcul d’impact
-
-# Mode strict ou non : en préprod on observe mais on ne bloque pas
-MICROSTRUCTURE_STRICT = False  # si True, bloque certains signaux
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _now_iso() -> str:
-    """Timestamp ISO-8601 en UTC (sans microsecondes)."""
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-
-
-def _load_microstructure(data_dir: str) -> Dict[str, Dict[str, Any]]:
-    """
-    Charge un snapshot de microstructure si disponible.
-
-    Format attendu (souple) :
-    {
-      "BTCUSDT": {
-         "symbol": "BTCUSDT",
-         "spread_bps": 8.5,
-         "depth_usd": 250000,
-         "volatility_state": "normal"
-      },
-      ...
-    }
-
-    Si aucun fichier n’est trouvé → {} (tout sera considéré comme "ok" en mode non strict).
-    """
-    for subdir, filename in MICROSTRUCTURE_FILE_CANDIDATES:
-        path = os.path.join(data_dir, subdir, filename)
-        if os.path.exists(path):
-            snapshot = load_json_file(path, default={})
-            if isinstance(snapshot, dict):
-                logger.info(
-                    "[execution_engine_pro] microstructure chargée depuis %s (assets=%d)",
-                    path,
-                    len(snapshot),
-                )
-                # normalisation des clés
-                out: Dict[str, Dict[str, Any]] = {}
-                for key, value in snapshot.items():
-                    if not isinstance(value, dict):
-                        continue
-                    symbol_key = str(value.get("symbol") or key).lower()
-                    out[symbol_key] = value
-                return out
-            else:
-                logger.warning(
-                    "[execution_engine_pro] Format inattendu pour %s (type=%s), snapshot ignoré.",
-                    path,
-                    type(snapshot).__name__,
-                )
-    logger.info(
-        "[execution_engine_pro] Aucun fichier de microstructure trouvé, mode 'fallback' (pas de gating strict)."
-    )
-    return {}
-
-
-def _estimate_slippage_bps(
-    spread_bps: Optional[float],
-    volatility_state: Optional[str],
-) -> float:
-    """
-    Modèle simple de slippage :
-    - base = 10 bps
-    - si spread connu → max(base, 0.5 * spread)
-    - si volatilité 'high' ou 'extreme' → +50%
-    """
-    base = 10.0
-    if spread_bps is not None:
-        try:
-            base = max(base, float(spread_bps) * 0.5)
-        except (TypeError, ValueError):
-            pass
-
-    vol = (volatility_state or "").lower()
-    if vol in {"high", "extreme", "very_high"}:
-        base *= 1.5
-
-    return round(base, 2)
-
-
-def _evaluate_microstructure_for_symbol(
-    symbol: str,
-    micro_snapshot: Dict[str, Dict[str, Any]],
-) -> Tuple[bool, Dict[str, Any], List[str]]:
-    """
-    Retourne :
-    - micro_ok : bool (True si conditions OK)
-    - micro_view : dict (spread_bps, depth_usd, volatility_state, flags)
-    - reasons_micro : raisons liées à la microstructure
-    """
-    reasons: List[str] = []
-    symbol_key = symbol.lower()
-
-    data = micro_snapshot.get(symbol_key)
-    if data is None:
-        # aucune donnée → en mode non strict, on ne bloque pas mais on trace
-        micro_view = {
-            "spread_bps": None,
-            "depth_usd": None,
-            "volatility_state": None,
-            "flags": ["no_microstructure_data"],
-        }
-        reasons.append(
-            "Aucune donnée de microstructure disponible, fallback observation (no_microstructure_data)."
-        )
-        return True, micro_view, reasons
-
-    spread_bps = data.get("spread_bps")
-    depth_usd = data.get("depth_usd")
-    volatility_state = data.get("volatility_state")
-
-    micro_flags: List[str] = []
-    micro_ok = True
-
-    # Contrôle spread
-    if spread_bps is not None:
-        try:
-            spread_val = float(spread_bps)
-            if spread_val > MAX_SPREAD_BPS:
-                micro_ok = False
-                micro_flags.append("spread_too_wide")
-                reasons.append(
-                    f"Spread élevé pour {symbol} ({spread_val:.1f} bps > {MAX_SPREAD_BPS:.1f} bps)."
-                )
-        except (TypeError, ValueError):
-            micro_flags.append("spread_unknown")
-            reasons.append(f"Spread invalide / inconnu pour {symbol}.")
-
-    # Contrôle profondeur
-    if depth_usd is not None:
-        try:
-            depth_val = float(depth_usd)
-            if depth_val < MIN_DEPTH_USD:
-                micro_ok = False
-                micro_flags.append("depth_too_shallow")
-                reasons.append(
-                    f"Profondeur faible pour {symbol} ({depth_val:.0f} USD < {MIN_DEPTH_USD:.0f} USD)."
-                )
-        except (TypeError, ValueError):
-            micro_flags.append("depth_unknown")
-            reasons.append(f"Profondeur invalide / inconnue pour {symbol}.")
-
-    # Contrôle état de volatilité
-    vol = (volatility_state or "").lower()
-    if vol in {"halted", "auction", "circuit_breaker"}:
-        micro_ok = False
-        micro_flags.append("trading_irregular")
-        reasons.append(
-            f"État de marché particulier pour {symbol} (volatility_state={vol})."
-        )
-    elif vol:
-        micro_flags.append(f"volatility_{vol}")
-
-    if micro_ok:
-        reasons.append(f"Microstructure OK pour {symbol} (flags={','.join(micro_flags) or 'none'}).")
-
-    micro_view = {
-        "spread_bps": spread_bps,
-        "depth_usd": depth_usd,
-        "volatility_state": volatility_state,
-        "flags": micro_flags,
-    }
-    return micro_ok, micro_view, reasons
-
-
-def _extract_requested_weight(signal: Dict[str, Any]) -> float:
-    """
-    Essaye de retrouver le poids demandé dans le signal sizé.
-    On garde la même logique que l'engine précédent :
-    - 'final_weight' en priorité (position_sizing)
-    - sinon 'weight'
-    - sinon 0.0
-    """
-    for key in ("final_weight", "weight", "capital_weight"):
-        if key in signal:
-            try:
-                return float(signal[key])
-            except (TypeError, ValueError):
+def _annotate_action_policy(orders: List[Dict[str, Any]], king: Dict[str, Any]) -> None:
+    action_policy = king.get("action_policy")
+    if action_policy == "SIMULATED_ONLY":
+        for o in orders:
+            if not isinstance(o, dict):
                 continue
-    return 0.0
+            o["action"] = "SIMULATED_ONLY"
+            o.setdefault("blocked_by", [])
+            if isinstance(o["blocked_by"], list) and "soft_veto:simulated_only" not in o["blocked_by"]:
+                o["blocked_by"].append("soft_veto:simulated_only")
 
 
-# ---------------------------------------------------------------------------
-# Core
-# ---------------------------------------------------------------------------
+def main() -> int:
+    data_dir = _load_data_dir()
+    trading_dir = data_dir / "trading"
+    analysis_dir = data_dir / "analysis"
+    analysis_dir.mkdir(parents=True, exist_ok=True)
 
-def run(data_dir: Optional[str] = None) -> None:
-    run_id = (os.environ.get("NSC_RUN_ID") or "").strip() or str(int(time.time() * 1000))
-    if data_dir is None:
-        data_dir = get_data_dir()
-    logger.info("[execution_engine_pro] DATA_DIR=%s", data_dir)
-
-    trading_dir = os.path.join(data_dir, "trading")
-    analysis_dir = os.path.join(data_dir, "analysis")
-    os.makedirs(trading_dir, exist_ok=True)
-    os.makedirs(analysis_dir, exist_ok=True)
-
-    # 1) Chargement des signaux sizés
-    sized_signals_path = os.path.join(trading_dir, "sized_signals.json")
-    sized_signals: List[Dict[str, Any]] = load_json_file(
-        sized_signals_path,
-        default=[],
-    )
-    if not isinstance(sized_signals, list):
-        logger.warning(
-            "[execution_engine_pro] Format inattendu pour sized_signals.json (type=%s), utilisation liste vide.",
-            type(sized_signals).__name__,
-        )
-        sized_signals = []
-
-    logger.info(
-        "[execution_engine_pro] %d sized_signals chargés depuis %s",
-        len(sized_signals),
-        sized_signals_path,
-    )
-
-    # 2) Kill-switch global (soft block observé, hard block bloquant)
-    kill_switch_path = os.path.join(trading_dir, "kill_switch.json")
-    kill_switch = load_json_file(kill_switch_path, default={})
-
-    # -------------------------------------------------------------------
-    # NSC_KILL_SWITCH_TO_GOVERNANCE
-    # Propagate kill_switch (mode/soft_veto/reasons) into execution_plan.governance
-    # so downstream engines can apply SOFT VETO (fund mode).
-    # -------------------------------------------------------------------
-    _ks_mode = None
-    _ks_soft_veto = None
-    _ks_reasons = []
-    if isinstance(kill_switch, dict):
-        _ks_mode = str((kill_switch or {}).get("mode") or "normal").lower()
-        _ks_soft_veto = bool((kill_switch or {}).get("soft_veto", False)) or (_ks_mode in ("caution", "risk_off"))
-        rr = (kill_switch or {}).get("reasons")
-        if isinstance(rr, list):
-            _ks_reasons = [str(x) for x in rr if x]
-        else:
-            r = (kill_switch or {}).get("reason")
-            _ks_reasons = [str(r)] if r else []
-    logger.info(
-        "[execution_engine_pro] kill_switch.json chargé depuis %s",
-        kill_switch_path,
-    )
-
-    # NSC_PATCH: init hard/soft/global reasons (run scope)
-    hard_block = bool(kill_switch.get("hard_block")) if isinstance(kill_switch, dict) else False
-    soft_block = bool(kill_switch.get("soft_block")) if isinstance(kill_switch, dict) else False
-    global_reasons = list(_ks_reasons) if isinstance(_ks_reasons, list) else []
-
-
-    # NSC_PATCH: auto governance (derive mode from regime files BEFORE governance_engine_pro)
-    try:
-        _auto_mode, _auto_soft, _auto_reasonss = _nsc_auto_governance(DATA_DIR)
-    except Exception:
-        _auto_mode, _auto_soft, _auto_reasonss = ("normal", False, [])
-
-    # Merge priority: kill_switch explicit mode wins; else use auto
-    if not _ks_mode or str(_ks_mode).lower() == "normal":
-        _ks_mode = _auto_mode
-    if not _ks_soft_veto:
-        _ks_soft_veto = bool(_auto_soft)
-    if not _ks_reasons:
-        _ks_reasons = list(_auto_reasonss) if isinstance(_auto_reasonss, list) else []
-
-    # Normalize seeds for later plan_obj.governance
-    gov_mode_seed = str(_ks_mode or "normal").lower()
-    gov_soft_seed = bool(_ks_soft_veto) or (gov_mode_seed in ("caution", "risk_off"))
-    gov_reasons_seed = list(_ks_reasons) if isinstance(_ks_reasons, list) else ([str(_ks_reasons)] if _ks_reasons else [])
-
-    logger.info(
-        "[execution_engine_pro] governance seed: mode=%s soft_veto=%s reasons=%s",
-        gov_mode_seed, gov_soft_seed, gov_reasons_seed
-    )
-
-
-
-    # --- HARD GATE: Risk Engine (risk_off => orders=0) ---
-
-    try:
-
-        risk_state = load_json_file(str(DATA_DIR / 'analysis' / 'risk_engine_pro.json'))
-
-        if isinstance(risk_state, dict):
-
-            _rf = str(risk_state.get('global_flag') or '').strip().lower()
-
-            _rs = float(risk_state.get('score') or 0.0)
-
-            if _rf in ('risk_off','off','emergency') or _rs <= 35.0:
-
-                hard_block = True
-
-                global_reasons.append('auto:risk_engine=%s score=%.2f' % ((_rf or 'risk_off'), _rs))
-
-    except Exception:
-
-        logger.exception('[execution_engine_pro] Failed to load risk_engine_pro.json (ignored)')
-        _ks = globals().get('kill_switch', {}) or {}
-        existing = _ks.get("enriched", {}).get("existing", kill_switch)
-        hard_block = bool(existing.get("hard_block"))
-        soft_block = bool(existing.get("soft_block"))
-
-    # 3) Microstructure
-    micro_snapshot = _load_microstructure(data_dir)
-
-    # 4) Construction des tentatives d’exécution
-    attempts: List[Dict[str, Any]] = []
-    fills: List[Dict[str, Any]] = []
-
-    nb_executable = 0
-    nb_executed_simulated = 0
-    nb_skipped = 0
-    nb_blocked_governor = 0
-    nb_blocked_hard_veto = 0
-    nb_final_weight_zero = 0
-
+    env = str(os.getenv("NSC_ENV", "PREPROD")).upper()
     now_iso = _now_iso()
 
-    for sig in sized_signals:
-        symbol = str(sig.get("symbol") or "").lower()
-        side = str(sig.get("side") or "buy")
-        strategy = str(sig.get("strategy") or "momentum")
+    execution_plan_path = str(trading_dir / "execution_plan.json")
+    execution_plan_sim_path = str(trading_dir / "execution_plan_simulated.json")
+    engine_state_path = str(analysis_dir / "execution_engine_pro.json")
 
-        requested_weight = _extract_requested_weight(sig)
-        risk_flag = sig.get("risk_flag")
-        weak_kind = sig.get("weak_kind")
+    # Load signals
+    sized_path = trading_dir / "sized_signals.json"
+    sized = _read_json(sized_path, default=[]) or []
+    if not isinstance(sized, list):
+        sized = []
+    logger.info("[execution_engine_pro] DATA_DIR=%s", data_dir)
+    logger.info("[execution_engine_pro] %d sized_signals chargés depuis %s", len(sized), sized_path)
 
-        if requested_weight <= 0:
-            nb_final_weight_zero += 1
+    # Orders candidates (pass-through)
+    orders_candidate: List[Dict[str, Any]] = []
+    for it in sized:
+        if isinstance(it, dict):
+            o = dict(it)
+            o.setdefault("source", "derived_from_sized_signals")
+            orders_candidate.append(o)
 
-        # Statut par défaut
-        executable = True
-        status = "pending"
-        reasons: List[str] = []
+    # Load KING + kill_switch
+    king, gov_loaded = _load_king_governance(data_dir)
+    ks = _load_kill_switch(data_dir)
 
-        # ---- 4.1 Kill-switch global ----
-        if hard_block:
-            # NSC_PATCH: hard_block_top_level_fields BEGIN
-            # Make blocked execution_plan self-describing (top-level)
-            try:
-                plan_obj.setdefault('writer', 'execution_engine_pro')
-                plan_obj.setdefault('note', 'blocked_by_engine')
-                if isinstance(reasons, list):
-                    plan_obj['reasons'] = [str(x) for x in reasons]
-                elif reasons:
-                    plan_obj['reasons'] = [str(reasons)]
-                else:
-                    plan_obj['reasons'] = []
-            except Exception:
-                pass
-            # NSC_PATCH: hard_block_top_level_fields END
-
-            executable = False
-            status = "blocked_kill_switch_hard"
-            reasons.append(
-                "Kill-switch global en mode HARD BLOCK – aucune exécution autorisée."
-            )
-            nb_blocked_hard_veto += 1
-
-        elif soft_block:
-            # En préprod : on n’empêche pas la simulation, mais on logue.
-            reasons.append(
-                "Kill-switch global SOFT BLOCK actif – préprod : exécution simulée uniquement."
-            )
-
-        # ---- 4.2 Évaluation microstructure ----
-        micro_ok, micro_view, micro_reasons = _evaluate_microstructure_for_symbol(
-            symbol=symbol,
-            micro_snapshot=micro_snapshot,
-        )
-        reasons.extend(micro_reasons)
-
-        if not micro_ok and MICROSTRUCTURE_STRICT and executable:
-            executable = False
-            status = "skipped_microstructure"
-            reasons.append(
-                "Signal bloqué par les contraintes de microstructure (mode strict)."
-            )
-            nb_skipped += 1
-
-        # ---- 4.3 Gouvernance / governor_status (placeholder pour la suite) ----
-        governor_status = sig.get("governor_status")
-        if governor_status in {"blocked", "hard_block"} and executable:
-            executable = False
-            status = "blocked_governor"
-            reasons.append("Signal bloqué par le governor_status.")
-            nb_blocked_governor += 1
-
-        # ---- 4.4 Décision finale & simulation de fill ----
-        if executable and status == "pending":
-            nb_executable += 1
-            status = "simulated_filled"
-            slippage_bps = _estimate_slippage_bps(
-                spread_bps=micro_view.get("spread_bps"),
-                volatility_state=micro_view.get("volatility_state"),
-            )
-            latency_ms = 150.0  # placeholder préprod
-
-            reasons.append(
-                "Exécution simulée en mode préproduction (Option A, aucune API exchange)."
-            )
-            # requested_weight fallback (avoid 0.0 when weight lives in other keys)
-            fill = {
-                "timestamp": now_iso,
-                "symbol": symbol,
-                "side": side,
-                "strategy": strategy,
-                "requested_weight": requested_weight,
-                "filled_weight": requested_weight,
-                "slippage_bps": slippage_bps,
-                "latency_ms": latency_ms,
-                "governor_status": governor_status,
-            }
-            fills.append(fill)
-            nb_executed_simulated += 1
-        else:
-            # Pas de fill
-            slippage_bps = None
-            latency_ms = None
-            if status == "pending":
-                status = "skipped"
-
-        attempt = {
-            "timestamp": now_iso,
-            "symbol": symbol,
-            "side": side,
-            "strategy": strategy,
-            "requested_weight": requested_weight,
-            "risk_flag": risk_flag,
-            "weak_kind": weak_kind,
-            "hard_veto": False,  # placeholder (intégration future avec Risk Engine PRO détaillé)
-            "soft_veto": False,  # idem
-            "governor_status": governor_status,
-            "executable": executable,
-            "status": status,
-            "filled_weight": requested_weight if status == "simulated_filled" else 0.0,
-            "slippage_bps": slippage_bps,
-            "latency_ms": latency_ms,
-            "microstructure": micro_view,
-            "reasons": reasons,
-        }
-        attempts.append(attempt)
-
-    # 5) Stats globales
-    stats = {
-        "timestamp": now_iso,
-        "nb_signals": len(sized_signals),
-        "nb_executable": nb_executable,
-        "nb_executed_simulated": (nb_executed_simulated if DRY_RUN else 0),
-        "nb_skipped": nb_skipped,
-        "nb_blocked_governor": nb_blocked_governor,
-        "nb_blocked_hard_veto": nb_blocked_hard_veto,
-        "nb_final_weight_zero": nb_final_weight_zero,
-        "governor_status": None,  # placeholder pour un statut global ultérieur
-        "global_flag": "ok" if not hard_block else "blocked",
-    }
-
-    summary = {
-        "stats": stats,
-        "attempts": attempts,
-        "fills": fills,
-    }
-
-    # 6) Sauvegardes
-    execution_attempts_path = os.path.join(trading_dir, "execution_attempts.json")
-    simulated_fills_path = os.path.join(trading_dir, "simulated_fills.json")
-    engine_state_path = os.path.join(analysis_dir, "execution_engine_pro.json")
-
-    # Toujours écraser execution_plan.json (même si vide) pour éviter les plans stale
-    execution_plan_path = os.path.join(trading_dir, "execution_plan.json")
-
-    # On tente de reconstruire une liste d'orders à partir des attempts/fills (formats variables selon modules)
-    orders_out = []
-    try:
-        for a in attempts:
-            if isinstance(a, dict):
-                o = a.get("order") or a.get("planned_order") or a.get("execution_order")
-                if isinstance(o, dict):
-                    orders_out.append(o)
-                elif all(k in a for k in ("symbol", "side", "quantity")):
-                    orders_out.append(a)
-        # fallback : certains pipelines mettent l'order dans fills
-        if not orders_out:
-            for f in fills:
-                if isinstance(f, dict):
-                    o = f.get("order") or f.get("planned_order") or f.get("execution_order")
-                    if isinstance(o, dict):
-                        orders_out.append(o)
-                    elif all(k in f for k in ("symbol", "side", "quantity")):
-                        orders_out.append(f)
-    except Exception:
-        logger.exception("[execution_engine_pro] Impossible de reconstruire orders_out depuis attempts/fills")
-
-    plan_obj = {
-        "run_id": run_id,
-        "status": "ok" if not hard_block else "blocked",
-        "note": "execution_plan_generated" if not hard_block else "blocked_by_engine",
+    # Derive governance fields (KING is truth)
+    gov = {
+        "mode": king.get("mode"),
+        "soft_veto": bool(king.get("soft_veto", False)),
+        "hard_block": bool(king.get("hard_block", False)),
+        "action_policy": king.get("action_policy"),
+        "reasons": _as_list(king.get("reasons")),
+        "kill_switch_reasons": _as_list(ks.get("reasons") or ks.get("reason")),
+        "king_source": king.get("_king_source"),
+        "source": "execution_engine_pro",
+        "env": env,
         "generated_at": now_iso,
-        "orders": orders_out,
-        "stats": stats,
     }
 
-    # Fallback: si l'engine a généré des fills simulés mais aucun order explicite,
-    # on dérive des "orders" depuis simulated_fills (weight-based) pour éviter un plan vide.
-    try:
-        if isinstance(plan_obj, dict) and (not plan_obj.get("orders")) and fills:
-            derived_orders = []
-            for f in fills:
-                sym = (f.get("symbol") or f.get("asset") or "").strip().lower()
-                if not sym:
-                    continue
-                derived_orders.append({
-                    "symbol": sym,
-                    "side": f.get("side") or "buy",
-                    "strategy": f.get("strategy") or "unknown",
-                    # Pas de amount/price dans les fills actuels: on garde un ordre "weight-based"
-                    "order_type": "weight",
-                    "requested_weight": (f.get("requested_weight") if f.get("requested_weight") is not None else f.get("filled_weight")),
-                    "filled_weight": f.get("filled_weight"),
-                    "weight": (f.get("filled_weight") if f.get("filled_weight") is not None else (f.get("requested_weight") if f.get("requested_weight") is not None else 0.0)),
-                    "slippage_bps": f.get("slippage_bps"),
-                    "latency_ms": f.get("latency_ms"),
-                    "governor_status": f.get("governor_status"),
-                    "source": ("derived_from_simulated_fills" if DRY_RUN else "derived_from_sized_signals"),
-                })
-            plan_obj["orders"] = derived_orders
-            if isinstance(plan_obj.get("stats"), dict):
-                plan_obj["stats"]["orders_out"] = len(derived_orders)
-            logger.info("[execution_engine_pro] orders dérivés depuis simulated_fills: n=%d", len(derived_orders))
-    except Exception:
-        logger.exception("[execution_engine_pro] échec dérivation orders depuis simulated_fills")
-    # --- Governance hard rules (institutional) ---
-    try:
-        data_dir = Path(trading_dir).parents[0] if isinstance(trading_dir, str) else Path(trading_dir).parents[0]
-    except Exception:
-        # best-effort fallback
-        data_dir = (Path(__file__).resolve().parents[3] / "data")
+    # Hard block (KING / kill_switch / risk_engine guard)
+    hard_block, hb_reasons = _derive_hard_block(king, ks, data_dir)
+    if hard_block and hb_reasons:
+        # ensure reasons reflect the hard block
+        gov["hard_block"] = True
+        gov["reasons"] = hb_reasons
 
-    hard_block, reasons = _nsc_is_hard_block(data_dir)
-    orders = plan_obj.get("orders", [])
-    if not isinstance(orders, list):
-        orders = []
+    # Apply caps on candidate orders (even if soft_veto)
+    orders_out, caps_meta = _apply_caps(orders_candidate, data_dir, king)
+    gov["caps_meta"] = caps_meta
 
+    # Apply action policy annotation (SIMULATED_ONLY)
+    _annotate_action_policy(orders_out, king)
 
-    # -------------------------------------------------------------------
-    # NSC_GOVERNANCE_FROM_KILL_SWITCH
-    # Seed plan_obj.governance from kill_switch so SOFT VETO can act (fund mode).
-    # -------------------------------------------------------------------
-    plan_obj["governance"] = plan_obj.get("governance") or {}
-    # NSC_PATCH: seed governance fields (mode/soft_veto/reasons) from auto-governance
-    try:
-        if isinstance(plan_obj.get("governance"), dict):
-            plan_obj["governance"].setdefault("mode", locals().get("gov_mode_seed", "normal"))
-            plan_obj["governance"].setdefault("soft_veto", bool(locals().get("gov_soft_seed", False)))
-            plan_obj["governance"].setdefault("reasons", list(locals().get("gov_reasons_seed", [])) if isinstance(locals().get("gov_reasons_seed", []), list) else [])
-    except Exception:
-        pass
-    try:
-        plan_obj["governance"]["mode"] = _ks_mode
-        plan_obj["governance"]["soft_veto"] = _ks_soft_veto
-        plan_obj["governance"]["kill_switch_reasons"] = _ks_reasons
-        # For _nsc_get_gov_mode(), we also mirror into "reasons"
-        plan_obj["governance"]["reasons"] = list(_ks_reasons) if isinstance(_ks_reasons, list) else []
-        plan_obj["governance"]["hard_block"] = False
-    except Exception:
-        pass
+    # Build plan_obj
+    plan_obj: Dict[str, Any] = {
+        "status": "blocked" if hard_block else ("soft_veto_caution" if gov.get("soft_veto") else "ready"),
+        "source": "execution_engine_pro",
+        "run_id": str(int(datetime.now(timezone.utc).timestamp() * 1000)),
+        "env": env,
+        "generated_at": now_iso,
+        "governance": gov,
+        "orders": [] if hard_block else orders_out,
+        "reasons": gov.get("reasons") or [],
+        "gov_reasons": gov.get("reasons") or [],
+        "note": "SAFE_PREPROD_MINIMAL",
+    }
 
-    if hard_block:
-                # NSC_PATCH: hard_block_status_stats_sync BEGIN
-        # Quand le hard_block est déclenché à l'écriture, on synchronise status/stats/governance
-        # Option 1:
-        #   - orders_candidate = nb d'ordres dérivés AVANT blocage (debug)
-        #   - orders_out = nb d'ordres réellement sortis APRES blocage (doit être 0)
-        try:
-            if isinstance(plan_obj, dict):
-                st = plan_obj.get('stats')
-                if not isinstance(st, dict):
-                    st = {}
-                    plan_obj['stats'] = st
-
-                # Candidate = valeur 'orders_out' calculée avant hard-block (ou fallback sur len(orders))
-                cand = st.get('orders_out')
-                try:
-                    cand_i = int(cand) if cand is not None else None
-                except Exception:
-                    cand_i = None
-                if cand_i is None:
-                    try:
-                        cand_i = len(plan_obj.get('orders') or [])
-                    except Exception:
-                        cand_i = 0
-
-                st['orders_candidate'] = cand_i
-                st['orders_out'] = 0
-                st['nb_executable'] = 0
-                st['global_flag'] = 'blocked'
-                st['hard_block_reasons'] = reasons
-
-                plan_obj['status'] = 'blocked'
-                plan_obj['note'] = 'blocked_by_hard_block'
-                plan_obj['reasons'] = reasons
-
-                gov = plan_obj.get('governance')
-                if not isinstance(gov, dict):
-                    gov = {}
-                    plan_obj['governance'] = gov
-                gov['hard_block'] = True
-                gov['reasons'] = reasons
-                gov.setdefault('note', 'HARD BLOCK => orders cleared at write time')
-        except Exception:
-            logger.exception('[execution_engine_pro] hard_block_status_stats_sync failed')
-        # NSC_PATCH: hard_block_status_stats_sync END
-
-        plan_obj["orders"] = []
-        # NSC_PATCH: hard_block_top_level_reasons
-        # Ensure blocked plans expose reasons at top-level for gating/observability
-        plan_obj["reasons"] = (list(reasons) if isinstance(reasons, list) else ([str(reasons)] if reasons else []))
-        plan_obj["governance"] = {
-            "hard_block": True,
-            "reasons": reasons,
-            "note": "HARD BLOCK => orders cleared at write time",
-            "source": "execution_engine_pro",
-            "run_id": run_id,
-            "env": (os.environ.get("NSC_ENV") or os.environ.get("ENV") or None),
-            "generated_at": now_iso,
-        }
-        logger.warning("[execution_engine_pro] HARD BLOCK => execution_plan.orders=0 reasons=%s", reasons)
-        # NSC_PATCH: blocked_reasons_top_level
-        # Mirror governance reasons to top-level reasons for observability
-        try:
-            _gov = execution_plan.get('governance') if isinstance(execution_plan, dict) else None
-            _gov_reasons = None
-            if isinstance(_gov, dict):
-                _gov_reasons = _gov.get('kill_switch_reasons') or _gov.get('reasons')
-            if _gov_reasons and isinstance(execution_plan, dict) and not execution_plan.get('reasons'):
-                execution_plan['reasons'] = list(_gov_reasons) if isinstance(_gov_reasons, list) else [_gov_reasons]
-        except Exception:
-            pass
-
-    else:
-        # NSC_PATCH: caps_snapshot_repair BEGIN
-        # Snapshot orders BEFORE caps (preserve original weights for dropped_orders)
-        _pre_caps_orders = [dict(o) if isinstance(o, dict) else o for o in orders]
-        # NSC_PATCH: caps_snapshot_repair END
-        filtered, cap_meta = _nsc_apply_caps_to_orders(orders, data_dir)
-        orders = filtered  # apply caps result (and keep computed notional_eur)
-        # NSC_PATCH: caps_snapshot_repair BEGIN
-        # Repair dropped_orders weights from snapshot (caps may mutate/zero order dict)
-        try:
-            _d = cap_meta.get('dropped_orders')
-            if isinstance(_d, list):
-                for it in _d:
-                    if not isinstance(it, dict):
-                        continue
-                    idx = it.get('index')
-                    o = it.get('order')
-                    if not (isinstance(idx, int) and isinstance(o, dict)):
-                        continue
-                    if 0 <= idx < len(_pre_caps_orders) and isinstance(_pre_caps_orders[idx], dict):
-                        src = _pre_caps_orders[idx]
-                        for k in ('requested_weight','weight','filled_weight','notional_eur'):
-                            if (o.get(k) in (None, 0, 0.0)) and (src.get(k) not in (None, 0, 0.0)):
-                                o[k] = src.get(k)
-        except Exception:
-            pass
-        # NSC_PATCH: caps_snapshot_repair END
-    # -------------------------------------------------------------------
-    # SOFT VETO (fund mode): caution/risk_off => filtre des entrées
-    # -------------------------------------------------------------------
-    if not hard_block:
-        mode, soft_veto, gov_reasons = _nsc_get_gov_mode(plan_obj)
-        if soft_veto:
-            before = len(orders)
-
-            if mode == "risk_off":
-                # En risk_off, on retire TOUTES les entrées
-                orders = [o for o in orders if not _nsc_is_entry_order(o)]
-                logger.warning(
-                    "[execution_engine_pro] SOFT_VETO risk_off => removed entry orders (%d -> %d). reasons=%s",
-                    before, len(orders), gov_reasons
-                )
-
-            elif mode == "caution":
-                                # NSC_DEBUG_SOFT_VETO_CAUTION_V1 (pre)
-                # SOFT_VETO caution: keep orders for explainability, but mark as simulated-only / non-executable.
-                try:
-                    gov = plan_obj.get('governance') if isinstance(plan_obj, dict) else None
-                    gov_mode = str((gov or {}).get('mode') or 'normal').lower().strip()
-                    gov_soft = bool((gov or {}).get('soft_veto', False))
-
-                    if gov_soft and gov_mode == 'caution':
-                        before = len(plan_obj.get('orders', []) or [])
-                        for o in (plan_obj.get('orders') or []):
-                            if isinstance(o, dict):
-                                o['executable'] = False
-                                o['execution_mode'] = 'SIMULATED_ONLY'
-                                o.setdefault('blocked_by', [])
-                                if 'soft_veto:caution' not in o['blocked_by']:
-                                    o['blocked_by'].append('soft_veto:caution')
-
-                        plan_obj['status'] = 'soft_veto_caution'
-                        plan_obj.setdefault('note', 'soft_veto_keep_orders_simulated_only')
-
-                        logger.warning(
-                            '[execution_engine_pro] SOFT_VETO caution => keep orders but mark SIMULATED_ONLY (orders=%d). reasons=%s',
-                            before,
-                            list((gov or {}).get('reasons') or []),
-                        )
-                except Exception:
-                    logger.exception('[execution_engine_pro] Failed to apply SOFT_VETO caution policy')
-                # NSC_DEBUG_SOFT_VETO_CAUTION_V1 (post)
-                try:
-                    _post = []
-                    for _o in (orders or []):
-                        if not isinstance(_o, dict):
-                            continue
-                        _post.append({
-                            "symbol": _o.get("symbol"),
-                            "strategy": _o.get("strategy"),
-                            "side": _o.get("side"),
-                            "action": _o.get("action"),
-                            "type": _o.get("type") or _o.get("order_type"),
-                            "reduce_only": _o.get("reduce_only"),
-                            "is_entry": _nsc_is_entry_order(_o),
-                            "is_momo": _nsc_is_momentum_like(_o),
-                        })
-                    logger.info("[execution_engine_pro] soft_veto:caution post=%s", _post)
-                except Exception:
-                    pass
-
-                logger.debug(
-                    "[execution_engine_pro] SOFT_VETO caution => momentum-removal skipped (soft-veto) (%d -> %d). reasons=%s",
-                    before, len(orders), gov_reasons
-                )
-        plan_obj["orders"] = orders
-        plan_obj["governance"] = plan_obj.get("governance") or {}
-        plan_obj["governance"].update({
-            "hard_block": False,
-            # keep mode/soft_veto/kill_switch_reasons already seeded
-            "caps_meta": cap_meta,
-            "source": "execution_engine_pro",
-            "run_id": run_id,
-            "env": (os.environ.get("NSC_ENV") or os.environ.get("ENV") or None),
-            "generated_at": now_iso,
-        })
-
-        # Annotate caps_meta.dropped_orders with run metadata + notional (best-effort)
-        try:
-            _cm = plan_obj.get("governance", {}).get("caps_meta", {})
-            _d = _cm.get("dropped_orders")
-            if isinstance(_d, list):
-                for it in _d:
-                    if not isinstance(it, dict):
-                        continue
-                    it["run_id"] = run_id
-                    it["generated_at"] = now_iso
-                    # fill notional_eur from order snapshot if missing
-                    if it.get("notional_eur") in (None, 0, 0.0):
-                        o = it.get("order")
-                        if isinstance(o, dict):
-                            it["notional_eur"] = o.get("notional_eur") or o.get("target_notional_eur") or 0.0
-        except Exception:
-            pass
-        if cap_meta.get("dropped", 0) > 0:
-            logger.warning("[execution_engine_pro] Caps applied: kept=%s dropped=%s meta=%s",
-                           cap_meta.get("kept"), cap_meta.get("dropped"), cap_meta)
-
-    
-    plan_obj["writer"] = "execution_engine_pro"
-    # NSC_PATCH: finalize_soft_veto_caution_before_save
-    # Apply after all filtering/caps to prevent later blocks from overwriting our flags.
-    try:
-        gov = plan_obj.get("governance") if isinstance(plan_obj, dict) else None
-        _gm = str((gov or {}).get("mode") or "normal").lower().strip()
-        _gs = bool((gov or {}).get("soft_veto", False))
-        if _gs and _gm == "caution":
-            for _o in (plan_obj.get("orders") or []):
-                if isinstance(_o, dict):
-                    _o["executable"] = False
-                    _o["execution_mode"] = "SIMULATED_ONLY"
-                    _o.setdefault("blocked_by", [])
-                    if "soft_veto:caution" not in _o["blocked_by"]:
-                        _o["blocked_by"].append("soft_veto:caution")
-    except Exception:
-        logger.exception("[execution_engine_pro] Failed to finalize SOFT_VETO caution flags before save")
-
-    # -------------------------------------------------------------------
-    # NSC_PATCH: execution_plan top-level observability fields
-    # Keep a stable contract for downstream modules and CLI quick checks.
-    # -------------------------------------------------------------------
-    try:
-        plan_obj.setdefault("source", "execution_engine_pro")
-        gov = plan_obj.get("governance") if isinstance(plan_obj, dict) else None
-        gov_reasons = []
-        if isinstance(gov, dict):
-            rr = gov.get("reasons") or gov.get("kill_switch_reasons") or []
-            if isinstance(rr, list):
-                gov_reasons = [str(x) for x in rr if x]
-            elif rr:
-                gov_reasons = [str(rr)]
-        plan_obj["gov_reasons"] = gov_reasons
-
-        # reasons: keep explicit top-level reasons if already set (hard_block),
-        # else mirror governance reasons for explainability.
-        if not plan_obj.get("reasons"):
-            plan_obj["reasons"] = list(gov_reasons)
-    except Exception:
-        pass
-
+    # Always write execution_plan.json (avoid stale)
     save_json_file(execution_plan_path, plan_obj)
-
-    # NSC_PATCH: preprod_simulated_execution_plan_v2 BEGIN
-    # En PREPROD, on écrit un plan séparé "execution_plan_simulated.json" pour valider
-    # le format + le contenu des ordres (sans jamais débloquer execution_plan.json).
-    try:
-        _env = str(os.getenv("NSC_ENV", "PREPROD")).upper()
-        _enable = os.getenv("PREPROD_SIMULATE_ORDERS", "true").lower() == "true"
-        if _env == "PREPROD" and _enable and isinstance(plan_obj, dict):
-            # On réutilise les orders calculés (même si hard_block -> plan réel vidé),
-            # donc on reconstruit une version "simulée" à partir des candidats.
-            _sim_orders = []
-            # Priorité: si le code a gardé un buffer d'ordres candidats dans le scope
-            for _name in ("orders_candidate", "orders_out", "orders"):
-                if _name in locals() and isinstance(locals()[_name], list) and len(locals()[_name]) > 0:
-                    _sim_orders = locals()[_name]
-                    break
-    
-            # Sinon fallback: si plan_obj contient orders (rare car hard_block), on prend
-            if not _sim_orders and isinstance(plan_obj.get("orders"), list):
-                _sim_orders = plan_obj.get("orders", [])
-    
-            _sim_path = os.path.join(trading_dir, "execution_plan_simulated.json")
-            _sim_payload = {
-                "status": "simulated",
-                "execution_mode": "SIMULATED_ONLY",
-                "orders": _sim_orders,
-                "reasons": list(plan_obj.get("reasons") or []),
-                "note": "preprod_simulated_plan",
-            }
-            # NSC_PATCH: simplan_add_generated_at BEGIN
-            if isinstance(_sim_payload, dict):
-                ts = None
-                if isinstance(stats, dict):
-                    ts = stats.get('timestamp')
-                if not ts:
-                    from datetime import datetime, timezone
-                    ts = datetime.now(timezone.utc).isoformat()
-                _sim_payload.setdefault('generated_at', ts)
-                _sim_payload.setdefault('timestamp', ts)
-            # NSC_PATCH: simplan_add_generated_at END
-
-            save_json_file(_sim_path, _sim_payload)
-            logger.info("[execution_engine_pro] execution_plan_simulated.json sauvegardé (%s, orders=%d)", _sim_path, len(_sim_orders))
-    
-            # enrichit stats si dispo
-            try:
-                if isinstance(stats, dict):
-                    stats["simulated_orders_out"] = len(_sim_orders)
-                    stats["simulated_plan_path"] = _sim_path
-            except Exception:
-                pass
-    except Exception as _e:
-        # fail-safe: ne jamais casser la pipeline
-        try:
-            logger.warning("[execution_engine_pro] preprod simulated plan write failed: %s", _e)
-        except Exception:
-            pass
-    # NSC_PATCH: preprod_simulated_execution_plan_v2 END
-
     logger.info("[execution_engine_pro] execution_plan.json sauvegardé (%s, orders=%d)", execution_plan_path, len(plan_obj.get("orders", [])))
 
-    save_json_file(execution_attempts_path, attempts)
-    
-    # -------------------------------------------------------------------
-    # NSC_PATCH_SIMFILLS_PRICE_REPAIR_V1
-    # Repair simulated_fills: ensure fill_price/price/ts are not null by using ohlcv_combined.json last close.
-    # This is REQUIRED for position_manager to open paper positions in PREPROD/DRY_RUN flows.
-    # -------------------------------------------------------------------
+    # PREPROD simulated plan (keep candidate orders to inspect formatting even if hard_block)
     try:
-        ohlcv_path = os.path.join(data_dir, "market", "ohlcv_combined.json")
-        ohlcv_all = load_json_file(ohlcv_path, default={})
+        if env == "PREPROD" and os.getenv("PREPROD_SIMULATE_ORDERS", "true").lower() == "true":
+            sim_payload = {
+                "status": "simulated",
+                "execution_mode": "SIMULATED_ONLY",
+                "env": env,
+                "generated_at": now_iso,
+                "governance": gov,
+                "orders": orders_out,  # capped + annotated
+                "reasons": plan_obj.get("reasons") or [],
+                "note": "preprod_simulated_plan",
+            }
+            save_json_file(execution_plan_sim_path, sim_payload)
+            logger.info("[execution_engine_pro] execution_plan_simulated.json sauvegardé (%s, orders=%d)", execution_plan_sim_path, len(sim_payload.get("orders", [])))
     except Exception:
-        ohlcv_all = {}
+        logger.exception("[execution_engine_pro] failed to write execution_plan_simulated.json")
 
-    def _nsc_last_close_from_ohlcv(ohlcv_obj, symbol: str):
-        """Return last close for a given symbol from many OHLCV JSON shapes (SAFE: no generic close)."""
-        try:
-            import re as _re
-            def _norm(s: str) -> str:
-                return _re.sub(r"[^a-z0-9]", "", str(s).lower())
-    
-            if not symbol:
-                return None
-            target = _norm(symbol)
-            if not target:
-                return None
-    
-            def _close_from_bars(bars):
-                if not isinstance(bars, list) or not bars:
-                    return None
-                last = bars[-1]
-                if isinstance(last, dict):
-                    c = last.get("close")
-                    if c is None:
-                        c = last.get("c")
-                    if c is not None:
-                        return float(c)
-                if isinstance(last, (list, tuple)) and len(last) >= 5:
-                    c = last[4]
-                    if c is not None:
-                        return float(c)
-                return None
-    
-            def _extract_close_from_matched_container(obj):
-                # obj is already considered matched to the target symbol
-                if isinstance(obj, dict):
-                    for k in ("close","c"):
-                        v = obj.get(k)
-                        if isinstance(v, list) and v:
-                            try: return float(v[-1])
-                            except Exception: pass
-                    for k in ("candles","bars","ohlcv","klines","data","prices"):
-                        c = _close_from_bars(obj.get(k))
-                        if c is not None:
-                            return c
-                if isinstance(obj, list):
-                    return _close_from_bars(obj)
-                return None
-    
-            def _unwrap(obj):
-                if isinstance(obj, dict):
-                    for k in ("data","result","symbols","markets","pairs","ohlcv"):
-                        v = obj.get(k)
-                        if isinstance(v, (dict, list)):
-                            return v
-                return obj
-    
-            def _search(obj, depth=0, matched=False):
-                if depth > 7:
-                    return None
-                obj = _unwrap(obj)
-    
-                if matched:
-                    c = _extract_close_from_matched_container(obj)
-                    if c is not None:
-                        return c
-    
-                if isinstance(obj, dict):
-                    # 1) dict entries keyed by symbol
-                    for k, v in obj.items():
-                        nk = _norm(k)
-                        if nk and (nk == target or target in nk or nk in target):
-                            c = _search(v, depth+1, matched=True)
-                            if c is not None:
-                                return c
-    
-                    # 2) dict with explicit symbol fields
-                    s = obj.get("symbol") or obj.get("pair") or obj.get("market") or obj.get("asset")
-                    if s and _norm(s) == target:
-                        c = _search(obj, depth+1, matched=True)
-                        if c is not None:
-                            return c
-    
-                    # 3) recurse values
-                    for v in obj.values():
-                        if isinstance(v, (dict, list)):
-                            c = _search(v, depth+1, matched=False)
-                            if c is not None:
-                                return c
-                    return None
-    
-                if isinstance(obj, list):
-                    # IMPORTANT: never treat list as bars unless matched=True (avoid generic close)
-                    for it in obj:
-                        if isinstance(it, dict):
-                            s = it.get("symbol") or it.get("pair") or it.get("market") or it.get("asset")
-                            if s and _norm(s) == target:
-                                c = _search(it, depth+1, matched=True)
-                                if c is not None:
-                                    return c
-                        if isinstance(it, (dict, list)):
-                            c = _search(it, depth+1, matched=False)
-                            if c is not None:
-                                return c
-                    return None
-    
-                return None
-    
-            return _search(ohlcv_obj, 0, matched=False)
-        except Exception:
-            return None
-    try:
-        repaired = 0
-        for f in (fills or []):
-            if not isinstance(f, dict):
-                continue
-            sym = f.get("symbol") or f.get("asset")
-            if not sym:
-                continue
-
-            # if already has a usable price, keep it
-            cur_price = f.get("fill_price") or f.get("price")
-            if cur_price is None:
-                lc = _nsc_last_close_from_ohlcv(ohlcv_all, sym)
-                if lc is not None and lc > 0:
-                    f["fill_price"] = float(lc)
-                    f["price"] = float(lc)
-                    repaired += 1
-
-            # ensure ts/timestamp
-            if f.get("ts") is None:
-                f["ts"] = now_iso
-            if f.get("timestamp") is None:
-                f["timestamp"] = now_iso
-
-        if repaired:
-            logger.warning("[execution_engine_pro] simulated_fills repaired with ohlcv last_close: n=%d", repaired)
-    except Exception:
-        logger.exception("[execution_engine_pro] Failed simulated_fills price repair")
-
-    save_json_file(simulated_fills_path, fills)
-    # --- Normalize schema for downstream readers ---
-    if isinstance(summary, dict):
-        summary.setdefault("summary", summary.get("stats", {}))
-        summary.setdefault("governance", summary.get("governance", {}) or {})
-        summary.setdefault("reasons", summary.get("reasons", []) or [])
-        summary.setdefault("writer", "execution_engine_pro")
-        summary.setdefault("schema_version", 1)
-    # --- End schema normalization ---
+    # Engine state summary
+    summary = {
+        "timestamp": now_iso,
+        "env": env,
+        "signals_in": len(sized),
+        "orders_candidate": len(orders_candidate),
+        "orders_out": 0 if hard_block else len(orders_out),
+        "hard_block": bool(hard_block),
+        "soft_veto": bool(gov.get("soft_veto")),
+        "action_policy": gov.get("action_policy"),
+        "reasons": plan_obj.get("reasons") or [],
+        "king_source": gov.get("king_source"),
+    }
     save_json_file(engine_state_path, summary)
 
-    logger.info(
-        "[execution_engine_pro] Execution Engine Pro (microstructure avancée) terminé: "
-        "signals=%d, executable=%d, simulated=%d, skipped=%d, hard_blocked=%d",
-        len(sized_signals),
-        nb_executable,
-        nb_executed_simulated,
-        nb_skipped,
-        nb_blocked_hard_veto,
-    )
-    logger.info(
-        "[execution_engine_pro] Fichiers sauvegardés: %s, %s, %s",
-        execution_attempts_path,
-        simulated_fills_path,
-        engine_state_path,
-    )
-
-
-def main() -> None:
-    run()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

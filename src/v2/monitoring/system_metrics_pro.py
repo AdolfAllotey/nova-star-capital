@@ -69,6 +69,21 @@ def build_system_metrics() -> Dict[str, Any]:
     governance = _safe_dict(
         load_json_file(analysis_dir / "governance_engine_pro.json", default={})
     )
+
+    # NSC_TRADE_POLICY_V1 BEGIN
+    # Explicit trade policy derived from KING governance
+    try:
+        _ap = governance.get("action_policy") if isinstance(governance, dict) else None
+        if _ap == "SIMULATED_ONLY":
+            trade_policy = "SIMULATED_ONLY"
+        elif _ap:
+            trade_policy = str(_ap)
+        else:
+            trade_policy = "LIVE_OK"
+    except Exception:
+        trade_policy = "LIVE_OK"
+    # NSC_TRADE_POLICY_V1 END
+
     stress_test = _safe_dict(
         load_json_file(analysis_dir / "stress_test_engine.json", default={})
     )
@@ -85,6 +100,18 @@ def build_system_metrics() -> Dict[str, Any]:
         load_json_file(state_dir / "correlation_gate_state.json", default={})
     )
 
+
+    # NSC_CORR_GATE_METRICS_FALLBACK_V1 BEGIN
+    # Fallback: if state file was not found / empty, read from KING governance json
+    try:
+        if not (isinstance(correlation_gate, dict) and correlation_gate):
+            _g = (governance.get("correlation_gate_state") if isinstance(governance, dict) else None)
+            if isinstance(_g, dict) and _g:
+                correlation_gate = _g
+    except Exception:
+        pass
+    # NSC_CORR_GATE_METRICS_FALLBACK_V1 END
+
     weak_signals = _safe_dict(
         load_json_file(analysis_dir / "weak_signals_engine_pro.json", default={})
     )
@@ -95,11 +122,34 @@ def build_system_metrics() -> Dict[str, Any]:
     env = os.getenv("NSC_ENV", orchestrator.get("env") or "PREPROD")
 
     # --- Extraction des sous-structures utiles ---
-    risk_stats = _safe_dict(risk_engine.get("stats"))
+    risk_stats = _safe_dict(risk_engine.get("stats") or risk_engine)
     stress_summary = _safe_dict(
         stress_test.get("summary") or stress_test.get("summary", {})
     )
-    exec_stats = _safe_dict(execution.get("stats"))
+    exec_stats = _safe_dict(execution.get("stats") or execution)
+    # NSC_EXEC_STATS_NORMALIZE_V1 BEGIN
+    # Ensure exec_stats has a global_flag-like field for summary
+    try:
+        if isinstance(exec_stats, dict):
+            if exec_stats.get("global_flag") is None:
+                # Prefer existing fields if present
+                alt = exec_stats.get("flag") or execution.get("global_flag") or execution.get("flag")
+                if alt is not None:
+                    exec_stats["global_flag"] = alt
+                else:
+                    # Derive a flag from execution safety fields (present in your JSON)
+                    hb = bool(exec_stats.get("hard_block"))
+                    sv = bool(exec_stats.get("soft_veto"))
+                    ap = exec_stats.get("action_policy")
+                    if hb:
+                        exec_stats["global_flag"] = "critical"
+                    elif sv or (ap in ("SIMULATED_ONLY", "EXIT_ONLY")):
+                        exec_stats["global_flag"] = "caution"
+                    else:
+                        exec_stats["global_flag"] = "ok"
+    except Exception:
+        pass
+    # NSC_EXEC_STATS_NORMALIZE_V1 END
     portfolio_stats = _safe_dict(portfolio.get("stats"))
     portfolio_constraints = _safe_dict(portfolio.get("constraints"))
 
@@ -117,6 +167,7 @@ def build_system_metrics() -> Dict[str, Any]:
         "mode": orchestrator.get("mode"),
         "can_trade": orchestrator.get("can_trade"),
 
+        "trade_policy": trade_policy,
         "risk_mode": orchestrator.get("risk_mode") or risk_limits.get("risk_mode"),
         "risk_on_off": orchestrator.get("risk_on_off") or risk_limits.get("risk_on_off"),
 
@@ -142,6 +193,7 @@ def build_system_metrics() -> Dict[str, Any]:
         "correlation_avg_abs_corr": (correlation.get("avg_abs_corr") if isinstance(correlation, dict) else None),
         "correlation_gate_active": (correlation_gate.get("active") if isinstance(correlation_gate, dict) else None),
 
+        "correlation_hard_block": False,
         "meta_score_flag": meta_stats.get("global_flag"),
 
         "execution_flag": exec_stats.get("global_flag"),
@@ -184,7 +236,21 @@ def build_system_metrics() -> Dict[str, Any]:
     ):
         system_flag = "warning"
         system_reasons.append("sub_engines in caution/warning")
-
+    # NSC_SYSTEM_FLAG_CAUTION_TIER_V1 BEGIN
+    # If we only have "caution" (no "warning") from sub engines, downgrade system_flag to "caution" (non blocking).
+    # IMPORTANT: ignore "ok" flags.
+    try:
+        if system_flag == "warning":
+            _relevant = [f for f in warning_flags if f in ("caution", "warning")]
+            if _relevant and all(f == "caution" for f in _relevant):
+                system_flag = "caution"
+                # adjust reason for clarity
+                if "sub_engines in caution/warning" in system_reasons:
+                    system_reasons.remove("sub_engines in caution/warning")
+                system_reasons.append("sub_engines in caution")
+    except Exception:
+        pass
+    # NSC_SYSTEM_FLAG_CAUTION_TIER_V1 END
     # Si orchestrator en degraded/emergency mais pas critical ailleurs
     if system_flag == "ok" and summary.get("mode") in ("degraded", "emergency"):
         system_flag = "warning"
@@ -195,8 +261,14 @@ def build_system_metrics() -> Dict[str, Any]:
 
     # --- Payload complet ---
     payload: Dict[str, Any] = {
+        # NSC_CORR_GATE_TOPLEVEL_ALIAS_V1 BEGIN
+        # Convenience aliases (some consumers read only top-level keys)
+        "correlation_gate_active": summary.get("correlation_gate_active"),
+        "correlation_gate": (correlation_gate if isinstance(correlation_gate, dict) else None),
+        # NSC_CORR_GATE_TOPLEVEL_ALIAS_V1 END
         "timestamp": utc_now_iso(),
         "env": env,
+        "trade_policy": trade_policy,
         "summary": summary,
         "orchestrator": orchestrator,
         "risk_limits": risk_limits,
@@ -246,43 +318,9 @@ def main() -> None:
     telemetry_path = telemetry_dir / "system_metrics_pro.json"
 
     metrics = build_system_metrics()
-    # --- FORCE_CORRELATION_HARD_GATE (Option B) ---
-    try:
-        _summary = metrics.get("summary")
-        if not isinstance(_summary, dict):
-            _summary = {}
-            metrics["summary"] = _summary
-    
-        _corr = metrics.get("correlation") or {}
-        _gate = (_corr.get("gate") or {}) if isinstance(_corr, dict) else {}
-        _active = bool(_gate.get("active"))
-        _flag = _corr.get("global_flag") if isinstance(_corr, dict) else None
-    
-        if _active and _flag in ("caution", "high"):
-            _summary["can_trade"] = False
-            _summary["system_flag"] = "warning"
-            _summary["correlation_hard_block"] = True
-    except Exception:
-        pass
-    # --- END FORCE_CORRELATION_HARD_GATE ---
     save_json_file(telemetry_path, metrics)
 
     summary = metrics.get("summary", {}) or {}
-    # --- correlation hard gate (optional) ---
-    try:
-        corr = metrics.get("correlation") or {}
-        corr_gate = (corr.get("gate") or {}) if isinstance(corr, dict) else {}
-        corr_active = bool(corr_gate.get("active"))
-        corr_flag = corr.get("global_flag") if isinstance(corr, dict) else None
-        if corr_active and corr_flag in ("caution", "high"):
-            # Monitoring view: if correlation gate is active, we consider trading unsafe
-            summary["can_trade"] = False
-            summary["system_flag"] = "warning"
-            summary["correlation_hard_block"] = True
-    except Exception:
-        pass
-    # --- end correlation hard gate ---
-
     system_flag = summary.get("system_flag")
     can_trade = summary.get("can_trade")
 

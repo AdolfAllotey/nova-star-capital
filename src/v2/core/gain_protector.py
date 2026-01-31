@@ -1,53 +1,21 @@
+"""
+Gain protector (placeholder import-safe version).
+The original file contained a broken f-string; re-implement when needed.
+"""
 
-# src/v2/core/gain_protector.py
-
+from __future__ import annotations
 import os
-import json
-from datetime import datetime, timezone, timezone
-from src.v2.utils.telegram_bot import send_telegram_message
+import logging
+from typing import Optional
 
-LOG_FILE = "data/v2/logs/gain_protection.json"
-os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+logger = logging.getLogger("gain_protector")
 
-DEFAULT_THRESHOLD = 500  # En euros (modifiable)
 
-def load_cumulative_gains():
-    if os.path.exists(LOG_FILE):
-        with open(LOG_FILE) as f:
-            data = json.load(f)
-            return data.get("cumulative_gains", 0)
+def main() -> int:
+    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+    logger.info("gain_protector: noop (placeholder)")
     return 0
 
-def save_cumulative_gains(amount):
-    with open(LOG_FILE, "w") as f:
-        json.dump({"cumulative_gains": amount}, f)
-
-def protect_gains(current_gain, threshold=DEFAULT_THRESHOLD, percentage=0.3):
-    """
-    Vérifie si le gain cumulé dépasse un seuil et déclenche un transfert vers un sous-compte sécurisé.
-
-    Args:
-        current_gain (float): Gain du jour
-        threshold (float): Seuil déclencheur (modifiable en pré-prod)
-        percentage (float): Pourcentage à transférer si seuil dépassé
-    """
-    cumulative = load_cumulative_gains()
-    cumulative += current_gain
-    save_cumulative_gains(cumulative)
-
-    if cumulative >= threshold:
-        protected_amount = round(cumulative * percentage, 2)
-
-        # 🔐 Exemple de logique de transfert (à adapter à l’API réelle)
-        message = (
-            f"💰 Gain cumulé = {cumulative} €
-"
-            f"🔐 Seuil atteint. Transfert de {protected_amount} € vers le sous-compte sécurité."
-        )
-        send_telegram_message(message)
-
-        # Reset du compteur après transfert (peut être adapté)
-        save_cumulative_gains(0)
 
 if __name__ == "__main__":
-    protect_gains(current_gain=200)
+    raise SystemExit(main())

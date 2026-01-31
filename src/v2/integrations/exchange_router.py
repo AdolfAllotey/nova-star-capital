@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 from src.v2.utils.logger import get_logger
 from src.v2.utils.file_utils import get_data_dir, load_json_file
 
@@ -7,12 +8,18 @@ logger = get_logger("exchange_router")
 def _hard_gate() -> tuple[bool, str]:
     """
     Défense en profondeur:
+    - env PREPROD => jamais d'exécution réelle
     - kill_switch hard_block
     - governance hard_block (source-of-truth)
-    - execution_plan blocked
+    - governance action_policy SIMULATED_ONLY => jamais d'exécution réelle
+    - execution_plan blocked / simulated_only
     Fail-safe: si lecture impossible => block
     """
     try:
+        env = str(os.getenv("NSC_ENV", "")).upper()
+        if env == "PREPROD":
+            return False, "env=PREPROD => execution disabled"
+
         data_dir = get_data_dir()
         dd = Path(data_dir)
 
@@ -20,22 +27,29 @@ def _hard_gate() -> tuple[bool, str]:
         gov  = load_json_file(dd / "analysis" / "governance_engine_pro.json", default={})
         plan = load_json_file(dd / "trading" / "execution_plan.json", default={})
 
-        if isinstance(ks, dict) and bool(ks.get("hard_block")):
-            return False, "kill_switch_hard_block"
+        if isinstance(ks, dict):
+            if bool(ks.get("hard_block")) or (bool(ks.get("enabled")) and str(ks.get("mode")) == "hard_block"):
+                return False, "kill_switch_hard_block"
 
-        if isinstance(gov, dict) and bool(gov.get("hard_block")):
-            return False, "governance_hard_block"
+        if isinstance(gov, dict):
+            if bool(gov.get("hard_block")):
+                return False, "governance_hard_block"
+            ap = str(gov.get("action_policy") or "").upper()
+            if ap in {"SIMULATED_ONLY", "PAPER", "DRY_RUN"}:
+                return False, f"governance_action_policy={ap}"
 
         if isinstance(plan, dict):
             st = str(plan.get("status") or "").lower()
-            if st == "blocked":
-                return False, "execution_plan_blocked"
+            if st in {"blocked", "hard_block", "hard_blocked"}:
+                return False, f"execution_plan_status={st}"
+            mode = str(plan.get("execution_mode") or "").upper()
+            if mode in {"SIMULATED_ONLY", "PAPER", "DRY_RUN"}:
+                return False, f"execution_mode={mode}"
 
         return True, "ok"
     except Exception as e:
         logger.exception("[exchange_router] HARD GATE exception => block: %s", e)
         return False, f"hard_gate_exception:{type(e).__name__}:{e}"
-
 def _binance_funcs():
     """
     Lazy import binance_api.
