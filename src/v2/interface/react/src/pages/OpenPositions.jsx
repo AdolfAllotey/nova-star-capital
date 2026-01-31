@@ -1,5 +1,5 @@
 // src/pages/OpenPositions.jsx
-// Vue des positions ouvertes à partir de /open-positions
+// Vue des positions ouvertes à partir de /simulation/open-positions
 
 import React, { useEffect, useMemo, useState } from "react";
 
@@ -73,7 +73,7 @@ export default function OpenPositionsPage() {
       setLoading(true);
       setError(null);
       try {
-        const res = await fetch(buildUrl("/open-positions"));
+        const res = await fetch(buildUrl("/simulation/open-positions"));
         if (!res.ok) {
           throw new Error(`HTTP ${res.status}`);
         }
@@ -92,7 +92,7 @@ export default function OpenPositionsPage() {
         console.error("Error fetching open positions:", err);
         if (!cancelled) {
           setError(
-            "Impossible de charger les positions ouvertes. Vérifie l’API /open-positions."
+            "Impossible de charger les positions ouvertes. Vérifie l’API /simulation/open-positions."
           );
         }
       } finally {

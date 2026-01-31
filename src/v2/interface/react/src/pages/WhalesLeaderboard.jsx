@@ -1,7 +1,8 @@
+/* eslint-disable no-unused-vars */
 import { useEffect, useState } from "react";
-import { Card, CardHeader, CardTitle, CardContent } from "../../components/ui/card";
-import { ScrollArea } from "../../components/ui/scroll-area";
-import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "../../components/ui/table";
+import { Card, CardHeader, CardTitle, CardContent } from "../components/ui/card";
+import { ScrollArea } from "../components/ui/scroll-area";
+import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "../components/ui/table";
 import { Loader2 } from "lucide-react";
 
 export default function WhalesLeaderboard() {

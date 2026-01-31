@@ -10,7 +10,9 @@ export default function Debug() {
         const r = await fetch(`${API}/metrics?detail=1`, { cache: "no-store" });
         if (!r.ok) return;
         setMetrics(await r.json());
-      } catch {}
+      } catch {
+  // noop
+}
     })();
   }, []);
 

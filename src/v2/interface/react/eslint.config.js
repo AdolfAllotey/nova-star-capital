@@ -19,7 +19,7 @@ export default [
   js.configs.recommended,
 
   {
-    files: ["**/*.{js,jsx}"],
+    files: ["src/**/*.{js,jsx}"],
     languageOptions: {
       parser: babelParser,
       parserOptions: {
@@ -28,7 +28,7 @@ export default [
         sourceType: "module",
         ecmaFeatures: { jsx: true },
         babelOptions: {
-          plugins: ["jsx"],
+          plugins: ["@babel/plugin-syntax-jsx"],
         },
 },
       globals: {

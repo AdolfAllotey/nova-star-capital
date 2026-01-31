@@ -3,7 +3,7 @@
 
 import React, { useEffect, useState } from "react";
 import { API_BASE } from "../lib/apiBase";
-import { Wifi, BarChart2, Gauge, TrendingUp } from "lucide-react";
+import { _Wifi, _BarChart2, _Gauge, _TrendingUp } from "lucide-react";
 
 function pill(ok) {
   return ok
@@ -127,7 +127,7 @@ export default function LiveStatusBar() {
       {/* API */}
       <div className="flex items-center gap-2">
         <span className={pill(apiOk)}>
-          <Wifi className="w-3.5 h-3.5" />
+          <_Wifi className="w-3.5 h-3.5" />
           {apiOk ? "API OK" : "API ERROR"}
         </span>
         {loading && (
@@ -139,7 +139,7 @@ export default function LiveStatusBar() {
 
       {/* Régime */}
       <div className="flex items-center gap-2">
-        <Gauge className="w-3.5 h-3.5 text-zinc-500" />
+        <_Gauge className="w-3.5 h-3.5 text-zinc-500" />
         <span className="text-[11px] text-zinc-500 uppercase">Régime :</span>
         <span className="text-zinc-100 transition-colors duration-300">
           {regimeLabel}
@@ -149,7 +149,7 @@ export default function LiveStatusBar() {
 
       {/* Sentiment */}
       <div className="flex items-center gap-2">
-        <BarChart2 className="w-3.5 h-3.5 text-zinc-500" />
+        <_BarChart2 className="w-3.5 h-3.5 text-zinc-500" />
         <span className="text-[11px] text-zinc-500 uppercase">
           Sentiment :
         </span>
@@ -163,7 +163,7 @@ export default function LiveStatusBar() {
 
       {/* PnL net */}
       <div className="flex items-center gap-2">
-        <TrendingUp className="w-3.5 h-3.5 text-zinc-500" />
+        <_TrendingUp className="w-3.5 h-3.5 text-zinc-500" />
         <span className="text-[11px] text-zinc-500 uppercase">
           PnL net (mois) :
         </span>

@@ -1,7 +1,7 @@
 import os
 import json
 from datetime import datetime, timezone, timezone
-from src/v2.utils.logger import get_logger
+from src.v2.utils.logger import get_logger
 
 logger = get_logger("dashboard_generator")
 

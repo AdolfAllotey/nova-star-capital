@@ -21,13 +21,13 @@ import {
   ServerCog,
   Settings,
 } from "lucide-react";
-import LiveStatusBar from "./LiveStatusBar.jsx";
+import _LiveStatusBar from "./_LiveStatusBar.jsx";
 
 function cls(...parts) {
   return parts.filter(Boolean).join(" ");
 }
 
-function NavItem({ to, label, icon: Icon }) {
+function _NavItem({ to, label, icon: Icon }) {
   return (
     <NavLink
       to={to}
@@ -48,7 +48,7 @@ function NavItem({ to, label, icon: Icon }) {
   );
 }
 
-function SectionTitle({ children }) {
+function _SectionTitle({ children }) {
   return (
     <div className="mt-6 mb-2 px-3 text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
       {children}
@@ -79,89 +79,99 @@ export default function AppLayout({ children }) {
         {/* Navigation */}
         <nav className="flex-1 overflow-y-auto py-4 space-y-1">
           {/* Vue globale */}
-          <SectionTitle>Vue globale</SectionTitle>
+          <_SectionTitle>Vue globale</_SectionTitle>
           <div className="space-y-1">
-            <NavItem
+            <_NavItem
               to="/dashboard"
               label="Dashboard"
               icon={LayoutDashboard}
             />
-            <NavItem
-              to="/top-movers"
+            <_NavItem
+              to="/market/top-movers"
               label="Top Movers"
               icon={TrendingUp}
             />
-            <NavItem
-              to="/profitability"
+            <_NavItem
+              to="/reporting/profitability"
               label="Profitability"
               icon={BarChart2}
             />
-            <NavItem
-              to="/worst-trades"
+            <_NavItem
+              to="/reporting/pnl"
+              label="PnL"
+              icon={BarChart2}
+            />
+            <_NavItem
+              to="/reporting/worst-trades"
               label="Worst Trades"
               icon={Activity}
             />
-            <NavItem
-              to="/open-positions"
+            <_NavItem
+              to="/reporting/open-positions"
               label="Open Positions"
               icon={Briefcase}
             />
           </div>
 
           {/* Sentiment & Whales */}
-          <SectionTitle>Sentiment & Whales</SectionTitle>
+          <_SectionTitle>Sentiment & Whales</_SectionTitle>
           <div className="space-y-1">
-            <NavItem
-              to="/sentiment"
+            <_NavItem
+              to="/intelligence/sentiment"
               label="Sentiment"
               icon={RadioTower}
             />
-            <NavItem
-              to="/whales"
+            <_NavItem
+              to="/intelligence/whales"
               label="Whales"
               icon={LineChart}
             />
           </div>
 
           {/* Stratégie */}
-          <SectionTitle>Stratégie</SectionTitle>
+          <_SectionTitle>Stratégie</_SectionTitle>
           <div className="space-y-1">
-            <NavItem
+            <_NavItem
               to="/strategy"
               label="Strategy"
               icon={Target}
             />
-            <NavItem
-              to="/market-regime"
+            <_NavItem
+              to="/market/regime"
               label="Market Regime"
               icon={Waves}
             />
-            <NavItem
-              to="/live-simulation"
+            <_NavItem
+              to="/simulation/live"
               label="Live Simulation"
               icon={PlayCircle}
             />
           </div>
 
           {/* ICO */}
-          <SectionTitle>ICO</SectionTitle>
+          <_SectionTitle>ICO</_SectionTitle>
           <div className="space-y-1">
-            <NavItem
+                        <_NavItem
+              to="/ico"
+              label="ICO – Dashboard"
+              icon={FolderGit2}
+            />
+<_NavItem
               to="/ico/candidates"
               label="ICO – Candidates"
               icon={FolderGit2}
             />
-            <NavItem
+            <_NavItem
               to="/ico/screened"
               label="ICO – Screened"
               icon={Filter}
             />
-            <NavItem
+            <_NavItem
               to="/ico/scored"
               label="ICO – Scored"
               icon={Star}
             />
-            <NavItem
+            <_NavItem
               to="/ico/allocation"
               label="ICO – Allocation"
               icon={PieChart}
@@ -169,14 +179,14 @@ export default function AppLayout({ children }) {
           </div>
 
           {/* Système */}
-          <SectionTitle>Système</SectionTitle>
+          <_SectionTitle>Système</_SectionTitle>
           <div className="space-y-1">
-            <NavItem
+            <_NavItem
               to="/system-status"
               label="System Status"
               icon={ServerCog}
             />
-            <NavItem
+            <_NavItem
               to="/settings"
               label="Settings"
               icon={Settings}
@@ -197,7 +207,7 @@ export default function AppLayout({ children }) {
       {/* CONTENU */}
       <main className="flex-1 bg-gradient-to-b from-zinc-950 via-zinc-950 to-zinc-950/95 p-6">
         <div className="max-w-6xl mx-auto space-y-4">
-          <LiveStatusBar />
+          <_LiveStatusBar />
           <div>{children}</div>
         </div>
       </main>

@@ -2,7 +2,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { connectLive } from "../lib/live";
-import Sparkline from "../components/Sparkline";
+import _Sparkline from "../components/Sparkline";
 import { fetchJSON } from "../lib/api";
 
 const WS_URL =
@@ -19,7 +19,7 @@ const WS_URL =
  */
 export default function LiveSimulation() {
   
-  const [nowEpochMs] = useState(() => Date.now());
+  const [_nowEpochMs] = useState(() => Date.now());
 const [pnl, setPnl] = useState([]);         // [{t, v}]
   const [events, setEvents] = useState([]);   // feed des derniers trades/infos
   const [regime, setRegime] = useState(null); // dernier mode reçu
@@ -127,7 +127,7 @@ const [pnl, setPnl] = useState([]);         // [{t, v}]
         <div className="rounded-xl border border-zinc-800 p-4">
           <div className="text-sm text-zinc-400">PnL — Live</div>
           <div className="mt-2">
-            <Sparkline data={pnl} height={56} />
+            <_Sparkline data={pnl} height={56} />
           </div>
         </div>
       </div>

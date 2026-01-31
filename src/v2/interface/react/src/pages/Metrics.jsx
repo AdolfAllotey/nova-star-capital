@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from "react";
-import { Card } from "../ui/Card.jsx";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8000";
 
@@ -24,7 +23,7 @@ export default function Metrics() {
         const j = await r.json();
         if (!alive) return;
         setM({ loading: false, error: null, data: j });
-      } catch (e) {
+      } catch (_e) {
         if (!alive) return;
         setM({ loading: false, error: "Impossible de charger /metrics.", data: null });
       }
@@ -34,7 +33,6 @@ export default function Metrics() {
 
   return (
     <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-      <Card>
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold">Fichiers</h2>
           {m.loading && <span className="text-xs text-zinc-400">Chargement…</span>}
@@ -66,9 +64,7 @@ export default function Metrics() {
           !m.loading && <div className="text-sm text-zinc-400">Aucune métrique de fichiers.</div>
         )}
         {m.error && <div className="mt-3 text-rose-300 text-sm">{m.error}</div>}
-      </Card>
 
-      <Card>
         <h2 className="text-lg font-semibold mb-4">Serveur & Statut</h2>
         <div className="space-y-1">
           {m.data?.server
@@ -84,7 +80,6 @@ export default function Metrics() {
               : null}
           </div>
         </div>
-      </Card>
     </div>
   );
 }

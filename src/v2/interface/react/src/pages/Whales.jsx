@@ -71,7 +71,7 @@ export default function WhalesPage() {
       setLoading(true);
       setError(null);
       try {
-        const res = await fetch(buildUrl("/whales/leaderboard"));
+        const res = await fetch(buildUrl("/whales"));
         if (!res.ok) {
           throw new Error(`HTTP ${res.status}`);
         }

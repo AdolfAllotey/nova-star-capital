@@ -1,5 +1,5 @@
 // src/pages/WorstTrades.jsx
-// Vue des pires trades à partir de /worst-trades
+// Vue des pires trades à partir de /risk/worst-trades
 
 import React, { useEffect, useMemo, useState } from "react";
 
@@ -76,7 +76,7 @@ export default function WorstTradesPage() {
       setLoading(true);
       setError(null);
       try {
-        const res = await fetch(buildUrl("/worst-trades"));
+        const res = await fetch(buildUrl("/risk/worst-trades"));
         if (!res.ok) {
           throw new Error(`HTTP ${res.status}`);
         }
@@ -97,7 +97,7 @@ export default function WorstTradesPage() {
         if (!cancelled) {
           console.error("Error fetching worst trades:", err);
           setError(
-            "Impossible de charger les pires trades. Vérifie l’API /worst-trades."
+            "Impossible de charger les pires trades. Vérifie l’API /risk/worst-trades."
           );
         }
       } finally {

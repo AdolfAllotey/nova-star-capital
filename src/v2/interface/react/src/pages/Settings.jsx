@@ -75,16 +75,16 @@ export default function Settings() {
     if (!stored) return;
 
     if (typeof stored.refreshSeconds === "number") {
-      setRefreshSeconds(stored.refreshSeconds);
+      queueMicrotask(() => setRefreshSeconds(stored.refreshSeconds));
     }
     if (stored.tradingMode === "simulation" || stored.tradingMode === "real") {
-      setTradingMode(stored.tradingMode);
+      queueMicrotask(() => setTradingMode(stored.tradingMode));
     }
     if (typeof stored.showDebug === "boolean") {
-      setShowDebug(stored.showDebug);
+      queueMicrotask(() => setShowDebug(stored.showDebug));
     }
     if (stored.theme === "dark" || stored.theme === "light") {
-      setTheme(stored.theme);
+      queueMicrotask(() => setTheme(stored.theme));
     }
   }, []);
 

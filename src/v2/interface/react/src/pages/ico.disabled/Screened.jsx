@@ -4,6 +4,20 @@
 import React, { useEffect, useState } from "react";
 import { API_BASE } from "../../lib/apiBase";
 
+function StatCard({ label, value, helper }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-xs uppercase tracking-wide text-zinc-400">
+        {label}
+      </span>
+      <span className="text-xl font-semibold text-zinc-50">
+        {value ?? "–"}
+      </span>
+      {helper && <span className="text-xs text-zinc-500">{helper}</span>}
+    </div>
+  );
+}
+
 function Section({ title, children }) {
   return (
     <section className="mb-8">
@@ -60,7 +74,7 @@ function normalizeScreened(raw) {
 export default function Screened() {
   const [screened, setScreened] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const [_error, setError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -88,7 +102,7 @@ export default function Screened() {
         setScreened(normalized);
         setError("");
       } catch (e) {
-        console.error("[ICO Screened] Error:", e);
+        console._error("[ICO Screened] Error:", e);
         if (!cancelled) {
           setScreened([]);
           setError("");

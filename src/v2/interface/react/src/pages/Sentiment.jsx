@@ -1,5 +1,5 @@
 // src/pages/Sentiment.jsx
-// Vue du sentiment agrégé à partir de /sentiment/overview
+// Vue du sentiment agrégé à partir de /sentiment
 
 import React, { useEffect, useMemo, useState } from "react";
 
@@ -86,7 +86,16 @@ export default function SentimentPage() {
       setLoading(true);
       setError(null);
       try {
-        const res = await fetch(buildUrl("/sentiment/overview"));
+        const res = await fetch(buildUrl("/sentiment"));
+        if (res.status === 404) {
+          // Pas de données: l’API renvoie {"detail":"Sentiment indisponible"}
+          if (!cancelled) {
+            setData(null);
+            setUpdatedAt(null);
+            setError("Sentiment indisponible (pas de données).");
+          }
+          return;
+        }
         if (!res.ok) {
           throw new Error(`HTTP ${res.status}`);
         }
@@ -99,7 +108,7 @@ export default function SentimentPage() {
         console.error("Error fetching sentiment:", err);
         if (!cancelled) {
           setError(
-            "Impossible de charger le sentiment global. Vérifie l’API /sentiment/overview."
+            "Impossible de charger le sentiment global. Vérifie l’API /sentiment."
           );
         }
       } finally {
@@ -208,12 +217,7 @@ export default function SentimentPage() {
               />
               <Stat
                 label="Période couverte"
-                value={
-                  data.window ??
-                  data.time_window ??
-                  `${data.hours ?? "?"}h` ??
-                  "–"
-                }
+                value={data.window || data.time_window || (data.hours != null ? `${data.hours}h` : "–")}
                 hint="Fenêtre utilisée pour la moyenne"
               />
               <Stat

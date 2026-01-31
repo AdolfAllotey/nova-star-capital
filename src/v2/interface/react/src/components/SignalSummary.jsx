@@ -2,7 +2,7 @@
 import React, { useEffect, useState } from "react";
 import { getJSON } from "../lib/api";
 
-const Box = ({ title, children }) => (
+const _Box = ({ title, children }) => (
   <div style={{
     border:"1px solid #26262c", background:"#111114", borderRadius:12, padding:16,
     display:"flex", flexDirection:"column", gap:8, minWidth:220
@@ -41,22 +41,22 @@ export default function SignalSummary(){
 
   return (
     <div style={{display:"flex", gap:16, flexWrap:"wrap"}}>
-      <Box title="Market regime">
+      <_Box title="Market regime">
         <div>Mode: <b>{regimeText}</b></div>
         <div>Score: {regimeScore}</div>
         <div style={{fontSize:12, color:"#9aa0a6"}}>{data.regime.updated_at||""}</div>
-      </Box>
+      </_Box>
 
-      <Box title="Sentiment (global)">
+      <_Box title="Sentiment (global)">
         <div>Score: <b>{Number(data.senti.score||0).toFixed(2)}</b></div>
         <div style={{fontSize:12, color:"#9aa0a6"}}>{data.senti.updated_at||""}</div>
-      </Box>
+      </_Box>
 
-      <Box title="Worst trades (compteur)">
+      <_Box title="Worst trades (compteur)">
         <div>{worstCount} entrées</div>
-      </Box>
+      </_Box>
 
-      <Box title="Top Movers (aperçu)">
+      <_Box title="Top Movers (aperçu)">
         {movers10.length===0 ? <div style={{color:"#9aa0a6"}}>Aucun</div> : (
           <ul style={{margin:0, paddingLeft:18}}>
             {movers10.map((x)=>(
@@ -66,7 +66,7 @@ export default function SignalSummary(){
             ))}
           </ul>
         )}
-      </Box>
+      </_Box>
     </div>
   );
 }

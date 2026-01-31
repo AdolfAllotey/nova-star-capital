@@ -4,6 +4,20 @@
 import React, { useEffect, useState } from "react";
 import { API_BASE } from "../../lib/apiBase";
 
+function StatCard({ label, value, helper }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-xs uppercase tracking-wide text-zinc-400">
+        {label}
+      </span>
+      <span className="text-xl font-semibold text-zinc-50">
+        {value ?? "–"}
+      </span>
+      {helper && <span className="text-xs text-zinc-500">{helper}</span>}
+    </div>
+  );
+}
+
 function Section({ title, children }) {
   return (
     <section className="mb-8">
@@ -60,7 +74,7 @@ function normalizeCandidates(raw) {
 export default function Candidates() {
   const [candidates, setCandidates] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const [_error, setError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -88,7 +102,7 @@ export default function Candidates() {
         setCandidates(normalized);
         setError("");
       } catch (e) {
-        console.error("[ICO Candidates] error", e);
+        console._error("[ICO Candidates] _error", e);
         if (!cancelled) {
           setCandidates([]);
           setError("");
@@ -117,7 +131,7 @@ export default function Candidates() {
         </p>
       </header>
 
-      {/* (On garde error dans le state si on veut l’utiliser plus tard, mais on ne spam pas la vue) */}
+      {/* (On garde _error dans le state si on veut l’utiliser plus tard, mais on ne spam pas la vue) */}
 
       {loading ? (
         <div className="flex items-center justify-center py-16 text-zinc-400">

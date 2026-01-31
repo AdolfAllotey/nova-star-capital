@@ -1,3 +1,4 @@
+/* eslint-disable no-unused-vars */
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import {
@@ -6,10 +7,10 @@ import {
   CardTitle,
   CardDescription,
   CardContent,
-} from "../../components/ui/card";
-import { ScrollArea } from "../../components/ui/scroll-area";
-import { Badge } from "../../components/ui/badge";
-import { Button } from "../../components/ui/button";
+} from "../components/ui/card";
+import { ScrollArea } from "../components/ui/scroll-area";
+import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
 import {
   Table,
   TableHeader,
@@ -17,7 +18,7 @@ import {
   TableHead,
   TableBody,
   TableCell,
-} from "../../components/ui/table";
+} from "../components/ui/table";
 import { Loader2 } from "lucide-react";
 
 function safeNumber(v, fallback = null) {
@@ -52,7 +53,7 @@ export default function SentimentOverview() {
   useEffect(() => {
     async function load() {
       try {
-        const res = await fetch("/sentiment/overview");
+        const res = await fetch(buildUrl("/sentiment"));
         const json = await res.json().catch(() => ({}));
 
         // On reste ultra tolérant sur la structure
@@ -74,7 +75,7 @@ export default function SentimentOverview() {
         );
         setSources(safeItems(json.sources || json.channels || json.streams));
       } catch (err) {
-        console.error("Error loading /sentiment/overview", err);
+        console.error("Error loading /sentiment", err);
         setGlobal(null);
         setTokens([]);
         setSources([]);
@@ -119,7 +120,7 @@ export default function SentimentOverview() {
             <Link to="/dashboard">Dashboard</Link>
           </Button>
           <Button asChild variant="outline" size="sm">
-            <Link to="/signals">Signaux</Link>
+            <Link to="/intelligence/sentiment">Signaux</Link>
           </Button>
         </div>
       </div>

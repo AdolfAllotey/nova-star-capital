@@ -1,6 +1,6 @@
 // src/components/LiveMarketChart.jsx
 import React, { useEffect, useState, useRef } from "react";
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
+import { _LineChart, _Line, _XAxis, _YAxis, _Tooltip, _ResponsiveContainer } from "recharts";
 
 const API = import.meta.env.VITE_API_BASE || "http://localhost:8000";
 
@@ -29,22 +29,25 @@ export default function LiveMarketChart() {
   }
 
   useEffect(() => {
-    tick();
+    const t0 = setTimeout(tick, 0);
     timer.current = setInterval(tick, 10_000);
-    return () => clearInterval(timer.current);
+    return () => {
+      clearTimeout(t0);
+      clearInterval(timer.current);
+    };
   }, []);
 
   return (
     <div style={{ background: "#111114", border: "1px solid #24242a", borderRadius: 12, padding: 12 }}>
       <div style={{ marginBottom: 8, fontWeight: 600 }}>NSC Live Market Index</div>
-      <ResponsiveContainer width="100%" height={240}>
-        <LineChart data={series}>
-          <XAxis dataKey="t" hide />
-          <YAxis domain={["auto", "auto"]} tickFormatter={(v) => `${v}%`} />
-          <Tooltip formatter={(v) => [`${v}%`, "Index"]} />
-          <Line type="monotone" dataKey="idx" dot={false} strokeWidth={2} />
-        </LineChart>
-      </ResponsiveContainer>
+      <_ResponsiveContainer width="100%" height={240}>
+        <_LineChart data={series}>
+          <_XAxis dataKey="t" hide />
+          <_YAxis domain={["auto", "auto"]} tickFormatter={(v) => `${v}%`} />
+          <_Tooltip formatter={(v) => [`${v}%`, "Index"]} />
+          <_Line type="monotone" dataKey="idx" dot={false} strokeWidth={2} />
+        </_LineChart>
+      </_ResponsiveContainer>
     </div>
   );
 }

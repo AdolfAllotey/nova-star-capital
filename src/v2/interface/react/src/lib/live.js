@@ -44,7 +44,7 @@ export function connectLive({
       onClose && onClose(ev);
       if (!closedManually) {
         setTimeout(() => {
-          const delay = Math.min(backoff, maxBackoffMs);
+          const _delay = Math.min(backoff, maxBackoffMs);
           backoff = Math.min(backoff * 2, maxBackoffMs);
           open();
         }, Math.floor(Math.random() * 250) + backoff);
@@ -53,7 +53,7 @@ export function connectLive({
 
     ws.addEventListener("error", (err) => {
       onError && onError(err);
-      try { ws.close(); } catch {}
+      try { ws.close(); } catch { /* noop */ }
     });
   };
 
@@ -65,11 +65,11 @@ export function connectLive({
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify(obj));
         }
-      } catch {}
+      } catch { /* noop */ }
     },
     close: () => {
       closedManually = true;
-      try { ws && ws.close(); } catch {}
+      try { ws && ws.close(); } catch { /* noop */ }
     },
   };
 }

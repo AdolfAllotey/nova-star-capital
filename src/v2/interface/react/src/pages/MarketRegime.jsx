@@ -62,14 +62,14 @@ export default function MarketRegime() {
       setError("");
 
       try {
-        const res = await fetch(buildUrl("/market/regime"));
+        const res = await fetch(buildUrl("/dashboard/market_regime"));
         if (!res.ok) {
           throw new Error(`HTTP ${res.status}`);
         }
         const data = await res.json();
         if (!cancelled) setRegime(data);
       } catch (e) {
-        console.error("Erreur fetch /market/regime:", e);
+        console.error("Erreur fetch /dashboard/market_regime:", e);
         if (!cancelled) setError("Impossible de charger le régime de marché.");
       } finally {
         if (!cancelled) setLoading(false);

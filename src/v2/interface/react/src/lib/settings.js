@@ -21,13 +21,13 @@ export function getSettings() {
 export function setSettings(next) {
   try {
     localStorage.setItem(KEY, JSON.stringify(next));
-  } catch {}
+  } catch { /* noop */ }
 }
 
 export function resetSettings() {
   try {
     localStorage.removeItem(KEY);
-  } catch {}
+  } catch { /* noop */ }
 }
 
 export function getApiBase() {
