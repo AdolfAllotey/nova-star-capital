@@ -180,3 +180,6 @@ src/v2/interface/react/renvoie/
 
 # misc
 npm-debug.log*
+
+# archives (old code not maintained)
+src/v2/_archive/monitoring._old/
