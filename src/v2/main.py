@@ -148,6 +148,8 @@ PIPELINE_STEPS = [
     ("Scraping Reddit",      "src.v2.social.reddit_scraper:scrape_reddit"),
     ("Analyse du sentiment", "src.v2.analysis.sentiment:analyze_sentiment"),
     ("Simu trades",          "src.v2.simulation.trade_simulator:simulate_trades"),
+    ("Execution Plan (PREPROD)", "src.v2.analysis.execution_engine_pro:main"),
+    ("Trading Kernel (PREPROD)", "src.v2.trading.trading_kernel:main"),
     ("Pires trades",         "src.v2.risk.worst_trades_analyzer:analyze_worst_trades"),
     ("Reco LLM",             "src.v2.intelligence.llm_analyzer:apply_llm_recommendations"),
     ("PnL mensuel",          "src.v2.reporting.monthly_pnl:update_monthly_pnl"),
@@ -164,15 +166,7 @@ def main() -> int:
     except BlockingIOError:
         log.warning("⛔ Pipeline déjà en cours — sortie.")
         return 0
-    # --- Verrou simple pour éviter les exécutions concurrentes ---
-    lock_path = "/tmp/nova-pipeline.lock"
-    lock_file = open(lock_path, "w")
-    try:
-        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        log.warning("⛔ Pipeline déjà en cours — sortie.")
-        return 0
-    # --------------------------------------------------------------
+# --------------------------------------------------------------
     _load_dotenv_if_present()
 
     log.info("✅ Démarrage script main.py")

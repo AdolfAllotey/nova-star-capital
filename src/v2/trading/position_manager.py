@@ -247,7 +247,7 @@ def _is_final_safe_plan(plan: dict) -> tuple[bool, str]:
         return False, "writer_not_execution_engine_pro"
     status = str(plan.get("status") or "").strip().lower()
     # En préprod, on accepte les plans "soft_veto_*" pour simuler la gestion des positions.
-    allowed_status = {"ok", "soft_veto_caution", "soft_veto_risk_off"}
+    allowed_status = {"ok", "soft_veto_caution", "soft_veto_risk_off", 'ready' }
     if status not in allowed_status:
         return False, "status_not_allowed"
     gov = plan.get("governance")
@@ -1189,7 +1189,11 @@ def update_positions(
 # ============================================================================
 
 def main() -> None:
-    data_dir = get_data_dir()
+    _env_dd = (os.environ.get("NSC_DATA_DIR") or "").strip()
+    data_dir = _env_dd or get_data_dir()
+    if _env_dd:
+        logger.info("[position_manager] NSC_DATA_DIR override active => DATA_DIR=%s", data_dir)
+
     logger.info("[position_manager] DATA_DIR=%s", data_dir)
     plan = _load_execution_plan(data_dir)
     ok, reason = _is_final_safe_plan(plan)

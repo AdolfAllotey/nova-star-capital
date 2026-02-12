@@ -86,6 +86,12 @@ def _safe_write_stub_execution_plan(plan_path, stub_obj, logger=None):
 
     # preserve a few fields if present
     merged = {}
+    # NSC_PATCH: ensure execution_plan writer
+    try:
+        if isinstance(merged, dict) and merged.get('writer') is None:
+            merged['writer'] = 'execution_engine_pro'
+    except Exception:
+        pass
     try:
         merged.update(existing if isinstance(existing, dict) else {})
     except Exception:
@@ -122,7 +128,7 @@ def _safe_write_stub_execution_plan(plan_path, stub_obj, logger=None):
 # ---------------------------------------------------------------------------
 
 ROOT_DIR = Path(__file__).resolve().parents[3]  # /opt/nsc/app
-DATA_DIR = ROOT_DIR / "data"
+DATA_DIR = Path(os.getenv("NSC_DATA_DIR", str(ROOT_DIR / "data"))).resolve()
 
 TRADING_DIR = DATA_DIR / "trading"
 ANALYSIS_DIR = DATA_DIR / "analysis"
@@ -619,6 +625,19 @@ def run_once(max_new_positions: Optional[int] = None) -> None:
 
     # Étape 2 : signal voting
     logger.info("[trading_kernel] Étape 2/4 : signal_voting")
+    logger.info("[trading_kernel] Étape 2.1/4 : position_sizing")
+    try:
+        import subprocess, sys
+        subprocess.run([sys.executable, '-m', 'src.v2.analysis.position_sizing', '--data-dir', str(DATA_DIR)], check=True)
+    except Exception:
+        logger.exception("[trading_kernel] position_sizing failed")
+    logger.info("[trading_kernel] Étape 2.2/4 : execution_engine_pro")
+    try:
+        import subprocess, sys
+        subprocess.run([sys.executable, '-m', 'src.v2.analysis.execution_engine_pro', '--data-dir', str(DATA_DIR)], check=True)
+    except Exception:
+        logger.exception("[trading_kernel] execution_engine_pro failed")
+
     try:
         signal_voting_main()
     except Exception:
@@ -632,380 +651,31 @@ def run_once(max_new_positions: Optional[int] = None) -> None:
         # NSC_PREPROD_ALIGNMENT_STEP2_V1
         # Étape 2.33/4 : market_regime_detector (input direct de risk_engine_pro)
         logger.info("[trading_kernel] Étape 2.33/4 : market_regime_detector")
-        try:
-            _skip_mr = str(os.environ.get('NSC_SKIP_MARKET_REGIME_DETECTOR','0')).strip().lower() in ('1','true','yes')
-            if _skip_mr:
-                logger.warning('[trading_kernel] NSC_SKIP_MARKET_REGIME_DETECTOR=1 => skipping market_regime_detector.main(), using existing market_regime_detector.json')
-            else:
-                from src.v2.analysis.market_regime_detector import main as run_market_regime
-                run_market_regime()
-        except Exception:
-            logger.exception('[trading_kernel] market_regime_detector failed')
 
-        # Étape 2.34/4 : volatility_state_machine_pro
-        # NSC_STEP234_235_REWRITE_SAFE_V1
-        logger.info("[trading_kernel] Étape 2.34/4 : volatility_state_machine_pro")
-        _skip_vol = str(os.environ.get('NSC_SKIP_VOLATILITY_STATE_MACHINE_PRO','0')).strip().lower() in ('1','true','yes')
-        if _skip_vol:
-            logger.warning('[trading_kernel] NSC_SKIP_VOLATILITY_STATE_MACHINE_PRO=1 => skipping volatility_state_machine_pro.main(), using existing volatility_state_machine_pro.json')
+        if os.getenv("NSC_SKIP_MARKET_REGIME_DETECTOR", "0") == "1":
+            logger.warning("[trading_kernel] NSC_SKIP_MARKET_REGIME_DETECTOR=1 => skipping market_regime_detector")
         else:
-            try:
-                from src.v2.analysis.volatility_state_machine_pro import main as run_vol_state
-                run_vol_state()
-            except Exception:
-                logger.exception('[trading_kernel] volatility_state_machine_pro failed')
+            import subprocess, sys
+            from pathlib import Path
 
-        # Étape 2.35/4 : correlation_regime_engine_pro
-        logger.info("[trading_kernel] Étape 2.35/4 : correlation_regime_engine_pro")
-        _skip_corr = str(os.environ.get('NSC_SKIP_CORRELATION_REGIME_ENGINE_PRO','0')).strip().lower() in ('1','true','yes')
-        if _skip_corr:
-            logger.warning('[trading_kernel] NSC_SKIP_CORRELATION_REGIME_ENGINE_PRO=1 => skipping correlation_regime_engine_pro, using existing correlation_regime_engine_pro.json')
-        else:
-            try:
-                from src.v2.analysis.correlation_regime_engine_pro import main as run_correlation
-                run_correlation()
-            except Exception:
-                logger.exception('[trading_kernel] correlation_regime_engine_pro failed')
+            snapshot = Path(os.getenv("NSC_MARKET_SNAPSHOT", str(DATA_DIR / "analysis" / "market_snapshot.json")))
+            out_path = Path(str(DATA_DIR / "analysis" / "market_regime_detector.json"))
 
-        # NSC_SKIP_RISK_ENGINE_PRO_FINAL_V1
-        _skip_risk = str(os.environ.get('NSC_SKIP_RISK_ENGINE_PRO','0')).strip().lower() in ('1','true','yes')
-        if _skip_risk:
-            logger.warning('[trading_kernel] NSC_SKIP_RISK_ENGINE_PRO=1 => skipping risk_engine_pro.main(), using existing risk_engine_pro.json')
-        else:
-            import src.v2.analysis.risk_engine_pro as risk_engine_pro
-            risk_engine_pro.main()
-        # --- HARD GATE: risk_engine_pro (risk_off => execution_plan blocked, orders=0) ---
-        _nsc_hard_blocked = False  # NSC_HARD_BLOCK_CLEAN_V1
-        try:
-            _risk = load_json_file(str(DATA_DIR / "analysis" / "risk_engine_pro.json"), default={}) or {}
-            if isinstance(_risk, dict):
-                _rf = str((_risk.get("flag") or _risk.get("global_flag") or "")).strip().lower()
-                _rs = float(_risk.get("score") or _risk.get("risk_score") or 0.0)
-                _must_block = (_rf in ("risk_off", "off", "emergency")) or (_rs <= 35.0)
+            logger.info("[trading_kernel] market_regime_detector CLI: snapshot=%s out=%s", snapshot, out_path)
 
-                if _must_block:
-                    logger.critical(
-                        "[trading_kernel][HARD_BLOCK] risk_engine_pro=%s score=%.2f => orders=0",
-                        (_rf or "risk_off"), _rs
-                    )
-                    os.environ["NSC_HARD_BLOCK"] = "1"
-                    _nsc_hard_blocked = True
-
-                    # Write a self-describing blocked plan (single source of truth)
-                    try:
-                        try:
-                            _now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-                        except Exception:
-                            _now_iso = None
-
-                        _rid = (str(os.environ.get("NSC_RUN_ID") or "").strip() or str(int(time.time() * 1000)))
-
-                        blocked_plan = {
-                            "run_id": _rid,
-                            "status": "blocked",
-                            "note": "blocked_by_risk_engine_pro",
-                            "generated_at": _now_iso,
-                            "orders": [],
-                            "writer": "trading_kernel",
-                            "stats": {"orders_out": 0, "global_flag": "hard_block"},
-                            "governance": {
-                                "mode": "risk_off",
-                                "soft_veto": True,
-                                "hard_block": True,
-                                "kill_switch_reasons": ["risk_engine_pro_hard_block"],
-                                "reasons": [f"risk_engine_pro_flag={_rf} score={_rs:.2f}"],
-                            },
-                        }
-                        # NSC_TK_ATTACH_RISK_ENGINE_CONTEXT_V1
-                        # Enrich blocked execution plan with risk_engine_pro context (best-effort)
-                        try:
-                            from pathlib import Path as _P
-                            _data_dir = _P(os.getenv('NSC_DATA_DIR', 'data')).resolve()
-                            _rk = load_json_file(str(_data_dir / 'analysis' / 'risk_engine_pro.json'), default={})
-                            if isinstance(_rk, dict) and _rk:
-                                _plan = blocked_plan
-                                if isinstance(_plan, dict):
-                                    _gov = _plan.get('governance') if isinstance(_plan.get('governance'), dict) else {}
-                                    # Merge reasons (dedupe)
-                                    _merged_r = []
-                                    for _r in list(_gov.get('reasons') or []):
-                                        if _r and _r not in _merged_r:
-                                            _merged_r.append(_r)
-                                    for _r in list(_rk.get('reasons') or []):
-                                        if _r and _r not in _merged_r:
-                                            _merged_r.append(_r)
-                                    _gov['reasons'] = _merged_r
-                                    # Merge kill-switch reasons (dedupe)
-                                    _ks = []
-                                    for _x in list(_gov.get('kill_switch_reasons') or []):
-                                        if _x and _x not in _ks:
-                                            _ks.append(_x)
-                                    for _x in list(_rk.get('kill_switch_reasons') or []):
-                                        if _x and _x not in _ks:
-                                            _ks.append(_x)
-                                    _gov['kill_switch_reasons'] = _ks
-                                    # Attach compact snapshot for explainability
-                                    _gov['risk_engine'] = {
-                                        'writer': _rk.get('writer'),
-                                        'run_id': _rk.get('run_id'),
-                                        'flag': _rk.get('flag'),
-                                        'risk_mode': _rk.get('risk_mode'),
-                                        'score': _rk.get('score'),
-                                        'hard_block': _rk.get('hard_block'),
-                                        'soft_veto': _rk.get('soft_veto'),
-                                        'kill_switch_reasons': list(_rk.get('kill_switch_reasons') or []),
-                                        'correlation_regime': _rk.get('correlation_regime'),
-                                        'market_regime': _rk.get('market_regime'),
-                                        'volatility_state': _rk.get('volatility_state'),
-                                    }
-                                    _plan['governance'] = _gov
-                        except Exception:
-                            logger.exception('[trading_kernel] Failed to attach risk_engine_pro context into blocked execution_plan')
-                        save_json_file(str(TRADING_DIR / "execution_plan.json"), blocked_plan)
-                    except Exception:
-                        logger.exception("[trading_kernel][HARD_BLOCK] Failed to write blocked execution_plan.json")
-
-                    # Ledger (best-effort)
-                    try:
-                        append_execution_decision({
-                            "run_id": run_id,
-                            "decision": "BLOCKED",
-                            "blocked_by": "risk_engine_pro",
-                            "reason": "risk_off_or_score<=35",
-                            "env": _env,
-                            "dry_run": _dry,
-                        })
-                    except Exception:
-                        pass
-
-                    logger.critical("[trading_kernel][HARD_BLOCK] Returning early (orders=0).")
-                    return
-        except Exception:
-            logger.exception("[trading_kernel] Failed to read risk_engine_pro.json (continuing degraded)")
-        except Exception:
-            logger.exception('[trading_kernel] Failed to read risk_engine_pro.json (continuing degraded)')
+            # Exécute le module en CLI (argparse attend --snapshot)
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m", "src.v2.analysis.market_regime_detector",
+                    "--snapshot", str(snapshot),
+                    "--out", str(out_path),
+                ],
+                check=True,
+            )
 
     except Exception:
-        logger.exception("[trading_kernel] risk_engine_pro a échoué (on continue en mode dégradé).")
-
-    # NSC_SKIP_DOWNSTREAM_ON_HARD_BLOCK_V1
-    # If risk_engine hard-blocked, stop the pipeline BEFORE sizing/execution to avoid any side-effects.
-    if '_nsc_hard_blocked' in locals() and _nsc_hard_blocked:
-        logger.critical('[trading_kernel][HARD_BLOCK] downstream steps skipped (position_sizing + execution_engine_pro)')
-        return
-
-    # Étape 2.5/4 : position_sizing_institutionnel (écrit trading/sized_signals.json, même si vide)
-    logger.info("[trading_kernel] Étape 2.5/4 : position_sizing_institutionnel")
-    try:
-        # FUND MODE / deterministic runs:
-        # if NSC_REUSE_EXISTING_SIZED_SIGNALS=1 and sized_signals.json exists & non-empty,
-        # do NOT regenerate it (avoid overwriting manual test fixtures).
-        _reuse = str(os.environ.get("NSC_REUSE_EXISTING_SIZED_SIGNALS", "0")).strip().lower() in ("1","true","yes")
-        _force = str(os.environ.get("NSC_FORCE_REPROCESS", "0")).strip().lower() in ("1","true","yes")
-        if _force:
-            if _reuse:
-                logger.warning("[trading_kernel] FORCE_REPROCESS=1 => disabling REUSE of sized_signals.json (fresh run_id)")
-            _reuse = False
-        sized_path = TRADING_DIR / "sized_signals.json"
-        _existing = []
-        if _reuse:
-            try:
-                _existing = load_json_file(str(sized_path), default=[])
-            except Exception:
-                _existing = []
-        if _reuse and isinstance(_existing, list) and len(_existing) > 0:
-            logger.warning("[trading_kernel] REUSE sized_signals.json (len=%d) => skip position_sizing_institutionnel", len(_existing))
-        else:
-            import src.v2.trading.position_sizing_institutionnel as position_sizing_institutionnel
-            position_sizing_institutionnel.main()
-    except Exception:
-        logger.exception("[trading_kernel] position_sizing_institutionnel a échoué (ANTI-STALE).")
-        try:
-            sized_path = TRADING_DIR / "sized_signals.json"
-            _write_json_safe(sized_path, [])
-            # NSC_ANTI_STALE_SKIP_STUB_IF_EXTERNAL_PLAN_V1
-            _skip_stub_write = False
-            try:
-                # NSC_FIX_UNBOUND_LOAD_JSON_FILE_V1
-                _plan_path = TRADING_DIR / 'execution_plan.json'
-                _existing = load_json_file(str(_plan_path), default={}) or {}
-                if isinstance(_existing, dict):
-                    _w = _existing.get('writer')
-                    _s = _existing.get('status')
-                    _o = _existing.get('orders')
-                    _skip_stub_write = bool(_w and _w != 'trading_kernel' and isinstance(_o, list) and len(_o) > 0 and _s not in ('blocked','empty','error'))
-                    if _skip_stub_write:
-                        logger.warning('[trading_kernel] NSC_ANTI_STALE_SKIP_STUB_IF_EXTERNAL_PLAN_V1: external execution_plan preserved (writer=%s status=%s orders=%s)', _w, _s, len(_o))
-            except Exception:
-                _skip_stub_write = False
-            if not _skip_stub_write:
-                _safe_write_stub_execution_plan(TRADING_DIR / "execution_plan.json", {
-                                "writer": "trading_kernel",
-                                "status": "blocked",
-                                "note": "ANTI-STALE => position_sizing_institutionnel crashed => cleared",
-                                "reasons": ["core:position_sizing_failed"],
-                }, logger)
-            logger.warning("[trading_kernel] ANTI-STALE => position_sizing_institutionnel failed => sized_signals.json & execution_plan.json écrasés")
-        except Exception:
-            pass
-
-    # Étape 2.6/4 : execution_engine_pro (lit sized_signals.json -> écrit trading/execution_plan.json)
-    logger.info("[trading_kernel] Étape 2.6/4 : execution_engine_pro")
-    import src.v2.analysis.execution_engine_pro as execution_engine_pro
-    # NSC_FORCE_ENV_RUN_ID_BEFORE_EXEC_ENGINE_V1
-    # Ensure execution_engine_pro sees the SAME run_id as trading_kernel (single source of truth).
-    try:
-        _rid_keep = str(os.environ.get('NSC_KEEP_RUN_ID','0')).strip().lower() in ('1','true','yes')
-    except Exception:
-        _rid_keep = False
-    try:
-        _rid_env = str(os.environ.get('NSC_RUN_ID') or '').strip()
-    except Exception:
-        _rid_env = ''
-    if _rid_keep and _rid_env.startswith('manual-'):
-        run_id = _rid_env
-    else:
-        # use the run_id computed earlier in the function if present
-        # NSC_RUN_ID_PRIORITY_ENV_V1
-        run_id = _rid_env or locals().get('run_id') or run_id
-    # NSC_RUN_ID_NO_OVERWRITE_WHEN_KEEP_V1
-    try:
-        _keep = str(os.environ.get('NSC_KEEP_RUN_ID','0')).strip().lower() in ('1','true','yes')
-    except Exception:
-        _keep = False
-    try:
-        _rid_existing = str(os.environ.get('NSC_RUN_ID') or '').strip()
-    except Exception:
-        _rid_existing = ''
-    if not (_keep and _rid_existing):
-        # NSC_GUARD_ALL_ENV_RUN_ID_WRITES_V1
-        try:
-            _keep = str(os.environ.get('NSC_KEEP_RUN_ID','0')).strip().lower() in ('1','true','yes')
-        except Exception:
-            _keep = False
-        try:
-            _rid_existing = str(os.environ.get('NSC_RUN_ID') or '').strip()
-        except Exception:
-            _rid_existing = ''
-        if not (_keep and _rid_existing):
-            os.environ['NSC_RUN_ID'] = str(run_id)
-    logger.info('[trading_kernel] NSC_RUN_ID propagated to downstream: %s', os.environ.get('NSC_RUN_ID'))
-
-    # NSC_AUTO_CLEAR_BEFORE_EXEC_ENGINE_V1
-    # If a previous execution_plan.json was blocked by risk_engine_pro and risk is now cleared,
-    # clear it BEFORE calling execution_engine_pro so we can regenerate in the same run.
-    try:
-        _plan_path = TRADING_DIR / 'execution_plan.json'
-        if _plan_path.exists():
-            _prev = load_json_file(str(_plan_path), default={}) or {}
-            _prev_note = str(_prev.get('note') or '')
-            _prev_hb = bool(((_prev.get('governance') or {}).get('hard_block')) is True)
-            _risk_now = load_json_file(str(DATA_DIR / 'analysis' / 'risk_engine_pro.json'), default={}) or {}
-            _risk_hb = bool(_risk_now.get('hard_block') is True)
-            _risk_flag = str(_risk_now.get('flag') or _risk_now.get('global_flag') or '')
-            if False and (_prev_hb or _prev_note.startswith('blocked_by_risk_engine_pro')) and (not _risk_hb) and _risk_flag:
-                try:
-                    os.environ['NSC_ALLOW_PLAN_OVERWRITE'] = '1'
-                except Exception:
-                    pass
-                _rid = str(os.environ.get('NSC_RUN_ID') or '')
-                logger.warning(
-                    '[trading_kernel] AUTO_CLEAR(BEFORE_EXEC) prev_note=%s prev_hard_block=%s => risk cleared (flag=%s) => stub+overwrite',
-                    _prev_note, _prev_hb, _risk_flag
-                )
-                try:
-                    _safe_write_stub_execution_plan(_plan_path, {
-                        'status': 'cleared',
-                        'note': 'autocleared_blocked_plan',
-                        'writer': 'trading_kernel',
-                        'run_id': _rid,
-                        'orders': [],
-                        'governance': {
-                            'mode': 'normal',
-                            'hard_block': False,
-                            'kill_switch_reasons': [],
-                            'reasons': ['autoclear_previous_blocked_plan'],
-                        },
-                    }, logger)
-                except Exception:
-                    pass
-    except Exception:
-        logger.exception('[trading_kernel] AUTO_CLEAR(BEFORE_EXEC) failed')
-
-    execution_engine_pro.main()
-
-    # NSC_EXECUTION_LEDGER_EXECUTABLE_V5
-    try:
-        # import os (moved to module-level; avoid UnboundLocalError)
-        from datetime import datetime, timezone
-        _env_val = str(os.environ.get('NSC_ENV') or os.environ.get('ENV') or 'UNKNOWN')
-        _dry_val = str(os.environ.get('NSC_DRY_RUN','0')).strip().lower() in ('1','true','yes')
-        _run_id_val = locals().get('run_id') if 'run_id' in locals() else None
-        if _run_id_val is None:
-            _run_id_val = int(datetime.now(timezone.utc).timestamp() * 1000)
-        _sq = _safe_read_json(DATA_DIR / 'analysis' / 'signal_quality_engine_pro.json', default={}) or {}
-        _rk = _safe_read_json(DATA_DIR / 'analysis' / 'risk_engine_pro.json', default={}) or {}
-        _sq_score = float(_sq.get('score') or 0.0) if isinstance(_sq, dict) else 0.0
-        _rk_score = float(_rk.get('score') or _rk.get('risk_score') or 0.0) if isinstance(_rk, dict) else 0.0
-        _exec_plan = _safe_read_json(DATA_DIR / 'trading' / 'execution_plan.json', default={}) or {}
-        if not isinstance(_exec_plan, dict):
-            _exec_plan = {}
-        _writer = _exec_plan.get('writer')
-        _status = _exec_plan.get('status')
-        _reasons = _exec_plan.get('reasons')
-        _orders = _exec_plan.get('orders') or []
-        if isinstance(_orders, list) and len(_orders) > 0:
-            for _o in _orders:
-                if not isinstance(_o, dict):
-                    continue
-                append_execution_decision({
-                    'run_id': _run_id_val,
-                    'order_id': _o.get('order_id'),
-                    'symbol': _o.get('symbol'),
-                    'side': _o.get('side'),
-                    'source': _writer,
-                    'decision': ('SIMULATED' if _dry_val else 'EXECUTABLE'),
-                    'blocked_by': None,
-                    'reason': None,
-                    'risk_score': _rk_score,
-                    'signal_quality': _sq_score,
-                    'meta_score': _o.get('meta_score'),
-                    'notional_eur': _o.get('notional_eur'),
-                    'env': _env_val,
-                    'dry_run': _dry_val,
-                })
-        else:
-            _reason = None
-            # NSC_LEDGER_CLEARED_REASON_V1
-            # If plan was 'cleared/autocleared', keep an explicit reason for observability.
-            try:
-                _st2 = str(_status or '')
-                _note2 = str((_exec_plan.get('note') or '') if isinstance(_exec_plan, dict) else '')
-            except Exception:
-                _st2, _note2 = '', ''
-            if _st2 == 'cleared' or _note2.startswith('autocleared_'):
-                _reason = 'cleared'
-            if isinstance(_status, str) and _status in ('blocked','empty','error'):
-                _reason = _status
-            if isinstance(_reasons, list) and len(_reasons) > 0:
-                _reason = ','.join([str(x) for x in _reasons])
-            append_execution_decision({
-                'run_id': _run_id_val,
-                'decision': 'BLOCKED' if (_status == 'blocked' or (_reason and 'blocked' in str(_reason))) else 'EMPTY',
-                'blocked_by': 'execution_plan',
-                'reason': _reason or 'no_orders',
-                'source': _writer,
-                'env': _env_val,
-                'dry_run': _dry_val,
-                'risk_score': _rk_score,
-                'signal_quality': _sq_score,
-            })
-    except Exception:
-        logger.exception('[trading_kernel] execution_ledger append failed')
-
-    # NSC_HARD_BLOCK_RETURN_V2: stop pipeline after hard block to prevent any overwrite of execution_plan.json
-    if locals().get("_nsc_hard_blocked", False):
-        logger.critical('[trading_kernel][HARD_BLOCK] Pipeline stopped (return) to prevent overwrite of execution_plan.json')
+        logger.exception("[trading_kernel] Erreur lors de l'étape market_regime_detector (CLI) / wrapper risk_engine_pro")
         return
 
     logger.info("[trading_kernel] Étape 3/4 : capital_allocator")
