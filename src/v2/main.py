@@ -166,29 +166,33 @@ def main() -> int:
     except BlockingIOError:
         log.warning("⛔ Pipeline déjà en cours — sortie.")
         return 0
-# --------------------------------------------------------------
+    # --------------------------------------------------------------
     _load_dotenv_if_present()
 
-    log.info("✅ Démarrage script main.py")
-    log.info("✅ Python exécuté depuis : %s", sys.executable)
-    log.info("✅ Arguments passés : %s", sys.argv)
-    log.info("✅ Chargement des modules")
 
-    # Aperçu utile pour debug de config TG
-    _preview_telegram_groups()
-
-    log.info("✅ Début du pipeline principal")
-
-    for name, target in PIPELINE_STEPS:
-        run_step(name, target)
-
-    log.info("🏁 Pipeline terminé à %s", datetime.now(timezone.utc).isoformat())
-    # Libère le verrou avant de quitter
     try:
-        fcntl.flock(lock_file, fcntl.LOCK_UN)
-        lock_file.close()
-    except Exception:
-        pass
+        log.info("✅ Démarrage script main.py")
+        log.info("✅ Python exécuté depuis : %s", sys.executable)
+        log.info("✅ Arguments passés : %s", sys.argv)
+        log.info("✅ Chargement des modules")
+
+        # Aperçu utile pour debug de config TG
+        _preview_telegram_groups()
+
+        log.info("✅ Début du pipeline principal")
+
+        for name, target in PIPELINE_STEPS:
+            run_step(name, target)
+
+        log.info("🏁 Pipeline terminé à %s", datetime.now(timezone.utc).isoformat())
+
+    finally:
+        # Libère le verrou avant de quitter (même en cas d'exception)
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+            lock_file.close()
+        except Exception:
+            pass
     return 0
 
 
