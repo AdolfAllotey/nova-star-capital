@@ -14,7 +14,21 @@ This file intentionally keeps the surface-area small to avoid drift during prepr
 
 from __future__ import annotations
 
+import sys
 import os
+
+# ---------------------------------------------------------------------------
+# NSC: DATA_DIR override (CLI --data-dir > env NSC_DATA_DIR/NCS_DATA_DIR)
+# ---------------------------------------------------------------------------
+def _resolve_data_dir_override(argv=None):
+    argv = argv or sys.argv
+    if '--data-dir' in argv:
+        try:
+            return argv[argv.index('--data-dir') + 1]
+        except Exception:
+            return None
+    return os.getenv('NSC_DATA_DIR') or os.getenv('NCS_DATA_DIR') or None
+
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Tuple
@@ -196,6 +210,81 @@ def _apply_caps(orders: List[Dict[str, Any]], data_dir: Path, king: Dict[str, An
     return kept, meta
 
 
+
+def _enrich_orders(orders, data_dir, execution_mode="LIVE"):
+    """
+    Enrich orders with: notional_eur, execution_mode, exchange, qty (if missing).
+    Best-effort only. Never raises.
+    """
+    try:
+        from pathlib import Path
+        import json
+
+        # Load price map: data_dir/market/prices.json => {"prices": {"btc": 50000}}
+        pm = {}
+        try:
+            prices_path = Path(data_dir) / "market" / "prices.json"
+            if prices_path.exists():
+                obj = json.loads(prices_path.read_text(encoding="utf-8"))
+                prices = obj.get("prices") if isinstance(obj, dict) else {}
+                if isinstance(prices, dict):
+                    pm = {str(k).lower(): v for k, v in prices.items()}
+        except Exception:
+            pm = {}
+
+        # Exchange router (optional)
+        router = None
+        try:
+            from src.v2.core.exchange_router import get_exchange_for_token as router
+        except Exception:
+            router = None
+
+        filled = 0
+        total = 0
+
+        for o in orders or []:
+            if not isinstance(o, dict):
+                continue
+            total += 1
+
+            # execution_mode
+            o["execution_mode"] = execution_mode
+
+            # unify notional
+            if "notional_eur" not in o and isinstance(o.get("notional"), (int, float)):
+                o["notional_eur"] = float(o["notional"])
+
+            # exchange
+            if callable(router) and not o.get("exchange"):
+                try:
+                    o["exchange"] = router(o.get("symbol"))
+                except Exception:
+                    pass
+
+            # qty compute if missing
+            if (o.get("qty") is None or (isinstance(o.get("qty"), (int,float)) and float(o["qty"]) <= 0)) and isinstance(o.get("notional_eur"), (int, float)):
+                sym = str(o.get("symbol","")).lower().strip()
+                # normalize common forms: "btc/usdt" -> "btc"
+                base = sym.split("/")[0].split("-")[0].split("_")[0]
+                px = pm.get(base) or pm.get(base.replace("usdt",""))
+                if isinstance(px, (int, float)) and px > 0:
+                    q = float(o["notional_eur"]) / float(px)
+                    if q > 0:
+                        o["qty"] = round(q, 8)
+                        filled += 1
+
+        try:
+            logger.info("[execution_engine_pro] enrich_orders: qty_filled=%d/%d mode=%s", filled, total, execution_mode)
+        except Exception:
+            pass
+
+    except Exception:
+        try:
+            logger.exception("[execution_engine_pro] enrich_orders failed")
+        except Exception:
+            pass
+
+
 def _annotate_action_policy(orders: List[Dict[str, Any]], king: Dict[str, Any]) -> None:
     action_policy = king.get("action_policy")
     if action_policy == "SIMULATED_ONLY":
@@ -209,6 +298,20 @@ def _annotate_action_policy(orders: List[Dict[str, Any]], king: Dict[str, Any]) 
 
 
 def main() -> int:
+    # NSC: apply DATA_DIR override early (so all paths use the same data_dir)
+    _dd = _resolve_data_dir_override()
+    if _dd:
+        try:
+            # Prefer an existing set_data_dir() if present in this module
+            if 'set_data_dir' in globals() and callable(globals()['set_data_dir']):
+                globals()['set_data_dir'](_dd)
+            else:
+                # Fallback: if module has DATA_DIR, overwrite it
+                from pathlib import Path as _Path
+                globals()['DATA_DIR'] = _Path(str(_dd)).expanduser().resolve()
+        except Exception:
+            pass
+
     data_dir = _load_data_dir()
     trading_dir = data_dir / "trading"
     analysis_dir = data_dir / "analysis"
@@ -268,7 +371,8 @@ def main() -> int:
 
     # Apply action policy annotation (SIMULATED_ONLY)
     _annotate_action_policy(orders_out, king)
-
+    if env != 'PREPROD':
+        _enrich_orders(orders_out, data_dir, execution_mode='LIVE')
     # Build plan_obj
     plan_obj: Dict[str, Any] = {
         "status": "blocked" if hard_block else ("soft_veto_caution" if gov.get("soft_veto") else "ready"),
@@ -300,6 +404,7 @@ def main() -> int:
                 "reasons": plan_obj.get("reasons") or [],
                 "note": "preprod_simulated_plan",
             }
+            _enrich_orders(sim_payload.get('orders', []), data_dir, execution_mode='SIMULATED_ONLY')
             save_json_file(execution_plan_sim_path, sim_payload)
             logger.info("[execution_engine_pro] execution_plan_simulated.json sauvegardé (%s, orders=%d)", execution_plan_sim_path, len(sim_payload.get("orders", [])))
     except Exception:
