@@ -16,6 +16,14 @@ logger = get_logger(__name__)
 DATA_DIR = Path(get_data_dir()).resolve()
 ANALYSIS_DIR = DATA_DIR / "analysis"
 TRADING_DIR = DATA_DIR / "trading"
+# NSC_PATCH: load capital allocation (capital_per_trade) [AFTER_TRADING_DIR]
+capital_per_trade = None
+try:
+    cap = load_json_file(str(TRADING_DIR / 'capital_allocation.json'), default={}) or {}
+    if isinstance(cap.get('capital_per_trade'), (int, float)):
+        capital_per_trade = float(cap['capital_per_trade'])
+except Exception:
+    capital_per_trade = None
 
 SIGNAL_CANDIDATES_FILE = ANALYSIS_DIR / "signal_candidates.json"
 RISK_LIMITS_FILE = TRADING_DIR / "risk_limits.json"
@@ -171,6 +179,15 @@ def _size_signals(
     mode = risk_limits.get("mode", "normal")
     size_factor = float(risk_limits.get("size_factor", 1.0))
     max_positions = int(risk_limits.get("max_positions", 50))
+    # NSC_PATCH: load capital_per_trade from capital_allocation.json
+    capital_per_trade = None
+    try:
+        cap = load_json_file(str(TRADING_DIR / "capital_allocation.json"), default={}) or {}
+        cpt = cap.get("capital_per_trade")
+        if isinstance(cpt, (int, float)):
+            capital_per_trade = float(cpt)
+    except Exception:
+        logger.exception("[position_sizing] failed to load capital_allocation.json")
 
     sized: List[Dict[str, Any]] = []
 
@@ -251,6 +268,11 @@ def _size_signals(
         sig_out["final_size_multiplier"] = final_mult
         # Pour l’instant, on assimile final_weight à final_size_multiplier
         sig_out["final_weight"] = final_mult
+        # NSC_PATCH: write notional_eur = capital_per_trade * final_size_multiplier
+        if isinstance(capital_per_trade, (int, float)):
+            sig_out["notional_eur"] = float(capital_per_trade) * float(final_mult)
+        else:
+            sig_out["notional_eur"] = None
         sig_out["notes"] = notes
 
         sized.append(sig_out)

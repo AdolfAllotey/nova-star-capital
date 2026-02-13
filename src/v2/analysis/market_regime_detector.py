@@ -1,341 +1,291 @@
-# src/v2/analysis/market_regime_detector.py
+#!/usr/bin/env python3
 from __future__ import annotations
 
-import os
-import time
-from datetime import datetime, timezone  # NSC_MARKET_REGIME_CANONICAL_WRITE_V1
-import secrets  # NSC_MARKET_REGIME_RUN_ID_V1
+
+def _extract_inputs_from_snapshot(snapshot: dict) -> dict:
+    """Support 2 formats:
+    A) snapshot direct: {vix, qqq_trend, spy_trend, breadth_pct_above_ma200, aggregate_score?}
+    B) NSC market_snapshot_exporter: {timestamp, env, sources:{market_conditions, ...}}
+    """
+
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+
+    # ---------- Format A (direct) ----------
+    has_direct = any(k in snapshot for k in ("vix", "qqq_trend", "spy_trend", "breadth_pct_above_ma200", "aggregate_score"))
+    if has_direct:
+        def _f(x, default=0.0):
+            try:
+                if x is None:
+                    return default
+                return float(x)
+            except Exception:
+                return default
+
+        return {
+            "vix": _f(snapshot.get("vix", 0.0), 0.0),
+            "qqq_trend": _f(snapshot.get("qqq_trend", 0.0), 0.0),
+            "spy_trend": _f(snapshot.get("spy_trend", 0.0), 0.0),
+            "breadth_pct_above_ma200": snapshot.get("breadth_pct_above_ma200", None),
+            "aggregate_score": _f(snapshot.get("aggregate_score", 0.0), 0.0),
+        }
+
+    # ---------- Format B (market_snapshot_exporter) ----------
+    sources = snapshot.get("sources") or {}
+    mc = sources.get("market_conditions") or {}
+
+    regime = (mc.get("regime") or "neutral").lower()
+    score = mc.get("score", None)
+    gflag = (mc.get("global_flag") or "").lower()
+
+    # Valeurs par défaut
+    vix = 0.0
+    qqq_trend = 0.0
+    spy_trend = 0.0
+    breadth = None
+    aggregate_score = 0.0
+
+    # Si market_conditions a un bloc inputs, on l'utilise en priorité
+    mc_inputs = mc.get("inputs") or {}
+    if isinstance(mc_inputs, dict) and mc_inputs:
+        try:
+            vix = float(mc_inputs.get("vix", 0.0) or 0.0)
+        except Exception:
+            vix = 0.0
+        try:
+            qqq_trend = float(mc_inputs.get("qqq_trend", 0.0) or 0.0)
+        except Exception:
+            qqq_trend = 0.0
+        try:
+            spy_trend = float(mc_inputs.get("spy_trend", 0.0) or 0.0)
+        except Exception:
+            spy_trend = 0.0
+        breadth = mc_inputs.get("breadth_pct_above_ma200", None)
+        try:
+            aggregate_score = float(mc_inputs.get("aggregate_score", 0.0) or 0.0)
+        except Exception:
+            aggregate_score = 0.0
+    else:
+        # Heuristique simple pour ne pas sortir 0 partout
+        if regime == "bull":
+            qqq_trend = 1.0
+            spy_trend = 1.0
+        elif regime == "bear":
+            qqq_trend = -1.0
+            spy_trend = -1.0
+
+        if isinstance(score, (int, float)):
+            breadth = float(score)
+            aggregate_score = float(score)
+
+    return {
+        "vix": vix,
+        "qqq_trend": qqq_trend,
+        "spy_trend": spy_trend,
+        "breadth_pct_above_ma200": breadth,
+        "aggregate_score": aggregate_score,
+        "market_conditions_regime": regime,
+        "market_conditions_score": score,
+        "market_conditions_global_flag": gflag,
+    }
+
+import json
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from src.v2.utils.logger import get_logger
-from src.v2.utils.file_utils import ensure_dir, load_json_file, save_json_file
+# --- Helpers
 
-logger = get_logger("market_regime_detector")
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
+def load_json(path: Path, default: Any = None) -> Any:
+    try:
+        # Prefer project helper if available
+        from src.v2.utils.file_utils import load_json_file  # type: ignore
+        return load_json_file(str(path), default=default)
+    except Exception:
+        if not path.exists():
+            return default
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
 
-# ---------------------------------------------------------------------------
-# Paths / env
-# ---------------------------------------------------------------------------
+def save_json(path: Path, data: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        from src.v2.utils.file_utils import save_json_file  # type: ignore
+        save_json_file(str(path), data)
+    except Exception:
+        with path.open("w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
 
-def get_env() -> str:
-    return os.environ.get("NSC_ENV", "PREPROD")
-
-
-def get_data_dir() -> Path:
-    root = os.environ.get("NSC_ROOT_DIR") or os.getcwd()
-    return Path(os.environ.get("NSC_DATA_DIR", str(Path(root) / "data")))
-
-
-def now_ts() -> int:
-    return int(time.time())
-
-
-def _analysis_paths(data_dir: Path) -> Dict[str, Path]:
-    analysis_dir = data_dir / "analysis"
-    return {
-        "analysis_dir": analysis_dir,
-        "sentiment": data_dir / "sentiment_overview.json",
-        "market_conditions": analysis_dir / "market_conditions_engine_pro.json",
-        "volatility_state": analysis_dir / "volatility_state_machine_pro.json",
-        "coherence": analysis_dir / "market_coherence_engine_pro.json",
-        "meta_score": analysis_dir / "meta_score_engine_pro.json",
-        "out": analysis_dir / "market_regime_detector.json",
-        "out_canon": analysis_dir / "market_regime.json",  # NSC_MARKET_REGIME_CANONICAL_OUTPUT_V1
-
-        "state": data_dir / "state" / "market_regime_state.json",
-    }
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _clamp(x: float, lo: float, hi: float) -> float:
+def clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
 
+@dataclass
+class RegimeResult:
+    regime: str
+    confidence: float
+    reasons: List[str]
+    inputs: Dict[str, Any]
 
-def _to_float(x: Any, default: float) -> float:
-    try:
-        return float(x)
-    except Exception:
-        return default
+# --- Core logic
 
-
-def _score_01_from_100(score_100: Any, default_01: float = 0.50) -> float:
-    s = _to_float(score_100, default_01 * 100.0)
-    return _clamp(s / 100.0, 0.0, 1.0)
-
-
-def _safe_get(d: Any, path: List[str], default=None):
-    cur = d
-    for k in path:
-        if not isinstance(cur, dict):
-            return default
-        cur = cur.get(k)
-    return cur if cur is not None else default
-
-
-def _compute_meta_avg(meta: Dict[str, Any]) -> Optional[float]:
+def detect_market_regime(snapshot: Dict[str, Any]) -> RegimeResult:
+    inputs = _extract_inputs_from_snapshot(snapshot)
     """
-    meta_score_engine_pro.json peut être :
-    - {"avg": 62.3, ...}
-    - {"assets":[{"symbol":"BTC","score":...}, ...], "avg_score": ...}
-    - ou autre structure
-    On essaye plusieurs patterns, sinon None.
+    Expected snapshot fields (best effort):
+    {
+      "ts": "...",
+      "vix": 14.2,
+      "qqq": {"close": 420.1, "ma50": 410.0, "ma200": 380.0, "ret_20d": 0.06},
+      "spy": {"close": 505.0, "ma50": 498.0, "ma200": 470.0, "ret_20d": 0.04},
+      "breadth": {"pct_above_ma200": 0.62}  # optional
+    }
     """
-    if not isinstance(meta, dict) or not meta:
-        return None
 
-    for key in ("avg", "avg_score", "avgScore", "meta_avg"):
-        v = meta.get(key)
-        if isinstance(v, (int, float)):
-            return float(v)
+    vix = float(inputs.get("vix", 0.0) or 0.0)
+    qqq = snapshot.get("qqq") or {}
+    spy = snapshot.get("spy") or {}
+    breadth = snapshot.get("breadth") or {}
 
-    # assets list -> moyenne
-    assets = meta.get("assets")
-    if isinstance(assets, list) and assets:
-        vals = []
-        for a in assets:
-            if isinstance(a, dict):
-                for k in ("score", "meta_score", "value"):
-                    if isinstance(a.get(k), (int, float)):
-                        vals.append(float(a[k]))
-                        break
-        if vals:
-            return sum(vals) / len(vals)
+    def trend_score(x: Dict[str, Any], label: str) -> Tuple[float, List[str]]:
+        reasons = []
+        close = float(x.get("close") or 0.0)
+        ma50 = float(x.get("ma50") or 0.0)
+        ma200 = float(x.get("ma200") or 0.0)
+        ret_20d = float(x.get("ret_20d") or 0.0)
 
-    return None
+        score = 0.0
 
+        if close > 0 and ma50 > 0:
+            if close >= ma50:
+                score += 0.35
+                reasons.append(f"{label}: close>=MA50")
+            else:
+                score -= 0.35
+                reasons.append(f"{label}: close<MA50")
 
-def _risk_mode_from_global_flag(flag: str) -> str:
-    f = (flag or "").lower().strip()
-    if f in ("danger", "emergency"):
-        return "risk_off"
-    if f == "caution":
-        return "reduced"
-    return "normal"
+        if close > 0 and ma200 > 0:
+            if close >= ma200:
+                score += 0.35
+                reasons.append(f"{label}: close>=MA200")
+            else:
+                score -= 0.35
+                reasons.append(f"{label}: close<MA200")
 
+        # Momentum 20d (cap)
+        if ret_20d != 0.0:
+            if ret_20d >= 0:
+                score += clamp(ret_20d / 0.10, 0.0, 0.30)  # up to +0.30
+                reasons.append(f"{label}: ret_20d positive")
+            else:
+                score -= clamp(abs(ret_20d) / 0.10, 0.0, 0.30)  # down to -0.30
+                reasons.append(f"{label}: ret_20d negative")
 
-# ---------------------------------------------------------------------------
-# Voting logic (simple, stable, extensible)
-# ---------------------------------------------------------------------------
+        return clamp(score, -1.0, 1.0), reasons
 
-def decide_regime(
-    sentiment_avg: float,
-    market_conditions_regime: str,
-    market_conditions_score_100: float,
-    coherence_01: float,
-    meta_avg_100: Optional[float],
-) -> Tuple[str, str, Dict[str, int], List[str], Dict[str, Any]]:
-    """
-    Retourne:
-      regime: bull|bear|neutral
-      risk_mode: normal|reduced|risk_off
-      votes: dict
-      reasons: list[str]
-      inputs: dict (exposé)
-    """
-    reasons: List[str] = []
-    votes = {"bull": 0, "bear": 0, "neutral": 0}
+    qqq_trend, qqq_reasons = trend_score(qqq, "QQQ")
+    spy_trend, spy_reasons = trend_score(spy, "SPY")
 
-    # 1) Sentiment vote
-    if sentiment_avg >= 0.25:
-        votes["bull"] += 1
-        reasons.append(f"sentiment_avg={sentiment_avg:.3f} >= 0.25")
-    elif sentiment_avg <= -0.15:
-        votes["bear"] += 1
-        reasons.append(f"sentiment_avg={sentiment_avg:.3f} <= -0.15")
-    else:
-        votes["neutral"] += 1
-        reasons.append(f"sentiment_avg={sentiment_avg:.3f} in neutral band")
-
-    # 2) Market conditions vote (regime + score)
-    mc_reg = (market_conditions_regime or "neutral").lower().strip()
-    if mc_reg in ("bull", "risk_on"):
-        votes["bull"] += 1
-        reasons.append(f"market_conditions_regime={mc_reg}")
-    elif mc_reg in ("bear", "risk_off"):
-        votes["bear"] += 1
-        reasons.append(f"market_conditions_regime={mc_reg}")
-    else:
-        # si neutral, on regarde le score
-        if market_conditions_score_100 >= 60:
-            votes["bull"] += 1
-            reasons.append(f"market_conditions_score={market_conditions_score_100:.2f} >= 60")
-        elif market_conditions_score_100 <= 40:
-            votes["bear"] += 1
-            reasons.append(f"market_conditions_score={market_conditions_score_100:.2f} <= 40")
+    # Breadth proxy (optional)
+    pct_above = breadth.get("pct_above_ma200", None)
+    breadth_score = 0.0
+    breadth_reason = None
+    if pct_above is not None:
+        pct_above = float(pct_above)
+        if pct_above >= 0.60:
+            breadth_score = 0.20
+            breadth_reason = "Breadth strong (>=60% above MA200)"
+        elif pct_above <= 0.40:
+            breadth_score = -0.20
+            breadth_reason = "Breadth weak (<=40% above MA200)"
         else:
-            votes["neutral"] += 1
-            reasons.append(f"market_conditions_regime={mc_reg}")
+            breadth_score = 0.0
+            breadth_reason = "Breadth neutral"
 
-    # 3) Coherence vote
-    # coherence_01 proche 0.5 => neutre ; >0.65 => bull ; <0.35 => bear
-    if coherence_01 >= 0.65:
-        votes["bull"] += 1
-        reasons.append(f"coherence_01={coherence_01:.3f} >= 0.65")
-    elif coherence_01 <= 0.35:
-        votes["bear"] += 1
-        reasons.append(f"coherence_01={coherence_01:.3f} <= 0.35")
-    else:
-        votes["neutral"] += 1
-        reasons.append(f"coherence_01={coherence_01:.3f} in neutral band")
-
-    # 4) Meta-score vote (si disponible)
-    if meta_avg_100 is None:
-        reasons.append("meta_avg missing")
-    else:
-        if meta_avg_100 >= 60:
-            votes["bull"] += 1
-            reasons.append(f"meta_avg={meta_avg_100:.2f} >= 60")
-        elif meta_avg_100 <= 40:
-            votes["bear"] += 1
-            reasons.append(f"meta_avg={meta_avg_100:.2f} <= 40")
+    # Volatility gate via VIX (simple tiers)
+    vol_score = 0.0
+    vol_reason = "VIX missing/0"
+    if vix > 0:
+        if vix <= 16:
+            vol_score = 0.30
+            vol_reason = "VIX low (<=16)"
+        elif vix <= 22:
+            vol_score = 0.10
+            vol_reason = "VIX moderate (16-22)"
+        elif vix <= 30:
+            vol_score = -0.15
+            vol_reason = "VIX elevated (22-30)"
         else:
-            votes["neutral"] += 1
-            reasons.append(f"meta_avg={meta_avg_100:.2f} in neutral band")
+            vol_score = -0.30
+            vol_reason = "VIX high (>30)"
 
-    # Décision finale : majorité simple ; en cas d'égalité -> neutral
-    max_vote = max(votes.values())
-    winners = [k for k, v in votes.items() if v == max_vote]
-    regime = winners[0] if len(winners) == 1 else "neutral"
+    # Aggregate
+    # Weight Nasdaq (QQQ) slightly more for Actions Offensives
+    agg = (0.45 * qqq_trend) + (0.35 * spy_trend) + breadth_score + vol_score
 
-    # risk_mode : si market_conditions score trop faible => reduced ; sinon normal
-    risk_mode = "normal"
-    if market_conditions_score_100 < 45:
-        risk_mode = "reduced"
+    reasons = []
+    reasons += qqq_reasons
+    reasons += spy_reasons
+    if breadth_reason:
+        reasons.append(breadth_reason)
+    reasons.append(vol_reason)
+
+    # Regime thresholds
+    if agg >= 0.35:
+        regime = "risk_on"
+    elif agg <= -0.25:
+        regime = "risk_off"
+    else:
+        regime = "neutral"
+
+    # Confidence: distance from neutral band
+    # neutral band roughly [-0.25, 0.35]
+    if regime == "risk_on":
+        conf = clamp((agg - 0.35) / 0.65, 0.0, 1.0)
+    elif regime == "risk_off":
+        conf = clamp((abs(agg) - 0.25) / 0.75, 0.0, 1.0)
+    else:
+        # confidence of neutral = how close to 0
+        conf = clamp(1.0 - (abs(agg) / 0.35), 0.0, 1.0)
 
     inputs = {
-        "sentiment": {"avg_score": sentiment_avg},
-        "market_conditions": {"regime": mc_reg, "score": float(market_conditions_score_100)},
-        "coherence": {"score": float(coherence_01)},
-        "meta_score": {"avg": meta_avg_100},
+        "vix": vix,
+        "qqq_trend": qqq_trend,
+        "spy_trend": spy_trend,
+        "breadth_pct_above_ma200": pct_above,
+        "aggregate_score": agg
     }
 
-    return regime, risk_mode, votes, reasons, inputs
+    return RegimeResult(regime=regime, confidence=conf, reasons=reasons, inputs=inputs)
 
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
-def main() -> None:
-    data_dir = get_data_dir()
-    env = get_env()
-    paths = _analysis_paths(data_dir)
-
-    ensure_dir(str(paths["analysis_dir"]))
-    ensure_dir(str((data_dir / "state")))
-
-    # Load inputs
-    sentiment = load_json_file(paths["sentiment"], default={})
-    market_conditions = load_json_file(paths["market_conditions"], default={})
-    coherence = load_json_file(paths["coherence"], default={})
-    meta_score = load_json_file(paths["meta_score"], default={})
-
-    sentiment_avg = _to_float(_safe_get(sentiment, ["sentiment", "avg_score"], 0.0), 0.0)
-    sentiment_bucket = str(_safe_get(sentiment, ["sentiment", "bucket"], "neutral") or "neutral")
-    sentiment_total = int(_safe_get(sentiment, ["counts", "total"], 0) or 0)
-    sentiment_by_source = _safe_get(sentiment, ["counts", "by_source"], {}) or {}
-
-    mc_regime = str(market_conditions.get("regime", "neutral") or "neutral")
-    mc_score = _to_float(market_conditions.get("score", 50.0), 50.0)
-    mc_global_flag = str(market_conditions.get("global_flag", "unknown") or "unknown")
-
-    coherence_score_01 = 0.50
-    # ton coherence engine peut avoir "score" en 0..1 ou 0..100 : on supporte les deux
-    coh_raw = coherence.get("score", 50.0)
-    coh_val = _to_float(coh_raw, 50.0)
-    coherence_score_01 = coh_val if coh_val <= 1.0 else _score_01_from_100(coh_val, 0.50)
-
-    meta_avg = _compute_meta_avg(meta_score)
-
-    # Decide
-    logger.info("[market_regime_detector] Calcul du régime de marché...")
-    regime, risk_mode, votes, reasons, inputs_core = decide_regime(
-        sentiment_avg=sentiment_avg,
-        market_conditions_regime=mc_regime,
-        market_conditions_score_100=mc_score,
-        coherence_01=coherence_score_01,
-        meta_avg_100=meta_avg,
-    )
-
-    # Global override via market_conditions flag
-    risk_mode_flag = _risk_mode_from_global_flag(mc_global_flag)
-    if risk_mode_flag == "risk_off":
-        # priorité maximale
-        risk_mode = "risk_off"
-        if "market_conditions_global_flag=danger/emergency -> risk_off" not in reasons:
-            reasons.append("market_conditions_global_flag=danger/emergency -> risk_off")
-    elif risk_mode_flag == "reduced" and risk_mode == "normal":
-        risk_mode = "reduced"
-        reasons.append("market_conditions_global_flag=caution -> reduced")
+def write_market_regime(snapshot_path: str, out_path: str) -> Dict[str, Any]:
+    snap = load_json(Path(snapshot_path), default={}) or {}
+    res = detect_market_regime(snap)
 
     out = {
-        "generated_at": now_ts(),
-        "timestamp": now_ts(),
-        "env": env,
-        "writer": "market_regime_detector",  # NSC_MARKET_REGIME_RUN_ID_V1
-        "run_id": (str(os.environ.get("NSC_RUN_ID") or "").strip() or (str(int(time.time()*1000)) + "-" + secrets.token_hex(4))),
-        "source": "market_regime_detector",
-        "writer": "market_regime_detector",
-        "run_id": (str(os.environ.get("NSC_RUN_ID") or "").strip() or None),
-        "regime": regime,
-        "risk_mode": risk_mode,
-        "votes": votes,
-        "reasons": reasons,
-        "inputs": {
-            "sentiment": {
-                "avg_score": sentiment_avg,
-                "bucket": sentiment_bucket,
-                "total": sentiment_total,
-                "by_source": sentiment_by_source,
-            },
-            "market_conditions": {
-                "regime": mc_regime,
-                "score": mc_score,
-                "global_flag": mc_global_flag,
-            },
-            "coherence": {"score": coherence_score_01},
-            "meta_score": {"avg": meta_avg},
-        },
+        "ts": utc_now_iso(),
+        "regime": res.regime,
+        "confidence": round(res.confidence, 4),
+        "reasons": res.reasons[:25],
+        "inputs": res.inputs
     }
+    save_json(Path(out_path), out)
+    return out
 
-    save_json_file(paths["out"], out)
-    # NSC_MARKET_REGIME_CANONICAL_OUTPUT_V1
-    try:
-        save_json_file(paths["out_canon"], out)
-    except Exception:
-        logger.exception("[market_regime_detector] failed to write canonical market_regime.json")
-    state = {
-        "updated_at": now_ts(),
-        "env": env,
-        "regime": regime,
-        "risk_mode": risk_mode,
-    }
-    # NSC_MARKET_REGIME_CANONICAL_WRITE_V1
-    # Canonical market_regime.json write
-    try:
-        if isinstance(state, dict):
-            _rid = str(os.environ.get('NSC_RUN_ID') or '').strip()
-            if not _rid:
-                _rid = f"mr-1767124938-ba451831"
-            state.setdefault('writer', 'market_regime_detector')
-            state['run_id'] = _rid
-            state.setdefault('env', env)
-            state.setdefault('generated_at', now_ts())
-            state.setdefault('timestamp', now_ts())
-            state.setdefault('timestamp_iso', datetime.now(timezone.utc).isoformat())
-            save_json_file(paths['out_canon'], state)
-    except Exception:
-        logger.exception('[market_regime_detector] canonical write failed')
-    save_json_file(paths["state"], state)
-    logger.info(
-        "[market_regime_detector] OK regime=%s risk_mode=%s -> %s",
-        regime, risk_mode, str(paths["out"]),
-    )
+# --- CLI
 
+def main():
+    import argparse
+    ap = argparse.ArgumentParser(description="NSC Market Regime Detector (V1)")
+    ap.add_argument("--snapshot", required=True, help="Path to market snapshot JSON")
+    ap.add_argument("--out", default="data/market/market_regime_actions.json", help="Output JSON path")
+    args = ap.parse_args()
+
+    out = write_market_regime(args.snapshot, args.out)
+    print(json.dumps(out, ensure_ascii=False, indent=2))
 
 if __name__ == "__main__":
     main()

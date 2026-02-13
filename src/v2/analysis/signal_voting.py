@@ -17,7 +17,7 @@ logger = get_logger(__name__)
 DATA_DIR = Path(get_data_dir()).resolve()
 
 # Paramètres configurables via env
-MIN_META_DEFAULT = float(os.getenv("NSC_SIGNAL_VOTING_MIN_META", "50.0"))
+MIN_META_DEFAULT = float(os.getenv("NSC_SIGNAL_VOTING_MIN_META", "35.0"))
 MAX_SIGNALS_DEFAULT = int(os.getenv("NSC_SIGNAL_VOTING_MAX_SIGNALS", "100"))
 
 

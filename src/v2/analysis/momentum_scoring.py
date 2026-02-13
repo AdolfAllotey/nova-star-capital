@@ -22,8 +22,8 @@ logger = get_logger(__name__)
 DATA_DIR = Path(get_data_dir()).resolve()
 
 # Seuils de scoring momentum
-MIN_META_FALLBACK = 60.0       # comportement legacy (sans early pump)
-MIN_META_WITH_PUMP = 70.0      # règle Saison 2.5 quand early_pump dispo
+MIN_META_FALLBACK = 35.0       # comportement legacy (sans early pump)
+MIN_META_WITH_PUMP = 45.0      # règle Saison 2.5 quand early_pump dispo
 EARLY_PUMP_MIN = 0.6           # early_pump_score minimal
 
 MOMENTUM_FILE = DATA_DIR / "analysis" / "momentum_scores.json"
