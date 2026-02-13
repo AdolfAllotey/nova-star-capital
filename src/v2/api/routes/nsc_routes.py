@@ -235,6 +235,12 @@ def risk_worst():
     return {"trades": trades}
 
 
+# Alias backward-compat (frontend legacy)
+@router.get("/risk/worst-trades")
+def risk_worst_trades_alias():
+    return risk_worst()
+
+
 @router.get("/risk/worst/summary")
 def risk_worst_summary():
     """
@@ -246,3 +252,10 @@ def risk_worst_summary():
     else:
         summary = str(s)
     return {"summary": summary or "—"}
+
+
+# Alias backward-compat (frontend legacy)
+@router.get("/risk/worst-trades/summary")
+def risk_worst_trades_summary_alias():
+    return risk_worst_summary()
+

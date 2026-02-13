@@ -3,18 +3,20 @@ import json
 from dotenv import load_dotenv
 from src.v2.utils.logger import get_logger
 
+from openai import OpenAI
+
 load_dotenv()
 logger = get_logger("worst_trades_summary")
 
 try:
-    import openai
+
     openai.api_key = os.getenv("OPENAI_API_KEY")
     LLM_ENABLED = bool(openai.api_key)
 except Exception:
     LLM_ENABLED = False
 
-WORST_TRADES_PATH = "src/v2/data/risk/worst_trades.json"
-SUMMARY_OUTPUT_PATH = "src/v2/data/risk/worst_trades_summary.json"
+WORST_TRADES_PATH = "data/risk/worst_trades.json"
+SUMMARY_OUTPUT_PATH = "data/risk/worst_trades_summary.json"
 
 def summarize_worst_trades():
     if not os.path.exists(WORST_TRADES_PATH):
@@ -39,7 +41,8 @@ Réponds en français dans un paragraphe concis.
 
     if LLM_ENABLED:
         try:
-            response = openai.ChatCompletion.create(
+            client = OpenAI()
+        response = client.chat.completions.create(
                 model="gpt-4",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=300,

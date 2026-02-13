@@ -47,8 +47,9 @@ except Exception:
 # --------------------------------------------------------------------------------------
 # Chemins par défaut (structure v2)
 # --------------------------------------------------------------------------------------
-BASE_DIR = Path("/root/src/v2")
-DATA_DIR = BASE_DIR / "data"
+import os
+BASE_DIR = Path(os.getenv("DATA_DIR", "/opt/nsc/app/data")).resolve()
+DATA_DIR = BASE_DIR
 RUNTIME_DIR = DATA_DIR / "runtime"
 RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
 

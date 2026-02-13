@@ -14,7 +14,7 @@ def generate_worst_trades_summary():
     logger.info("🧠 Génération du résumé LLM des pires trades...")
 
     try:
-        trades = load_json_file("src/v2/data/risk/worst_trades.json", fallback=[])
+        trades = load_json_file("data/risk/worst_trades.json", fallback=[])
         if not trades:
             logger.warning("⚠️ Aucun trade trouvé dans worst_trades.json")
             return
