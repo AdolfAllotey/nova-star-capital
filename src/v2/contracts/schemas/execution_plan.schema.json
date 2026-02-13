@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "nsc://schemas/execution_plan.schema.json",
+  "title": "NSC Execution Plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["symbol", "side", "qty", "order_type", "time_in_force", "ts", "derived_from"],
+  "properties": {
+    "symbol": { "type": "string", "minLength": 1 },
+    "side": { "type": "string", "enum": ["buy", "sell"] },
+    "qty": { "type": "number", "exclusiveMinimum": 0 },
+    "order_type": { "type": "string", "enum": ["market", "limit", "stop", "stop_limit"] },
+    "time_in_force": { "type": "string", "enum": ["DAY", "GTC", "IOC", "FOK"] },
+    "ts": { "type": "string", "format": "date-time" },
+
+    "limit_price": { "type": "number", "exclusiveMinimum": 0 },
+    "stop_price": { "type": "number", "exclusiveMinimum": 0 },
+
+    "derived_from": { "type": "string", "minLength": 1 },
+
+    "validations": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "is_simulated": { "type": "boolean" },
+        "idempotency_key": { "type": "string" },
+        "caps_ok": { "type": "boolean" }
+      }
+    },
+
+    "meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "run_id": { "type": "string" },
+        "source": { "type": "string" },
+        "version": { "type": "string" }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "order_type": { "const": "limit" } } },
+      "then": { "required": ["limit_price"] }
+    },
+    {
+      "if": { "properties": { "order_type": { "const": "stop" } } },
+      "then": { "required": ["stop_price"] }
+    },
+    {
+      "if": { "properties": { "order_type": { "const": "stop_limit" } } },
+      "then": { "required": ["stop_price", "limit_price"] }
+    }
+  ]
+}

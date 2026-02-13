@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "nsc://schemas/portfolio_state.schema.json",
+  "title": "NSC Portfolio State",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["ts", "cash", "positions", "pnl"],
+  "properties": {
+    "ts": { "type": "string", "format": "date-time" },
+    "cash": { "type": "number" },
+    "positions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["symbol", "qty"],
+        "properties": {
+          "symbol": { "type": "string", "minLength": 1 },
+          "qty": { "type": "number" },
+          "avg_price": { "type": "number", "minimum": 0 },
+          "market_price": { "type": "number", "minimum": 0 }
+        }
+      }
+    },
+    "exposure": { "type": "object", "additionalProperties": true },
+    "pnl": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["day", "cum"],
+      "properties": {
+        "day": { "type": "number" },
+        "cum": { "type": "number" }
+      }
+    },
+    "meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "run_id": { "type": "string" },
+        "source": { "type": "string" },
+        "version": { "type": "string" }
+      }
+    }
+  }
+}

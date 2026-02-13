@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "nsc://schemas/risk_decision.schema.json",
+  "title": "NSC Risk Decision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["symbol", "allowed", "ts", "reason"],
+  "properties": {
+    "symbol": { "type": "string", "minLength": 1 },
+    "allowed": { "type": "boolean" },
+    "ts": { "type": "string", "format": "date-time" },
+    "reason": { "type": "string", "minLength": 1 },
+
+    "size_usd": { "type": "number", "minimum": 0 },
+    "risk_mode": { "type": "string", "enum": ["risk_on", "neutral", "risk_off"] },
+
+    "caps": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_orders": { "type": "integer", "minimum": 0 },
+        "max_notional_usd": { "type": "number", "minimum": 0 },
+        "symbol_exposure_max": { "type": "number", "minimum": 0, "maximum": 1 },
+        "sector_exposure_max": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+
+    "vetos": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "code", "message"],
+        "properties": {
+          "type": { "type": "string", "enum": ["soft_veto", "hard_block"] },
+          "code": { "type": "string" },
+          "message": { "type": "string" }
+        }
+      }
+    },
+
+    "meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "run_id": { "type": "string" },
+        "source": { "type": "string" },
+        "version": { "type": "string" }
+      }
+    }
+  }
+}
