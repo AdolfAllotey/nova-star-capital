@@ -70,7 +70,10 @@ def _run_preprod() -> int:
     log.info("regime=%s", regime)
 
     # 2) Allocation dynamique
-    alloc = _try_call("src.v2.portfolio.capital_allocator", "run", regime) or {"status": "no_profit", "splits": {}}
+    alloc = _try_call("src.v2.portfolio.capital_allocator", "run", regime)
+    if alloc is None:
+        alloc = _try_call("src.v2.portfolio.capital_allocator", "run")
+    alloc = alloc or {"status": "no_profit", "splits": {}}
     log.info("allocation=%s", alloc)
 
     # 3) Risk controller
@@ -83,7 +86,7 @@ def _run_preprod() -> int:
         log.info("daily_report=%s", rep)
 
     # 5) Worst trades (utiliser la version analytics si dispo; éviter les imports LLM)
-    _try_call("src.v2.analytics.worst_trade_analyzer", "analyze_and_notify")
+    _try_call("src.v2.analysis.worst_trade_analyzer", "analyze_and_notify")
 
     print(json.dumps({"ts": _iso_now(), "scope": "run_pipeline", "event": "done"}, ensure_ascii=False))
     return 0
