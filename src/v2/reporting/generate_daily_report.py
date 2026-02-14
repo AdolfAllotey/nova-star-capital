@@ -43,7 +43,7 @@ def generate_daily_report():
     }
 
     # Sauvegarde du rapport
-    save_json_file(report, DAILY_REPORT_FILE)
+    save_json_file(DAILY_REPORT_FILE, report)
     logger.info(f"✅ Rapport quotidien généré : {DAILY_REPORT_FILE}")
 
     return report
