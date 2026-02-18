@@ -132,7 +132,11 @@ class RegimeResult:
 
 # --- Core logic
 
-def detect_market_regime(snapshot: Dict[str, Any]) -> RegimeResult:
+def detect_market_regime(snapshot: Dict[str, Any] | None = None) -> RegimeResult:
+    # PREPROD-safe: allow snapshot to be None/missing
+    if snapshot is None:
+        snapshot = {}
+
     inputs = _extract_inputs_from_snapshot(snapshot)
     """
     Expected snapshot fields (best effort):
