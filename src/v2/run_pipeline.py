@@ -79,9 +79,14 @@ def _run_preprod() -> int:
     # 3) Risk controller
     _try_call("src.v2.monitoring.risk_controller", "main")
 
-    # 4) Rapport quotidien (tolérant: certaines versions n’acceptent pas d’args)
-    rep = _try_call("src.v2.reporting.generate_daily_report", "generate_daily_report", alloc) \
-          or _try_call("src.v2.reporting.generate_daily_report", "generate_daily_report")
+    # 4) Rapport quotidien (best-effort, 1 seul appel effectif)
+    _try_call("src.v2.analysis.sentiment_scorer_offline", "run")
+    _try_call("src.v2.analysis.sentiment_aggregator", "run")
+    _try_call("src.v2.analysis.sentiment_trend", "run")
+
+    rep = _try_call("src.v2.reporting.generate_daily_report", "generate_daily_report", alloc)
+    if rep is None:
+        rep = _try_call("src.v2.reporting.generate_daily_report", "generate_daily_report")
     if rep:
         log.info("daily_report=%s", rep)
 
