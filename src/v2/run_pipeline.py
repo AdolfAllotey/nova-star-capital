@@ -63,7 +63,11 @@ def _run_preprod() -> int:
     }, ensure_ascii=False))
 
     # 1) Détection de régime
-    regime = _try_call("src.v2.analysis.market_regime_detector", "detect_market_regime") or {"regime": "unknown"}
+        # 1) Détection de régime (best-effort: certaines versions exigent snapshot)
+    regime = _try_call("src.v2.analysis.market_regime_detector", "detect_market_regime", None)
+    if regime is None:
+        regime = _try_call("src.v2.analysis.market_regime_detector", "detect_market_regime")
+    regime = regime or {"regime": "unknown"}
     log.info("regime=%s", regime)
 
     # 2) Allocation dynamique
