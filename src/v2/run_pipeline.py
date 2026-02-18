@@ -15,12 +15,9 @@ import sys
 from datetime import datetime, timezone
 from typing import Any
 
-log = logging.getLogger("nsc.pipeline")
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-)
 
+from src.v2.utils.logger import get_logger
+log = get_logger("nsc.pipeline")
 def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
