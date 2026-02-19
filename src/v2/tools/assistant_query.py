@@ -39,6 +39,10 @@ def ask_question(question: str) -> dict:
     if not question.strip():
         raise HTTPException(status_code=400, detail="Question vide")
 
+    # NSC: hard-disable LLM calls in PREPROD when NSC_LLM_ENABLED=0
+    import os
+    if os.getenv('NSC_LLM_ENABLED','1').strip().lower() in ('0','false','no','n','off'):
+        raise RuntimeError('LLM disabled (NSC_LLM_ENABLED=0)')
     client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
     
     # Load vectors + texts

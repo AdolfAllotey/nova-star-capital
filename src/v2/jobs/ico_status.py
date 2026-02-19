@@ -84,7 +84,7 @@ def main() -> None:
 dt = _parse_dt(status.get('generated_at') or status.get('updated_at'))
 status['last_run_seconds_ago'] = _seconds_since(dt)
 status['health'] = _build_health(status.get('ok', False), status.get('notes'))
-log.info(\"[ICO] status ok=%s -> %s\", status[\"ok\"], OUT)
+log.info("[ICO] status ok=%s -> %s", status["ok"], OUT)
 
 if __name__ == "__main__":
     main()

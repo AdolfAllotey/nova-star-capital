@@ -26,6 +26,10 @@ def generate_worst_trades_summary():
             f"{trades}"
         )
 
+        # NSC: hard-disable LLM calls in PREPROD when NSC_LLM_ENABLED=0
+        import os
+        if os.getenv('NSC_LLM_ENABLED','1').strip().lower() in ('0','false','no','n','off'):
+            raise RuntimeError('LLM disabled (NSC_LLM_ENABLED=0)')
         response = openai.chat.completions.create(
             model="gpt-4",
             messages=[

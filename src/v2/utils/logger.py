@@ -21,6 +21,19 @@ def _setup_root_handlers() -> None:
     level = getattr(logging, _LOG_LEVEL, logging.INFO)
     root.setLevel(level)
 
+    # 🔒 Pipeline-safe: ensure we don't accumulate handlers from other libs/process init
+    # (uvicorn/basicConfig/systemd etc.). Without this, logs may appear twice.
+    if not getattr(root, "_nsc_configured", False):
+        for h in list(root.handlers):
+            try:
+                root.removeHandler(h)
+                try:
+                    h.close()
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
     # Si déjà configuré (handlers existants), ne pas dupliquer.
     if getattr(root, "_nsc_configured", False):
         return

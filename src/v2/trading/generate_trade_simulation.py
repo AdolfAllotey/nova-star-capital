@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 from pathlib import Path
 from typing import List, Dict, Any
+import os
 
 from src.v2.utils.logger import get_logger
 from src.v2.utils.file_utils import load_json_file, save_json_file
@@ -20,7 +21,7 @@ log = get_logger("generate_trade_simulation")
 # ---------------------------------------------------------------------
 # PATHS
 # ---------------------------------------------------------------------
-DATA_DIR = Path("src/v2/data")
+DATA_DIR = Path(os.getenv("DATA_DIR", "src/v2/data")).expanduser().resolve()
 SIMULATION_DIR = DATA_DIR / "simulation"
 SIMULATION_FILE = SIMULATION_DIR / "trade_simulation.json"
 

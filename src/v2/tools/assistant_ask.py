@@ -53,6 +53,10 @@ def get_client() -> OpenAI:
             "OPENAI_API_KEY n'est pas défini dans l'environnement. "
             "export OPENAI_API_KEY='sk-...' avant d'utiliser assistant_ask."
         )
+    # NSC: hard-disable LLM calls in PREPROD when NSC_LLM_ENABLED=0
+    import os
+    if os.getenv('NSC_LLM_ENABLED','1').strip().lower() in ('0','false','no','n','off'):
+        raise RuntimeError('LLM disabled (NSC_LLM_ENABLED=0)')
     return OpenAI(api_key=OPENAI_API_KEY)
 
 

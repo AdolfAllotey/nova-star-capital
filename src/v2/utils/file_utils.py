@@ -120,33 +120,31 @@ def ensure_dir(path: PathLike) -> None:
 # ---------------------------------------------------------
 # JSON helpers (robustes + unifiés)
 # ---------------------------------------------------------
+
 def load_json_file(path: PathLike, default: Any = None) -> Any:
-    """
-    Loads a JSON file and returns its data.
-    If file missing or invalid -> returns default.
-
-    IMPORTANT:
-    - path relatif est rebased sous DATA_DIR via _resolve_path()
-    """
-    p = _resolve_path(path)
-
-    if not p.exists():
-        try:
-            logger.warning("JSON file not found: %s → returning default", p)
-        except Exception:
-            pass
-        return default
-
+    """Robust JSON loader: never returns None for null JSON."""
     try:
-        with p.open("r", encoding="utf-8") as f:
-            return json.load(f)
-    except json.JSONDecodeError as e:
-        logger.error("JSON decode error in %s: %s", p, e)
-        return default
-    except Exception as e:  # noqa: BLE001
-        logger.error("Error loading JSON file %s: %s", p, e)
-        return default
+        from pathlib import Path
+        import json
 
+        p = Path(path)
+        if not p.exists():
+            return {} if default is None else default
+
+        raw = p.read_text(encoding="utf-8").strip()
+        if not raw:
+            return {} if default is None else default
+
+        data = json.loads(raw)
+
+        # Critical guard: JSON "null" → {}
+        if data is None:
+            return {} if default is None else default
+
+        return data
+
+    except Exception:
+        return {} if default is None else default
 
 def save_json_file(path: PathLike, data: Any, indent: int = 2) -> str:
     """
@@ -157,6 +155,9 @@ def save_json_file(path: PathLike, data: Any, indent: int = 2) -> str:
     IMPORTANT:
     - path relatif est rebased sous DATA_DIR via _resolve_path()
     """
+    # Guard: never write null JSON
+    if data is None:
+        data = {}
     p = _resolve_path(path)
     try:
         p.parent.mkdir(parents=True, exist_ok=True)

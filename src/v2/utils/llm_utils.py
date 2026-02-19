@@ -4,6 +4,10 @@ from src.v2.utils.logger import get_logger
 
 logger = get_logger("llm_utils")
 
+# NSC: hard-disable LLM calls in PREPROD when NSC_LLM_ENABLED=0
+import os
+if os.getenv('NSC_LLM_ENABLED','1').strip().lower() in ('0','false','no','n','off'):
+    raise RuntimeError('LLM disabled (NSC_LLM_ENABLED=0)')
 # Clé API OpenAI (doit être définie dans ton fichier .env ou dans l'environnement)
 openai.api_key = os.getenv("OPENAI_API_KEY")
 

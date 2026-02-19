@@ -4,6 +4,10 @@ Indexation des conversations ChatGPT pour Nova Star Capital.
 
 - Lit l'export officiel ChatGPT (conversations.json ou un dossier d'export).
 - Extrait les messages texte (user + assistant).
+# NSC: hard-disable LLM calls in PREPROD when NSC_LLM_ENABLED=0
+import os
+if os.getenv('NSC_LLM_ENABLED','1').strip().lower() in ('0','false','no','n','off'):
+    raise RuntimeError('LLM disabled (NSC_LLM_ENABLED=0)')
 - Génère des embeddings via OpenAI (text-embedding-3-small).
 - Sauvegarde l'index dans src/v2/data/reports/assistant_index.json.
 
