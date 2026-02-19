@@ -47,13 +47,48 @@ def _safe_default(status: str, reason: str) -> Dict[str, Any]:
 
 
 def _compute_metrics(df, label: str) -> Dict[str, float]:
-    """
-    df: pandas.DataFrame with 'Close'
-    """
-    close_series = df["Close"].dropna()
-    if len(close_series) < 220:
-        # need ~200 days for ma200 + buffer
-        raise ValueError(f"{label}: not enough data points ({len(close_series)})")
+    """Compute close/MA50/MA200/ret_20d robustly from yfinance output."""
+    try:
+        import pandas as pd  # type: ignore
+
+        if df is None or len(df) == 0:
+            return {"close": 0.0, "ma50": 0.0, "ma200": 0.0, "ret_20d": 0.0}
+
+        # Get a "Close" SERIES (handles MultiIndex columns)
+        if hasattr(df, "columns") and isinstance(getattr(df, "columns"), pd.MultiIndex):
+            lvl0 = df.columns.get_level_values(0)
+            if "Close" in lvl0:
+                sub = df.loc[:, ("Close",)]
+                close_s = sub.iloc[:, 0] if getattr(sub, "ndim", 1) > 1 else sub
+            else:
+                close_s = df.iloc[:, 0]
+        else:
+            close_s = df["Close"] if "Close" in getattr(df, "columns", []) else df.iloc[:, 0]
+
+        # Ensure it's a Series-like
+        if getattr(close_s, "ndim", 1) > 1:
+            close_s = close_s.iloc[:, 0]
+
+        close = float(close_s.iloc[-1]) if len(close_s) else 0.0
+        ma50 = float(close_s.rolling(50).mean().iloc[-1]) if len(close_s) >= 50 else 0.0
+        ma200 = float(close_s.rolling(200).mean().iloc[-1]) if len(close_s) >= 200 else 0.0
+
+        # 20 trading days return ~= 21 points diff (today vs 20 sessions ago)
+        if len(close_s) >= 21:
+            prev = float(close_s.iloc[-21])
+            ret_20d = (close / prev - 1.0) if prev else 0.0
+        else:
+            ret_20d = 0.0
+
+        return {"close": close, "ma50": ma50, "ma200": ma200, "ret_20d": ret_20d}
+
+    except Exception as e:
+        # Fail-safe
+        try:
+            logger.warning("compute_metrics failed for %s: %s", label, e)
+        except Exception:
+            pass
+        return {"close": 0.0, "ma50": 0.0, "ma200": 0.0, "ret_20d": 0.0}
 
     close = float(close_series.iloc[-1])
     ma50 = float(close_series.rolling(50).mean().iloc[-1])
@@ -67,6 +102,61 @@ def _compute_metrics(df, label: str) -> Dict[str, float]:
         ret_20d = (close / prev - 1.0) if prev else 0.0
 
     return {"close": close, "ma50": ma50, "ma200": ma200, "ret_20d": ret_20d}
+
+def _last_close(df) -> float:
+    """
+    Return last Close as float (robuste yfinance: MultiIndex columns, Series/scalar).
+    """
+    try:
+        import pandas as pd  # type: ignore
+        if df is None or len(df) == 0:
+            return 0.0
+
+        # Select a "Close" series
+        close_series = None
+        if hasattr(df, "columns") and isinstance(getattr(df, "columns"), pd.MultiIndex):
+            # yfinance peut retourner MultiIndex (level0=OHLC, level1=ticker)
+            lvl0 = df.columns.get_level_values(0)
+            if "Close" in lvl0:
+                sub = df.loc[:, ("Close",)]
+                # sub peut être DataFrame (multi tickers) -> prendre 1ère colonne
+                close_series = sub.iloc[:, 0] if hasattr(sub, "iloc") and getattr(sub, "ndim", 1) > 1 else sub
+            else:
+                close_series = df.iloc[:, 0]
+        else:
+            if hasattr(df, "__getitem__") and "Close" in getattr(df, "columns", []):
+                close_series = df["Close"]
+            else:
+                close_series = df.iloc[:, 0]
+
+        # Last value
+        v = close_series.iloc[-1]
+
+        # v peut être un scalar numpy/pandas
+        try:
+            return float(v)
+        except Exception:
+            pass
+
+        # v peut être une Series (cas multi tickers)
+        if hasattr(v, "iloc"):
+            try:
+                return float(v.iloc[0])
+            except Exception:
+                return 0.0
+
+        # fallback
+        if isinstance(v, (list, tuple)) and len(v) > 0:
+            try:
+                return float(v[0])
+            except Exception:
+                return 0.0
+
+        return 0.0
+    except Exception:
+        return 0.0
+
+
 
 
 def build_snapshot() -> Dict[str, Any]:
@@ -92,8 +182,7 @@ def build_snapshot() -> Dict[str, Any]:
 
         qqq = _compute_metrics(qqq_df, "QQQ")
         spy = _compute_metrics(spy_df, "SPY")
-
-        vix_close = float(vix_df["Close"].dropna().iloc[-1]) if len(vix_df) and "Close" in vix_df else 0.0
+        vix_close = _last_close(vix_df)
 
         snap = {
             "ts": _utc_now(),
