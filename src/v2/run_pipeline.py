@@ -12,6 +12,7 @@ import argparse
 import json
 import logging
 import sys
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any
 
@@ -20,6 +21,19 @@ from src.v2.utils.logger import get_logger
 log = get_logger("nsc.pipeline")
 def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+def _load_market_snapshot() -> dict | None:
+    """Charge /opt/nsc/data/preprod/market_snapshot.json si présent, sinon None."""
+    # IMPORTANT: en PREPROD on garde ce chemin fixe (cohérent systemd)
+    path = Path("/opt/nsc/data/preprod/market_snapshot.json")
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception as e:
+        log.warning("market_snapshot invalid (%s): %s", path, e)
+        return None
 
 def _try_import(mod_name: str):
     try:
@@ -62,9 +76,9 @@ def _run_preprod() -> int:
         "env": ":".join(sys.path[:3]),
     }, ensure_ascii=False))
 
-    # 1) Détection de régime
-        # 1) Détection de régime (best-effort: certaines versions exigent snapshot)
-    regime = _try_call("src.v2.analysis.market_regime_detector", "detect_market_regime", None)
+    # 1) Détection de régime (PREPROD réaliste via market_snapshot.json)
+    snapshot = _load_market_snapshot()
+    regime = _try_call("src.v2.analysis.market_regime_detector", "detect_market_regime", snapshot)
     if regime is None:
         regime = _try_call("src.v2.analysis.market_regime_detector", "detect_market_regime")
     regime = regime or {"regime": "unknown"}
