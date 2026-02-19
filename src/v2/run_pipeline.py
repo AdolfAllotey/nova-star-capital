@@ -76,6 +76,9 @@ def _run_preprod() -> int:
         "env": ":".join(sys.path[:3]),
     }, ensure_ascii=False))
 
+    # 0) Market snapshot (best-effort)
+    _try_call("src.v2.analysis.market_snapshot_builder", "run")
+
     # 1) Détection de régime (PREPROD réaliste via market_snapshot.json)
     snapshot = _load_market_snapshot()
     regime = _try_call("src.v2.analysis.market_regime_detector", "detect_market_regime", snapshot)
