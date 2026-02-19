@@ -90,18 +90,6 @@ def _compute_metrics(df, label: str) -> Dict[str, float]:
             pass
         return {"close": 0.0, "ma50": 0.0, "ma200": 0.0, "ret_20d": 0.0}
 
-    close = float(close_series.iloc[-1])
-    ma50 = float(close_series.rolling(50).mean().iloc[-1])
-    ma200 = float(close_series.rolling(200).mean().iloc[-1])
-
-    # ret_20d: compare last close vs close 20 trading days ago
-    if len(close_series) < 21:
-        ret_20d = 0.0
-    else:
-        prev = float(close_series.iloc[-21])
-        ret_20d = (close / prev - 1.0) if prev else 0.0
-
-    return {"close": close, "ma50": ma50, "ma200": ma200, "ret_20d": ret_20d}
 
 def _last_close(df) -> float:
     """
@@ -193,6 +181,8 @@ def build_snapshot() -> Dict[str, Any]:
             "status": "ok",
             "source": "yfinance",
         }
+        snap.pop("reason", None)
+        snap.pop("fallback", None)
         return snap
 
     except Exception as e:
