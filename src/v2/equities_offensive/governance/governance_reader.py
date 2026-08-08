@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict
 from pathlib import Path
 
-GOV_PATH = Path("data/governance/governance_engine_pro.json")
+GOV_PATH = Path("/opt/nsc/data/preprod/equities_offensive/governance/governance_engine_pro.json")
 
 def _load_json(path: Path, default: Any):
     try:

@@ -1,3 +1,4 @@
+import { apiUrl } from "../lib/apiClient";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 async function fetchJson(path) {
@@ -11,20 +12,44 @@ async function fetchJson(path) {
 }
 
 async function fetchStatus() {
-  // 1) API status si dispo
+  // 1) Canonical API status when available.
   try {
-    const r = await fetch("/api/status", { cache: "no-store" });
-    if (r.ok) return await r.json();
-  } catch (_) {}
+    const r = await fetch(apiUrl("/api/status"), { cache: "no-store" });
 
-  // 2) fallback fichiers statiques servis
+    if (r.ok) {
+      const payload = await r.json();
+
+      return {
+        ...payload,
+        statusSource: "api",
+        degraded: false,
+      };
+    }
+  } catch (_) {
+    // Explicit static fallback below.
+  }
+
+  // 2) Static runtime artefacts, with explicit degradation metadata.
   const [system, governance, orchestrator] = await Promise.all([
     fetchJson("/data/telemetry/system_metrics_pro.json"),
     fetchJson("/data/analysis/governance_engine_pro.json"),
     fetchJson("/data/telemetry/orchestrator_pro.json"),
   ]);
 
-  return { system, governance, orchestrator };
+  const missing = [];
+
+  if (!system) missing.push("system_metrics");
+  if (!governance) missing.push("governance");
+  if (!orchestrator) missing.push("orchestrator");
+
+  return {
+    system,
+    governance,
+    orchestrator,
+    statusSource: "static_fallback",
+    degraded: missing.length > 0,
+    missing,
+  };
 }
 
 export function useNscStatus({ refreshMs = 5000 } = {}) {

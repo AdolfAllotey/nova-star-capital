@@ -1,6 +1,10 @@
 import os
 import openai
 from dotenv import load_dotenv
+from src.v2.intelligence.llm_json_parser import (
+    parse_llm_json_object,
+    require_string,
+)
 from src.v2.utils.logger import get_logger
 from src.v2.utils.file_utils import load_json_file, save_json_file
 
@@ -46,8 +50,22 @@ Return in JSON:
         )
 
         content = response.choices[0].message["content"]
-        result = eval(content)  # à sécuriser dans une version publique
-        return result
+        payload = parse_llm_json_object(content)
+
+        return {
+            "summary": require_string(
+                payload,
+                "summary",
+            ),
+            "main_mistake": require_string(
+                payload,
+                "main_mistake",
+            ),
+            "recommendation": require_string(
+                payload,
+                "recommendation",
+            ),
+        }
 
     except Exception as e:
         logger.exception("Erreur lors du résumé des pires trades")

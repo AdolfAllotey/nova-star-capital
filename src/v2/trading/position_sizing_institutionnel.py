@@ -257,7 +257,7 @@ logger = get_logger(__name__)
 
 # Détection DATA_DIR (comme les autres modules "pro")
 ROOT_DIR = Path(__file__).resolve().parents[3]
-DATA_DIR = Path(os.getenv("NSC_DATA_DIR", ROOT_DIR / "data"))
+DATA_DIR = Path(os.getenv("NSC_DATA_DIR") or os.getenv("NSC_DATA_ROOT") or ROOT_DIR / "data")
 
 
 # Majors : on évite de bloquer totalement un buy momentum juste parce que weak_signals est en "weak_avoid"
@@ -648,6 +648,14 @@ def build_sized_signals() -> list[dict[str, Any]]:
     capital = load_json_file(data_dir / "trading" / "capital_allocation.json", default={}) or {}
     capital_per_trade = float(capital.get("capital_per_trade") or 0.0)
 
+    risk_limits = load_json_file(data_dir / "trading" / "risk_limits.json", default={}) or {}
+    strategy_intensity = risk_limits.get("strategy_intensity_factors", {}) or {}
+    strategy_vetos = risk_limits.get("strategy_vetos", {}) or {}
+    strategy_boosts = risk_limits.get("strategy_boosts", {}) or {}
+
+    strategy_selector = load_json_file(data_dir / "analysis" / "strategy_weights.json", default={}) or {}
+    strategy_weights_v5 = strategy_selector.get("weights", {}) if isinstance(strategy_selector, dict) else {}
+
     logger.info("[position_sizing] DATA_DIR=%s", data_dir)
 
 
@@ -702,10 +710,36 @@ def build_sized_signals() -> list[dict[str, Any]]:
         mult_info = _compute_size_multiplier(risk_item, weak_item)
 
         base_weight = float(sig.get("weight", 1.0))
-        final_weight = base_weight * mult_info["final_mult"]
 
+        strategy_key = str(sig.get("strategy", "momentum") or "momentum").lower()
+        try:
+            strategy_factor = float(strategy_intensity.get(strategy_key, 1.0) or 1.0)
+        except Exception:
+            strategy_factor = 1.0
+
+        veto_reason = strategy_vetos.get(strategy_key)
+        boost_reason = strategy_boosts.get(strategy_key)
+
+        if veto_reason:
+            strategy_factor = 0.0
+
+        selector_weight = strategy_weights_v5.get(strategy_key, 1.0)
+        try:
+            selector_weight = float(selector_weight or 1.0)
+        except Exception:
+            selector_weight = 1.0
+
+        # V5 SAFE:
+        # - risk engine reste dominant
+        # - strategy intensity module 30%
+        # - selector module seulement entre 0.75 et 1.05 pour éviter l'overfit.
+        selector_weight_safe = max(0.75, min(1.05, selector_weight))
+
+        strategy_modulator = 0.70 + (0.30 * strategy_factor)
+        final_weight = base_weight * mult_info["final_mult"] * strategy_modulator * selector_weight_safe
 
         if final_weight <= 0:
+            logger.info("[position_sizing] strategy veto/zero weight symbol=%s strategy=%s reason=%s", symbol, strategy_key, veto_reason or "final_weight<=0")
             continue
 
         sized_signal = {
@@ -716,11 +750,23 @@ def build_sized_signals() -> list[dict[str, Any]]:
             "requested_weight": base_weight,
             "weight": final_weight,
             "meta_score": (sig.get("meta_score") if sig.get("meta_score") is not None else _nsc_pick_score(sig)),
+            "market_momentum": sig.get("market_momentum"),
+            "chg_24h": sig.get("chg_24h"),
+            "pair": sig.get("pair"),
+            "source": sig.get("source"),
+            "momentum_regime": sig.get("momentum_regime"),
+            "reason": sig.get("reason"),
             "final_score": sig.get("final_score"),
             "score": sig.get("score"),
             "risk_score": risk_item.get("risk_score"),
             "risk_flag": risk_item.get("risk_flag"),
             "size_multiplier_risk": risk_item.get("size_multiplier", 1.0),
+            "strategy_intensity_factor": strategy_factor,
+            "strategy_modulator_v4": strategy_modulator,
+            "strategy_selector_weight_v5": selector_weight_safe,
+            "strategy_intensity_source": "risk_limits.strategy_intensity_factors",
+            "strategy_veto": veto_reason,
+            "strategy_boost": boost_reason,
             "weak_kind": mult_info["weak_kind"],
             "hard_veto": mult_info["hard_veto"],
             "soft_veto": mult_info["soft_veto"],
@@ -733,7 +779,14 @@ def build_sized_signals() -> list[dict[str, Any]]:
             "meta_score_pro": risk_item.get("inputs", {}).get("meta_score_pro")
             or risk_item.get("meta_score_pro"),
             "flow_direction": risk_item.get("inputs", {}).get("flow_direction"),
-            "notes": mult_info["notes"],
+            "notes": (
+                mult_info["notes"]
+                + [f"Strategy intensity factor={strategy_factor:.2f}"]
+                + [f"Strategy modulator V4={strategy_modulator:.2f}"]
+                + [f"Strategy selector V5={selector_weight_safe:.2f}"]
+                + ([f"Strategy boost: {boost_reason}"] if boost_reason else [])
+                + ([f"Strategy veto: {veto_reason}"] if veto_reason else [])
+            ),
         }
 
         sized.append(sized_signal)

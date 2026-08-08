@@ -416,7 +416,10 @@ def main() -> None:
         result["mode"] = str(result.get("flag") or "")
         # soft_veto: caution or risk_off => soft_veto true
         _mode = str(result.get("mode") or "").lower()
-        result["soft_veto"] = bool(result.get("soft_veto")) or (_mode in ("caution", "risk_off"))
+        if str(env).upper() == "PREPROD":
+            result["soft_veto"] = bool(result.get("soft_veto"))
+        else:
+            result["soft_veto"] = bool(result.get("soft_veto")) or (_mode in ("caution", "risk_off"))
         # hard_block: always present boolean
         result["hard_block"] = bool(result.get("hard_block", False))
 
@@ -445,14 +448,14 @@ def main() -> None:
         max_notional_run = _sf(rl.get("max_notional_eur_per_run", 0), 0.0)
         max_notional_asset = _sf(rl.get("max_notional_eur_per_asset", 0), 0.0)
 
-        # PREPROD safety defaults if caps are unset
+        # PREPROD defaults must stay non-blocking unless explicitly configured
         if str(env).upper() == "PREPROD":
             if max_orders <= 0:
-                max_orders = 2
-            if max_notional_run <= 0 and cpt > 0:
-                max_notional_run = cpt
-            if max_notional_asset <= 0 and max_notional_run > 0:
-                max_notional_asset = max_notional_run / 2.0
+                max_orders = 0
+            if max_notional_run <= 0:
+                max_notional_run = 0.0
+            if max_notional_asset <= 0:
+                max_notional_asset = 0.0
 
         result["caps"] = {
             "max_orders_per_run": int(max_orders),
@@ -534,19 +537,43 @@ def main() -> None:
     # NSC_PATCH: governance_caps_king BEGIN
     # Governance is the single source-of-truth for caps (downstream engines must follow these).
     try:
-        # risk_limits is already loaded earlier as input; we reuse it to seed caps.
         rl = risk_limits if isinstance(risk_limits, dict) else {}
-        caps = {
-            "max_orders_per_run": int(float(rl.get("max_orders_per_run", 2) or 2)),
-            "max_notional_eur_per_run": float(rl.get("max_notional_eur_per_run", 9.0) or 9.0),
-            "max_notional_eur_per_asset": float(rl.get("max_notional_eur_per_asset", 4.5) or 4.5),
-        }
+        cap_alloc = load_json_file(Path(data_dir) / "trading" / "capital_allocation.json", default={}) or {}
+        cpt = float(cap_alloc.get("capital_per_trade") or 0.0)
 
-        # If governance is in soft_veto (Option A), keep caps conservative in PREPROD.
-        if isinstance(result, dict) and result.get("soft_veto") and env == "PREPROD":
-            caps["max_orders_per_run"] = min(caps["max_orders_per_run"], 2)
-            caps["max_notional_eur_per_run"] = min(caps["max_notional_eur_per_run"], 9.0)
-            caps["max_notional_eur_per_asset"] = min(caps["max_notional_eur_per_asset"], 4.5)
+        def _safe_float(x, default=0.0):
+            try:
+                return float(x)
+            except Exception:
+                return float(default)
+
+        max_orders = int(_safe_float(rl.get("max_orders_per_run", 0), 0))
+        max_notional_run = _safe_float(rl.get("max_notional_eur_per_run", 0.0), 0.0)
+        max_notional_asset = _safe_float(rl.get("max_notional_eur_per_asset", 0.0), 0.0)
+
+        # PREPROD must remain simulated, but not blocked by null/zero caps.
+        # If risk_limits.json does not explicitly define caps, apply safe PREPROD defaults.
+        if str(env).upper() == "PREPROD":
+            # PREPROD: 0 = unlimited orders.
+            # We keep notional caps, but do not impose an asset-count cap.
+            if max_orders <= 0:
+                max_orders = 0
+            if max_notional_run <= 0:
+                max_notional_run = 10000.0
+            if max_notional_asset <= 0:
+                max_notional_asset = 4000.0
+        else:
+            if max_notional_run <= 0 and cpt > 0 and max_orders > 0:
+                max_notional_run = cpt * max_orders
+
+            if max_notional_asset <= 0 and cpt > 0:
+                max_notional_asset = cpt
+
+        caps = {
+            "max_orders_per_run": max_orders,
+            "max_notional_eur_per_run": float(max_notional_run),
+            "max_notional_eur_per_asset": float(max_notional_asset),
+        }
 
         if isinstance(result, dict):
             result["caps"] = caps
@@ -561,14 +588,20 @@ def main() -> None:
             result["correlation_gate_state"] = _gate
 
             if bool(_gate.get("active")):
-                # Keep contract: soft_veto is boolean
-                result["soft_veto"] = True
-                # Extra fields (non-breaking) for downstream consumers
-                result["soft_veto_mode"] = "SIMULATED_ONLY"
-                result["soft_veto_reason"] = "correlation_gate_state.active=true"
-                # Ensure action_policy aligns with PREPROD Option A
-                if not result.get("action_policy"):
-                    result["action_policy"] = "SIMULATED_ONLY"
+                _env_now = str((result.get("env") or env or "")).upper()
+                if _env_now != "PREPROD":
+                    # Keep contract: soft_veto is boolean
+                    result["soft_veto"] = True
+                    # Extra fields (non-breaking) for downstream consumers
+                    result["soft_veto_mode"] = "SIMULATED_ONLY"
+                    result["soft_veto_reason"] = "correlation_gate_state.active=true"
+                    # Ensure action_policy aligns with Option A outside PREPROD too
+                    if not result.get("action_policy"):
+                        result["action_policy"] = "SIMULATED_ONLY"
+                else:
+                    # In PREPROD, keep the gate visible for observability,
+                    # but do not force a simulated-only soft veto.
+                    result["correlation_gate_state_preprod_ignored"] = True
     except Exception:
         pass
     # NSC_CORR_GATE_FINALIZE_V1 END
@@ -577,6 +610,16 @@ def main() -> None:
 
 
     out_path = data_dir / "analysis" / "governance_engine_pro.json"
+
+    
+    # NSC_FINAL_OVERRIDE_PREPROD_V1
+    try:
+        if str(env).upper() == "PREPROD":
+            result["soft_veto"] = False
+            result.pop("soft_veto_reason", None)
+            result.pop("soft_veto_mode", None)
+    except Exception:
+        pass
 
     save_json_file(out_path, result)
 

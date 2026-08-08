@@ -30,7 +30,7 @@ def load_governance() -> Dict[str, Any]:
 
     # Minimal normalization / defaults
     g.setdefault("mode", "PREPROD")
-    g.setdefault("action_policy", "SIMULATED_ONLY" if g["mode"] == "PREPROD" else "LIVE")
+    g.setdefault("action_policy", "SIMULATED_EXECUTION" if g["mode"] == "PREPROD" else "LIVE")
     g.setdefault("caps", {})
     g.setdefault("vetos", {})
     g["vetos"].setdefault("hard_block", [])

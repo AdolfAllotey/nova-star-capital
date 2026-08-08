@@ -10,13 +10,11 @@ router = APIRouter(prefix="/governance", tags=["governance"])
 
 
 def _data_root() -> Path:
-    dr = os.getenv("DATA_ROOT")
-    if dr:
-        return Path(dr)
-    p = Path("/opt/nsc/app/data")
-    if p.exists():
-        return p
-    return Path.cwd() / "data"
+    for key in ("NSC_DATA_DIR", "NSC_DATA_ROOT", "DATA_DIR", "DATA_ROOT"):
+        value = os.getenv(key)
+        if value:
+            return Path(value).expanduser().resolve()
+    return Path("/opt/nsc/data/preprod").resolve()
 
 
 @router.get("/status")
@@ -25,8 +23,12 @@ def governance_status():
     path = data_root / "analysis" / "governance_engine_pro.json"
     data = load_json_file(path, default={})
 
-    action_policy = (data.get("action_policy") or data.get("policy", {}).get("action_policy") or "UNKNOWN") if isinstance(data, dict) else "UNKNOWN"
-    mode = (data.get("mode") or data.get("flag") or "UNKNOWN") if isinstance(data, dict) else "UNKNOWN"
+    action_policy = (
+        data.get("action_policy") or data.get("policy", {}).get("action_policy") or "UNKNOWN"
+    ) if isinstance(data, dict) else "UNKNOWN"
+    mode = (
+        data.get("mode") or data.get("flag") or "UNKNOWN"
+    ) if isinstance(data, dict) else "UNKNOWN"
 
     return {
         "ok": True if isinstance(data, dict) and data else False,

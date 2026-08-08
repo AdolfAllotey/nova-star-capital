@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://novastarcapital.local/schemas/audit_package_ready.schema.json",
+  "title": "Nova Star Capital Audit Package Readiness Gate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "audit_id",
+    "release",
+    "baseline_id",
+    "status",
+    "created_at",
+    "last_verified_at",
+    "collection_status",
+    "validation_status",
+    "validation_warnings",
+    "blocking_failures",
+    "provider",
+    "provider_executed",
+    "automatic_remediation",
+    "baseline_immutable",
+    "allocation_policy"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "audit_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "release": {
+      "type": "string",
+      "const": "RC1"
+    },
+    "baseline_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "type": "string",
+      "const": "READY_FOR_PROVIDER_AUDIT"
+    },
+    "created_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "last_verified_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "collection_status": {
+      "type": "string",
+      "const": "PASS"
+    },
+    "validation_status": {
+      "type": "string",
+      "const": "PASS"
+    },
+    "validation_warnings": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "blocking_failures": {
+      "type": "integer",
+      "const": 0
+    },
+    "provider": {
+      "type": "string",
+      "const": "NONE"
+    },
+    "provider_executed": {
+      "type": "boolean",
+      "const": false
+    },
+    "automatic_remediation": {
+      "type": "boolean",
+      "const": false
+    },
+    "baseline_immutable": {
+      "type": "boolean",
+      "const": true
+    },
+    "allocation_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model",
+        "policy_frozen",
+        "weights_permanently_fixed"
+      ],
+      "properties": {
+        "model": {
+          "type": "string",
+          "const": "DYNAMIC_POLICY_DRIVEN"
+        },
+        "policy_frozen": {
+          "type": "boolean",
+          "const": true
+        },
+        "weights_permanently_fixed": {
+          "type": "boolean",
+          "const": false
+        }
+      }
+    }
+  }
+}

@@ -1,17 +1,16 @@
 // src/lib/api.js
 // Client HTTP centralisé pour l'interface NSC V2
 
-const API_BASE =
-  import.meta.env.VITE_API_BASE?.replace(/\/+$/, "") || "http://localhost:8000";
+import {
+  API_BASE,
+  buildApiUrl,
+} from "./apiBase";
 
 /**
  * Helper générique : GET JSON
  */
 export async function fetchJSON(path, options = {}) {
-  const url =
-    path.startsWith("http://") || path.startsWith("https://")
-      ? path
-      : `${API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
+  const url = buildApiUrl(path);
 
   const res = await fetch(url, {
     method: "GET",

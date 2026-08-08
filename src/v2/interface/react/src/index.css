@@ -2,3 +2,23 @@
 
 html, body, #root { height: 100%; }
 body { margin: 0; }
+
+@keyframes nscPulse {
+  0% {
+    opacity: 0.25;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(1.08);
+  }
+  100% {
+    opacity: 0.25;
+    transform: scale(1);
+  }
+}
+
+.nsc-glow-curve {
+  animation: nscPulse 6s ease-in-out infinite;
+}
+

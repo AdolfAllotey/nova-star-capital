@@ -9,7 +9,7 @@ if (typeof window !== "undefined" && !window.__NSC_CREATEELEMENT_GUARD__) {
   const _ce = React.createElement;
   React.createElement = (type, props, ...children) => {
     if (!type) {
-      // eslint-disable-next-line no-console
+       
       console.error("[NSC] React.createElement got undefined type", { props, children });
     }
     return _ce(type, props, ...children);
@@ -21,11 +21,11 @@ if (typeof window !== "undefined" && !window.__NSC_CREATEELEMENT_GUARD__) {
 if (typeof window !== "undefined" && !window.__NSC_GLOBAL_ERROR_HOOK__) {
   window.__NSC_GLOBAL_ERROR_HOOK__ = true;
   window.addEventListener("error", (e) => {
-    // eslint-disable-next-line no-console
+     
     console.error("[window.error]", e?.error || e?.message || e);
   });
   window.addEventListener("unhandledrejection", (e) => {
-    // eslint-disable-next-line no-console
+     
     console.error("[unhandledrejection]", e?.reason || e);
   });
 }

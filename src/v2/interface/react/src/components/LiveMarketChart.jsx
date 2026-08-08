@@ -1,8 +1,8 @@
 // src/components/LiveMarketChart.jsx
+import { buildApiUrl as apiUrl } from "../lib/apiBase";
 import React, { useEffect, useState, useRef } from "react";
 import { _LineChart, _Line, _XAxis, _YAxis, _Tooltip, _ResponsiveContainer } from "recharts";
 
-const API = import.meta.env.VITE_API_BASE || "http://localhost:8000";
 
 export default function LiveMarketChart() {
   const [series, setSeries] = useState([]);
@@ -10,7 +10,7 @@ export default function LiveMarketChart() {
 
   async function tick() {
     try {
-      const r = await fetch(`${API}/market/top-movers`);
+      const r = await fetch(apiUrl("/market/top-movers"));
       const j = await r.json();
       const items = Array.isArray(j?.items) ? j.items : [];
       // petit “index NSC” = moyenne des % changes (si ton JSON a "change_24h" par ex.)

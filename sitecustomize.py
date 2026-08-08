@@ -37,6 +37,12 @@ if _is_disabled():
             return await _orig_asend(self, request, *a, **k)
         httpx.AsyncClient.send = _asend
 
-        sys.stderr.write("[sitecustomize] OpenAI HTTP blocked via httpx send hook\n")
+        pass
+    except ModuleNotFoundError as e:
+        # httpx absent sur le Python système -> silencieux (pas bloquant)
+        if getattr(e, "name", "") == "httpx":
+            pass
+        else:
+            sys.stderr.write(f"[sitecustomize] failed to install hook: {e}\n")
     except Exception as e:
         sys.stderr.write(f"[sitecustomize] failed to install hook: {e}\n")

@@ -1,0 +1,196 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://novastarcapital.local/schemas/audit_report.schema.json",
+  "title": "Nova Star Capital Normalized Audit Report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "framework_version",
+    "audit_id",
+    "provider",
+    "status",
+    "generated_at",
+    "executive_summary",
+    "findings",
+    "limitations",
+    "metadata"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "framework_version": {
+      "type": "string"
+    },
+    "audit_id": {
+      "type": "string"
+    },
+    "provider": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "executive_summary": {
+      "type": "string"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/finding"
+      }
+    },
+    "engineering_score": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/engineeringScore"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "metadata": {
+      "type": "object"
+    }
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "finding_id",
+        "title",
+        "description",
+        "domain",
+        "severity",
+        "category",
+        "evidence",
+        "affected_components",
+        "recommendation",
+        "confidence",
+        "blocking",
+        "metadata"
+      ],
+      "properties": {
+        "finding_id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "domain": {
+          "type": "string"
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "CRITICAL",
+            "HIGH",
+            "MEDIUM",
+            "LOW",
+            "INFO"
+          ]
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "BLOCKER",
+            "RC2_TECHNICAL_DEBT",
+            "OPTIMIZATION",
+            "OBSERVATION"
+          ]
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "affected_components": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "recommendation": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "blocking": {
+          "type": "boolean"
+        },
+        "metadata": {
+          "type": "object"
+        }
+      }
+    },
+    "engineeringScore": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "architecture",
+        "security",
+        "performance",
+        "maintainability",
+        "testing",
+        "documentation",
+        "observability",
+        "governance",
+        "overall"
+      ],
+      "properties": {
+        "architecture": {
+          "$ref": "#/$defs/score"
+        },
+        "security": {
+          "$ref": "#/$defs/score"
+        },
+        "performance": {
+          "$ref": "#/$defs/score"
+        },
+        "maintainability": {
+          "$ref": "#/$defs/score"
+        },
+        "testing": {
+          "$ref": "#/$defs/score"
+        },
+        "documentation": {
+          "$ref": "#/$defs/score"
+        },
+        "observability": {
+          "$ref": "#/$defs/score"
+        },
+        "governance": {
+          "$ref": "#/$defs/score"
+        },
+        "overall": {
+          "$ref": "#/$defs/score"
+        }
+      }
+    },
+    "score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
+    }
+  }
+}

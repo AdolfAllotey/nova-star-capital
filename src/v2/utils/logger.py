@@ -4,6 +4,16 @@ import sys
 from pathlib import Path
 from logging.handlers import TimedRotatingFileHandler
 
+# NSC_BROKENPIPE_SAFE_HANDLER_V1
+class SafeStreamHandler(logging.StreamHandler):
+    """Ignore BrokenPipeError when output is piped (e.g., `... | head`)."""
+    def emit(self, record):
+        try:
+            super().emit(record)
+        except BrokenPipeError:
+            # stdout closed by consumer; silently stop emitting
+            return
+
 _LOG_LEVEL = os.getenv("NSC_LOG_LEVEL", "INFO").upper()
 
 def _get_log_dir(default_dir: str) -> Path:
@@ -41,7 +51,7 @@ def _setup_root_handlers() -> None:
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     # 1) Console
-    sh = logging.StreamHandler(sys.stdout)
+    sh = SafeStreamHandler(sys.stdout)
     sh.setLevel(level)
     sh.setFormatter(fmt)
     root.addHandler(sh)

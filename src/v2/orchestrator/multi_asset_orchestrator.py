@@ -15,10 +15,10 @@ logger = get_logger("multi_asset_orchestrator")
 
 GOV_PATH = Path("data/governance/governance_engine_pro.json")
 REGIME_PATH = Path("data/market/market_regime.json")
-MASTER_CASH_PATH = Path("data/portfolio/master_cash.json")
-POCKETS_PATH = Path("data/portfolio/pockets.json")
-TRANSFERS_JSONL = Path("data/portfolio/transfer_instructions.jsonl")
-EVENTS_TRANSFERS_JSONL = Path("data/events/capital_transfers.jsonl")
+MASTER_CASH_PATH = Path("/opt/nsc/data/preprod/portfolio/capital_state.json")
+POCKETS_PATH = Path("/opt/nsc/data/preprod/portfolio/pockets.json")
+TRANSFERS_JSONL = Path("/opt/nsc/data/preprod/portfolio/transfer_instructions.jsonl")
+EVENTS_TRANSFERS_JSONL = Path("/opt/nsc/data/preprod/events/capital_transfers.jsonl")
 ORCH_SNAPSHOT_PATH = Path("data/orchestrator/orchestrator_snapshot.json")
 ORCH_AUDIT_JSONL = Path("data/orchestrator/orchestrator_audit.jsonl")
 
@@ -67,11 +67,11 @@ def get_enabled(gov: Dict[str, Any], scope: str) -> bool:
 
 
 def read_master_cash() -> Dict[str, Any]:
-    return load_json_file(str(MASTER_CASH_PATH), default={"cash_total": 0.0, "currency": "USD"}) or {}
+    return load_json_file(str(MASTER_CASH_PATH), default={"total_capital_eur": 0.0, "currency": "EUR"}) or {}
 
 
 def read_pockets() -> Dict[str, Any]:
-    default = {"currency": "USD", "pockets": {b: {"budget_usd": 0.0} for b in BRICKS}}
+    default = {"currency": "EUR", "pockets": {b: {"budget_eur": 0.0} for b in BRICKS}}
     return load_json_file(str(POCKETS_PATH), default=default) or default
 
 
@@ -90,16 +90,16 @@ def compute_budgets(
     budgets: Dict[str, float] = {}
     prev = pockets_prev.get("pockets", {}) if isinstance(pockets_prev.get("pockets"), dict) else {}
     for b in BRICKS:
-        budgets[b] = float(prev.get(b, {}).get("budget_usd", 0.0) or 0.0)
+        budgets[b] = float(prev.get(b, {}).get("budget_eur", prev.get(b, {}).get("budget_usd", 0.0)) or 0.0)
     return budgets
 
 
-def write_pockets(budgets: Dict[str, float], currency: str = "USD") -> None:
+def write_pockets(budgets: Dict[str, float], currency: str = "EUR") -> None:
     obj = {
         "ts": utc_now(),
         "engine": "pockets_v1",
         "currency": currency,
-        "pockets": {b: {"budget_usd": float(budgets.get(b, 0.0))} for b in BRICKS},
+        "pockets": {b: {"budget_eur": float(budgets.get(b, 0.0))} for b in BRICKS},
     }
     save_json_file(str(POCKETS_PATH), obj)
 
@@ -119,14 +119,14 @@ def run() -> Dict[str, Any]:
         "regime": regime.get("regime"),
         "regime_confidence": regime.get("confidence"),
         "master_cash": {
-            "currency": master_cash.get("currency", "USD"),
-            "cash_total": float(master_cash.get("cash_total", 0.0) or 0.0),
+            "currency": master_cash.get("currency", "EUR"),
+            "cash_total": float(master_cash.get("deployable_capital_eur", master_cash.get("total_capital_eur", master_cash.get("cash_total", 0.0))) or 0.0),
         },
         "scopes": {
             b: {
                 "enabled": get_enabled(gov, b),
                 "action_policy": get_policy(gov, b),
-                "budget_usd": float(budgets.get(b, 0.0)),
+                "budget_eur": float(budgets.get(b, 0.0)),
             }
             for b in BRICKS
         },
@@ -136,7 +136,7 @@ def run() -> Dict[str, Any]:
     }
 
     # Write outputs
-    write_pockets(budgets, currency=master_cash.get("currency", "USD"))
+    write_pockets(budgets, currency=master_cash.get("currency", "EUR"))
     save_json_file(str(ORCH_SNAPSHOT_PATH), snapshot)
     append_jsonl(ORCH_AUDIT_JSONL, {"ts": snapshot["ts"], "event": "orchestrator_run", "snapshot_path": str(ORCH_SNAPSHOT_PATH)})
 

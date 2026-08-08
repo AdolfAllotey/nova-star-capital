@@ -1,0 +1,1 @@
+# NSC Precious Metals module

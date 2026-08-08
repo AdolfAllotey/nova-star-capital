@@ -1,49 +1,76 @@
-# /opt/nsc/app/src/v2/api/routes/market.py
 from __future__ import annotations
+
 from fastapi import APIRouter, HTTPException
 from typing import Any, Dict, List
-import os, json, datetime as dt
+from pathlib import Path
+import json
+import datetime as dt
+
+from src.v2.utils.file_utils import get_data_dir
 
 router = APIRouter(prefix="/market", tags=["market"])
 
-def _data_root() -> str:
-    # respecte NSC_DATA_ROOT si présent, sinon chemin par défaut
-    return os.environ.get("NSC_DATA_ROOT", "/opt/nsc/app/data")
+DATA_ROOT = Path(get_data_dir())
+SPOT_PRICES_PATH = DATA_ROOT / "market" / "crypto_spot_prices.json"
 
-def _top_movers_path() -> str:
-    # tu peux adapter ce sous-dossier si tu préfères /reports/
-    return os.path.join(_data_root(), "market", "top_movers.json")
+
+def _iso_mtime(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    return dt.datetime.utcfromtimestamp(path.stat().st_mtime).replace(microsecond=0).isoformat() + "Z"
+
+
+def _symbol_from_key(k: str) -> str:
+    s = str(k).upper()
+    if s.endswith("USDT"):
+        s = s[:-4]
+    return s
+
 
 @router.get("/top-movers")
 def get_top_movers() -> Dict[str, Any]:
-    """
-    Renvoie les 'top movers' préparés par le batch (ou un autre service).
-    Structure attendue dans top_movers.json :
-    {
-      "updated_at": "2025-11-03T20:55:12Z",
-      "items": [
-        {"symbol":"BTC","price":...,"change_24h":...,"volume_24h":...},
-        ...
-      ]
-    }
-    """
-    path = _top_movers_path()
-    if not os.path.exists(path):
-        # on retourne un 200 vide + message (plus pratique côté UI)
-        return {"updated_at": None, "items": [], "message": f"Fichier introuvable: {path}"}
+    path = SPOT_PRICES_PATH
+
+    if not path.exists():
+        return {
+            "updated_at": None,
+            "items": [],
+            "message": f"Fichier introuvable: {path}",
+        }
 
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with path.open("r", encoding="utf-8") as f:
             payload = json.load(f)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Lecture KO: {e}")
 
-    # garde-fous minimum
-    items: List[Dict[str, Any]] = payload.get("items", [])
-    updated_at = payload.get("updated_at")
-    if updated_at is None:
-        # si absent, on l’infère du mtime du fichier
-        ts = dt.datetime.utcfromtimestamp(os.path.getmtime(path)).replace(microsecond=0).isoformat() + "Z"
-        updated_at = ts
+    if not isinstance(payload, dict):
+        return {
+            "updated_at": _iso_mtime(path),
+            "items": [],
+            "message": f"Format invalide dans {path}",
+        }
 
-    return {"updated_at": updated_at, "items": items}
+    items: List[Dict[str, Any]] = []
+    for key, value in payload.items():
+        try:
+            price = float(value)
+        except Exception:
+            continue
+
+        symbol = _symbol_from_key(key)
+        items.append({
+            "symbol": symbol,
+            "name": symbol,
+            "price": price,
+            "change_24h": None,
+            "source": "crypto_spot_prices.json",
+        })
+
+    items.sort(key=lambda x: x["symbol"])
+
+    return {
+        "updated_at": _iso_mtime(path),
+        "items": items,
+        "message": None if items else "Aucune donnée exploitable.",
+    }

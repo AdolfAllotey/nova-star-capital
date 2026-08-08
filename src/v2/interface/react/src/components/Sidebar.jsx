@@ -1,8 +1,9 @@
+import { getUiLabel } from "../lib/uiVersion";
 // src/components/Sidebar.jsx
 // Sidebar officielle (source de vérité navigation) — NSC V2+ multi-briques
 
 import React from "react";
-import { NavLink, useLocation } from "react-router-dom";
+import { NavLink } from "react-router-dom";
 import {
   LayoutDashboard,
   TrendingUp,
@@ -10,7 +11,6 @@ import {
   Activity,
   Briefcase,
   LineChart,
-  FolderGit2,
   ServerCog,
   Settings,
   ShieldAlert,
@@ -73,12 +73,8 @@ function NavItem({ to, label, icon: Icon, coming = false, disabled = false }) {
 }
 
 export default function Sidebar() {
-  const location = useLocation();
-  const isCrypto = location.pathname.startsWith("/bricks/crypto");
-
   return (
     <aside className="w-72 border-r border-zinc-800 bg-zinc-950/95 flex flex-col backdrop-blur">
-      {/* Header */}
       <div className="px-4 pt-4 pb-3 border-b border-zinc-800 flex items-center gap-3">
         <div className="h-9 w-9 rounded-xl bg-emerald-500/10 border border-emerald-500/60 flex items-center justify-center">
           <span className="text-emerald-400 text-xs font-bold">NSC</span>
@@ -87,94 +83,34 @@ export default function Sidebar() {
           <span className="text-sm font-semibold text-zinc-100">
             Nova Star Capital
           </span>
-          <span className="text-[11px] text-zinc-500">Trading Desk · V2 préprod</span>
+          <span className="text-[11px] text-zinc-500">Preproduction · {getUiLabel()}</span>
         </div>
       </div>
 
-      {/* Nav */}
       <nav className="flex-1 overflow-y-auto py-4 space-y-1">
-        {/* 1) GLOBAL */}
         <SectionTitle>Global</SectionTitle>
         <div className="space-y-1">
           <NavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} />
+          <NavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} />
+          <NavItem to="/control-room" label="Control Room" icon={LayoutDashboard} />
+          <NavItem to="/executive" label="Executive" icon={LayoutDashboard} />
+          <NavItem to="/order-board" label="Order Board" icon={LayoutDashboard} />
+          <NavItem to="/positions-board" label="Positions Board" icon={LayoutDashboard} />
+          <NavItem to="/fills-board" label="Fills Board" icon={LayoutDashboard} />
+          <NavItem to="/execution-trace" label="Execution Trace" icon={LayoutDashboard} />
           <NavItem to="/market/top-movers" label="Top Movers" icon={TrendingUp} />
           <NavItem to="/reporting/pnl" label="PnL" icon={LineChart} />
           <NavItem to="/reporting/alpha-beta" label="α / β" icon={LineChart} />
-          <NavItem
-            to="/reporting/profitability"
-            label="Profitability"
-            icon={BarChart2}
-          />
+          <NavItem to="/reporting/profitability" label="Profitability" icon={BarChart2} />
           <NavItem to="/portfolio" label="Portfolio" icon={Layers} />
           <NavItem to="/risk" label="Risk" icon={ShieldAlert} />
-          <NavItem
-            to="/reporting/worst-trades"
-            label="Worst Trades"
-            icon={Activity}
-          />
-          <NavItem
-            to="/reporting/open-positions"
-            label="Open Positions"
-            icon={Briefcase}
-          />
+          <NavItem to="/reporting/worst-trades" label="Worst Trades" icon={Activity} />
+          <NavItem to="/reporting/open-positions" label="Open Positions" icon={Briefcase} />
         </div>
 
-        {/* 2) BRIQUES */}
         <SectionTitle>Briques</SectionTitle>
         <div className="space-y-1">
-          {/* Crypto */}
-          <NavItem to="/bricks/crypto/ico" label="Crypto" icon={Rocket} />
-
-          {/* Sous-menu ICO visible uniquement quand on est dans /bricks/crypto/* */}
-          {isCrypto && (
-            <div className="ml-6 mt-2 border-l border-zinc-800 pl-3 space-y-1">
-              <div className="text-[11px] font-semibold uppercase tracking-widest text-zinc-600 mb-1">
-                Crypto · ICO
-              </div>
-
-              <NavItem
-                to="/bricks/crypto/ico"
-                label="ICO – Dashboard"
-                icon={FolderGit2}
-                coming={!FEATURES.CRYPTO_ICO}
-              />
-              <NavItem
-                to="/bricks/crypto/ico/candidates"
-                label="ICO – Candidates"
-                icon={FolderGit2}
-                coming={!FEATURES.CRYPTO_ICO}
-              />
-              <NavItem
-                to="/bricks/crypto/ico/screened"
-                label="ICO – Screened"
-                icon={FolderGit2}
-                coming={!FEATURES.CRYPTO_ICO}
-              />
-              <NavItem
-                to="/bricks/crypto/ico/scored"
-                label="ICO – Scored"
-                icon={FolderGit2}
-                coming={!FEATURES.CRYPTO_ICO}
-              />
-              <NavItem
-                to="/bricks/crypto/ico/allocation"
-                label="ICO – Allocation"
-                icon={FolderGit2}
-                coming={!FEATURES.CRYPTO_ICO}
-              />
-              <div className="mt-3 text-[11px] font-semibold uppercase tracking-widest text-zinc-600">
-                Crypto · Whales
-              </div>
-              <NavItem
-                to="/bricks/crypto/whales"
-                label="Whales"
-                icon={FolderGit2}
-              />
-
-            </div>
-          )}
-
-          {/* Autres briques */}
+          <NavItem to="/bricks/crypto" label="Crypto" icon={Rocket} />
           <NavItem
             to="/bricks/offensive"
             label="Actions Offensives"
@@ -187,21 +123,16 @@ export default function Sidebar() {
             icon={Rocket}
             coming={!FEATURES.BRICK_DEFENSIVE}
           />
-          <NavItem
-            to="/bricks/lt"
-            label="Long Terme"
-            icon={Rocket}
-            coming={!FEATURES.BRICK_LT}
-          />
+          <NavItem to="/bricks/bonds" label="Bonds" icon={Rocket} />
+          <NavItem to="/bricks/precious-metals" label="Precious Metals" icon={Rocket} />
+          <NavItem to="/bricks/lt" label="Long Terme" icon={Rocket} />
           <NavItem
             to="/bricks/options"
             label="Options US"
             icon={Rocket}
-            coming={!FEATURES.BRICK_OPTIONS}
           />
         </div>
 
-        {/* 3) SYSTEME */}
         <SectionTitle>Système</SectionTitle>
         <div className="space-y-1">
           <NavItem to="/system/go-no-go" label="Go / No-Go" icon={ClipboardCheck} />
@@ -210,7 +141,6 @@ export default function Sidebar() {
         </div>
       </nav>
 
-      {/* Footer */}
       <div className="px-4 py-3 border-t border-zinc-800 text-[11px] text-zinc-500 flex items-center justify-between">
         <span>© {new Date().getFullYear()} Nova Star Capital</span>
         <span className="inline-flex items-center gap-1">

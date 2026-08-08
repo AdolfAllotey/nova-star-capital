@@ -10,6 +10,17 @@ from __future__ import annotations
 
 import os
 import time
+
+# NSC_FIX_DATADIR_V1
+def _resolve_data_dir_cli(args):
+    """Return DATA_DIR. CLI --data-dir has priority over env/fallback."""
+    from pathlib import Path
+    import os
+    if getattr(args, "data_dir", None):
+        return Path(args.data_dir).expanduser().resolve()
+    # fallback: NSC_DATA_DIR env or ./data
+    return Path(os.getenv("NSC_DATA_DIR", "data")).expanduser().resolve()
+
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 

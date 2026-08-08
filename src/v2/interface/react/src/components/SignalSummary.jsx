@@ -1,3 +1,12 @@
+
+const normalizeRegime = (r) => {
+  if (!r) return "UNKNOWN";
+  const v = r.toLowerCase();
+  if (v === "risk_on") return "BULL";
+  if (v === "risk_off") return "BEAR";
+  if (v === "neutral") return "NEUTRAL";
+  return "UNKNOWN";
+};
 // src/components/SignalSummary.jsx
 import React, { useEffect, useState } from "react";
 import { getJSON } from "../lib/api";
@@ -36,15 +45,15 @@ export default function SignalSummary(){
 
   const worstCount = (data.worst.items||data.worst.trades||[]).length;
   const movers10   = (data.top.items||[]).slice(0,10);
-  const regimeText = (data.regime.mode||"neutral").toUpperCase();
-  const regimeScore= Number(data.regime.score||0).toFixed(2);
+  const regimeText = (normalizeRegime(data.regime).mode||"neutral").toUpperCase();
+  const regimeScore= Number(normalizeRegime(data.regime).score||0).toFixed(2);
 
   return (
     <div style={{display:"flex", gap:16, flexWrap:"wrap"}}>
       <_Box title="Market regime">
         <div>Mode: <b>{regimeText}</b></div>
         <div>Score: {regimeScore}</div>
-        <div style={{fontSize:12, color:"#9aa0a6"}}>{data.regime.updated_at||""}</div>
+        <div style={{fontSize:12, color:"#9aa0a6"}}>{normalizeRegime(data.regime).updated_at||""}</div>
       </_Box>
 
       <_Box title="Sentiment (global)">

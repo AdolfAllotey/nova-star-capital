@@ -178,6 +178,7 @@ def _size_signals(
     risk_on_off = risk_limits.get("risk_on_off", "on")
     mode = risk_limits.get("mode", "normal")
     size_factor = float(risk_limits.get("size_factor", 1.0))
+    strategy_intensity = risk_limits.get("strategy_intensity_factors", {}) or {}
     max_positions = int(risk_limits.get("max_positions", 50))
     # NSC_PATCH: load capital_per_trade from capital_allocation.json
     capital_per_trade = None
@@ -244,7 +245,33 @@ def _size_signals(
         strat_weight = float(strategy_weights.get(strategy, 1.0))
 
         # Multiplicateur brut
-        raw_mult = base_weight * size_factor * strat_weight
+        strategy = str(sig.get("strategy", "unknown")).lower()
+        strategy_factor = float(strategy_intensity.get(strategy, 1.0) or 1.0)
+
+        # NSC PREPROD QUALITY FILTER:
+        # Weak crypto momentum signals must not create new exposure.
+        try:
+            meta_score = float(sig.get("meta_score", sig.get("momentum_score", 0.0)) or 0.0)
+        except Exception:
+            meta_score = 0.0
+
+        momentum_regime = str(sig.get("momentum_regime", "") or "").lower()
+
+        quality_block = False
+        quality_reasons = []
+
+        if meta_score < 35.0:
+            quality_block = True
+            quality_reasons.append(f"quality_block: meta_score={meta_score:.2f}<35")
+
+        if momentum_regime == "weak":
+            quality_block = True
+            quality_reasons.append("quality_block: momentum_regime=weak")
+
+        raw_mult = base_weight * size_factor * strat_weight * strategy_factor
+
+        if quality_block:
+            raw_mult = 0.0
 
         # Bornes [0, 1]
         final_mult = max(0.0, min(1.0, raw_mult))
@@ -263,6 +290,8 @@ def _size_signals(
         else:
             notes.append("Strategy weights indisponibles → fallback 1.0.")
 
+        if "quality_reasons" in locals() and quality_reasons:
+            notes.extend(quality_reasons)
         notes.append(f"final_size_multiplier={final_mult:.3f}")
 
         sig_out["final_size_multiplier"] = final_mult

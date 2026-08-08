@@ -3,6 +3,11 @@ import json
 from dotenv import load_dotenv
 import openai
 
+from src.v2.intelligence.llm_json_parser import (
+    parse_llm_json_object,
+    require_string,
+    require_string_list,
+)
 from src.v2.utils.logger import get_logger
 
 load_dotenv()
@@ -57,8 +62,19 @@ def generate_summary(trades: list) -> dict:
             temperature=0.5
         )
         content = response.choices[0].message["content"]
-        result = eval(content)  # sécuriser à terme
-        return result
+        payload = parse_llm_json_object(content)
+
+        return {
+            "points": require_string_list(
+                payload,
+                "points",
+                max_items=3,
+            ),
+            "conclusion": require_string(
+                payload,
+                "conclusion",
+            ),
+        }
     except Exception as e:
         logger.exception("Erreur génération du résumé LLM")
         return {

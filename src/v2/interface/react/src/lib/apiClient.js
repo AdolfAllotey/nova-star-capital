@@ -1,58 +1,90 @@
-// src/lib/apiClient.js
-// Client API minimal (fetchJson + buildUrl), robuste côté PREPROD.
+// Canonical JSON client for NSC React.
 
-const API_BASE =
-  (typeof window !== "undefined" && window.__NSC_API_BASE__) ||
-  import.meta.env.VITE_API_BASE_URL ||     // legacy
-  import.meta.env.VITE_API_BASE ||         // standard (celui que tu as mis dans .env.local)
-  "https://api.preprod.novastarcapital.fr";
+import {
+  API_BASE,
+  buildApiUrl,
+} from "./apiBase";
 
-function buildUrl(path) {
-  const base = String(API_BASE || "").replace(/\/+$/, "");
-  const p = String(path || "");
-  return `${base}${p.startsWith("/") ? p : `/${p}`}`;
-}
-
-// Compat: certains écrans importent apiUrl
-export function apiUrl(path) { return buildUrl(path); }
-
-async function _readJsonSafe(res) {
+async function readJsonSafe(response) {
   try {
-    return await res.json();
+    return await response.json();
   } catch {
     return null;
   }
 }
 
-export async function fetchJson(path, opts = {}) {
-  const { timeoutMs = 12000, ...rest } = opts || {};
-  const url = buildUrl(path);
+export async function fetchJson(path, options = {}) {
+  const {
+    timeoutMs = 12000,
+    ...fetchOptions
+  } = options || {};
 
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(),
+    timeoutMs
+  );
 
   try {
-    const res = await fetch(url, {
-      ...rest,
-      signal: ctrl.signal,
-      headers: {
-        Accept: "application/json",
-        ...(rest.headers || {}),
-      },
-      cache: "no-store",
-    });
+    const response = await fetch(
+      buildApiUrl(path),
+      {
+        ...fetchOptions,
+        signal: controller.signal,
+        cache: fetchOptions.cache || "no-store",
+        headers: {
+          Accept: "application/json",
+          ...(fetchOptions.headers || {}),
+        },
+      }
+    );
 
-    const data = await _readJsonSafe(res);
+    const data = await readJsonSafe(response);
 
-    if (!res.ok) {
-      return { ok: false, status: res.status, error: data || { detail: res.statusText } };
+    if (!response.ok) {
+      return {
+        ok: false,
+        status: response.status,
+        error:
+          data ||
+          {
+            detail:
+              response.statusText ||
+              "HTTP request failed",
+          },
+      };
     }
-    return { ok: true, status: res.status, data };
-  } catch (e) {
-    return { ok: false, status: 0, error: { message: String(e?.message || e || "fetch error") } };
+
+    return {
+      ok: true,
+      status: response.status,
+      data,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      error: {
+        message: String(
+          error?.message ||
+            error ||
+            "fetch error"
+        ),
+      },
+    };
   } finally {
-    clearTimeout(t);
+    clearTimeout(timer);
   }
 }
 
-export { buildUrl, API_BASE };
+export function buildUrl(path) {
+  return buildApiUrl(path);
+}
+
+export function apiUrl(path) {
+  return buildApiUrl(path);
+}
+
+export {
+  API_BASE,
+};

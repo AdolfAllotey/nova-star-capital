@@ -15,7 +15,7 @@ def load_json(path: Path, default: Any = None) -> Any:
         with path.open("r", encoding="utf-8") as f:
             return json.load(f)
 
-def get_last_price(symbol: str, prices_path: str = "data/market/prices.json") -> Optional[float]:
+def get_last_price(symbol: str, prices_path: str = "/opt/nsc/data/preprod/equities_offensive/market/prices.json") -> Optional[float]:
     doc = load_json(Path(prices_path), default={}) or {}
     prices = (doc.get("prices") or {})
     px = prices.get(symbol)

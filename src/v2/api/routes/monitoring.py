@@ -10,13 +10,11 @@ router = APIRouter(prefix="/monitoring", tags=["monitoring"])
 
 
 def _data_root() -> Path:
-    dr = os.getenv("DATA_ROOT")
-    if dr:
-        return Path(dr)
-    p = Path("/opt/nsc/app/data")
-    if p.exists():
-        return p
-    return Path.cwd() / "data"
+    for key in ("NSC_DATA_DIR", "NSC_DATA_ROOT", "DATA_DIR", "DATA_ROOT"):
+        value = os.getenv(key)
+        if value:
+            return Path(value).expanduser().resolve()
+    return Path("/opt/nsc/data/preprod").resolve()
 
 
 @router.get("/backpressure")

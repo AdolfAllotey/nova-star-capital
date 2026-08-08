@@ -12,9 +12,9 @@ except Exception:
     utc_now_iso = None
 
 
-FILLS_PATH = Path("data/equities_offensive/execution/simulated_fills.jsonl")
-POSITIONS_PATH = Path("data/equities_offensive/state/positions.json")
-OUT_REPORT = Path("data/equities_offensive/state/reconciliation_report.json")
+FILLS_PATH = Path("/opt/nsc/data/preprod/equities_offensive/execution/simulated_fills.jsonl")
+POSITIONS_PATH = Path("/opt/nsc/data/preprod/equities_offensive/state/positions.json")
+OUT_REPORT = Path("/opt/nsc/data/preprod/equities_offensive/state/reconciliation_report.json")
 
 
 def _utc_now_iso_fallback() -> str:
@@ -130,6 +130,18 @@ def reconcile(expected_qty: Dict[str, float], positions: Dict[str, Dict[str, Any
             got_qty_f = float(got_qty)
         except Exception:
             anomalies.append(f"bad_position_qty for {sym}: {got_qty}")
+            continue
+
+        # PREPROD rule:
+        # if fills net to a negative qty (exit/reduction) and final position is 0,
+        # accept it as reconciled because the file may not include historical BUY fills.
+        if exp_qty < 0 and abs(got_qty_f) < 1e-9:
+            continue
+
+        # Corporate action tolerance:
+        # If a simulated position has been adjusted for a split, historical fills may remain pre-split.
+        corp_action = str((got or {}).get("corporate_action_adjusted", "") or "")
+        if corp_action and "SPLIT" in corp_action.upper():
             continue
 
         if abs(got_qty_f - exp_qty) > 1e-6:

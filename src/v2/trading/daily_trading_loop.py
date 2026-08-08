@@ -169,6 +169,10 @@ def _build_steps() -> List[Dict[str, Any]]:
         {"name": "backpressure_engine_pro", "module": "src.v2.monitoring.backpressure_engine_pro", "func": "main"},
         {"name": "cost_tracker", "module": "src.v2.monitoring.cost_tracker", "func": "main"},
         {"name": "profitability_tracker", "module": "src.v2.monitoring.profitability_tracker", "func": "main"},
+
+        # Final canonical telemetry snapshot.
+        # Must run after portfolio, governance, risk and execution outputs.
+        {"name": "system_metrics_pro", "module": "src.v2.monitoring.system_metrics_pro", "func": "main"},
     ]
 
     # index auto

@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://novastarcapital.local/schemas/recommendation.schema.json",
+  "title": "Nova Star Capital Audit Recommendation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "recommendation_id",
+    "audit_id",
+    "finding_id",
+    "category",
+    "severity",
+    "title",
+    "description",
+    "proposed_action",
+    "human_validation_required",
+    "automatic_code_change_allowed",
+    "status"
+  ],
+  "properties": {
+    "recommendation_id": {
+      "type": "string"
+    },
+    "audit_id": {
+      "type": "string"
+    },
+    "finding_id": {
+      "type": "string"
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "BLOCKER",
+        "RC2_TECHNICAL_DEBT",
+        "OPTIMIZATION",
+        "OBSERVATION"
+      ]
+    },
+    "severity": {
+      "type": "string",
+      "enum": [
+        "CRITICAL",
+        "HIGH",
+        "MEDIUM",
+        "LOW",
+        "INFO"
+      ]
+    },
+    "title": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "proposed_action": {
+      "type": "string"
+    },
+    "human_validation_required": {
+      "type": "boolean",
+      "const": true
+    },
+    "automatic_code_change_allowed": {
+      "type": "boolean",
+      "const": false
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "PROPOSED",
+        "ACCEPTED",
+        "REJECTED",
+        "DEFERRED",
+        "IMPLEMENTED",
+        "VERIFIED"
+      ]
+    },
+    "metadata": {
+      "type": "object"
+    }
+  }
+}

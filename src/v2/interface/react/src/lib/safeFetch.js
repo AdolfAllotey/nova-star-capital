@@ -1,20 +1,45 @@
-export async function safeFetch(path, opts = {}) {
-  const base =
-    (import.meta && import.meta.env && import.meta.env.VITE_API_BASE_URL) ||
-    "https://api.preprod.novastarcapital.fr";
-  const url = `${base}${path.startsWith("/") ? "" : "/"}${path}`;
+import {
+  buildApiUrl,
+} from "./apiBase";
 
-  const res = await fetch(url, {
-    headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
-    ...opts,
-  });
+export async function safeFetch(path, options = {}) {
+  const response = await fetch(
+    buildApiUrl(path),
+    {
+      ...options,
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        ...(options.headers || {}),
+      },
+    }
+  );
 
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(`HTTP ${res.status} on ${path}${txt ? ` — ${txt.slice(0, 200)}` : ""}`);
+  if (!response.ok) {
+    const text = await response
+      .text()
+      .catch(() => "");
+
+    throw new Error(
+      `HTTP ${response.status} on ${path}` +
+        (
+          text
+            ? ` — ${text.slice(0, 200)}`
+            : ""
+        )
+    );
   }
 
-  const ct = res.headers.get("content-type") || "";
-  if (ct.includes("application/json")) return res.json();
-  return res.text();
+  const contentType =
+    response.headers.get("content-type") || "";
+
+  if (
+    contentType.includes(
+      "application/json"
+    )
+  ) {
+    return response.json();
+  }
+
+  return response.text();
 }

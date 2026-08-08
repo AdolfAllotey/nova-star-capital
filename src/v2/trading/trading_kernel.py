@@ -254,6 +254,195 @@ def _apply_orchestrator_risk_limits() -> None:
         cfg.get("mode"), cfg.get("risk_mode"), cfg.get("size_factor")
     )
 
+def _apply_effective_nsc_intensity_limits() -> None:
+    """
+    Réduit les risk_limits selon l'intensité NSC effective.
+    Idempotent: repart toujours des limites de base stockées, pour éviter une réduction cumulative à chaque restart.
+    Safe mode: ne peut jamais augmenter le risque au-dessus de la base.
+    """
+    intensity_path = DATA_DIR / "analysis" / "effective_nsc_intensity.json"
+    st = _load_json(intensity_path, default={})
+    if not isinstance(st, dict) or not st:
+        logger.info("[trading_kernel] effective_nsc_intensity absent -> skip")
+        return
+
+    cfg = _load_json(RISK_LIMITS_FILE, default={})
+    if not isinstance(cfg, dict):
+        cfg = {}
+
+    # Baselines persistantes : créées une seule fois.
+    base_size = cfg.get("base_size_factor", cfg.get("size_factor", 1.0))
+    base_max_positions = cfg.get("base_max_positions", cfg.get("max_positions", cfg.get("max_concurrent_positions")))
+
+    try:
+        base_size = float(base_size or 1.0)
+    except Exception:
+        base_size = 1.0
+
+    try:
+        base_max_positions = int(base_max_positions) if base_max_positions is not None else None
+    except Exception:
+        base_max_positions = None
+
+    cfg["base_size_factor"] = base_size
+    if base_max_positions is not None:
+        cfg["base_max_positions"] = base_max_positions
+
+    try:
+        recommended_size = float(st.get("recommended_size_factor"))
+    except Exception:
+        recommended_size = None
+
+    try:
+        recommended_max_pos_factor = float(st.get("recommended_max_positions_factor"))
+    except Exception:
+        recommended_max_pos_factor = None
+
+    if recommended_size is not None:
+        cfg["size_factor"] = min(base_size, recommended_size)
+
+    if base_max_positions is not None and recommended_max_pos_factor is not None:
+        reduced = max(1, int(base_max_positions * recommended_max_pos_factor))
+        if "max_positions" in cfg:
+            cfg["max_positions"] = min(base_max_positions, reduced)
+        if "max_concurrent_positions" in cfg:
+            cfg["max_concurrent_positions"] = min(base_max_positions, reduced)
+
+    # Trailing dynamique safe : mode moderate/protective => stop un peu plus serré.
+    mode = str(st.get("mode", "")).lower()
+    base_trailing = cfg.get("base_trailing_atr_mult", cfg.get("trailing_atr_mult", 2.0))
+    try:
+        base_trailing = float(base_trailing or 2.0)
+    except Exception:
+        base_trailing = 2.0
+
+    cfg["base_trailing_atr_mult"] = base_trailing
+
+    if mode == "aggressive":
+        trailing_mult = base_trailing
+    elif mode == "moderate":
+        trailing_mult = min(base_trailing, 1.75)
+    elif mode == "defensive":
+        trailing_mult = min(base_trailing, 1.50)
+    else:
+        trailing_mult = min(base_trailing, 1.35)
+
+    cfg["trailing_atr_mult"] = trailing_mult
+
+    # Stratégies V2 : facteurs dynamiques par stratégie selon Market Regime Pro.
+    # Safe mode: ces facteurs restent bornés par size_factor, donc ne peuvent pas augmenter le risque global.
+    regime_path = DATA_DIR / "analysis" / "market_regime_detector.json"
+    regime_data = _load_json(regime_path, default={})
+    components = regime_data.get("components", {}) if isinstance(regime_data, dict) else {}
+
+    def _f(x, default=0.0):
+        try:
+            return float(x)
+        except Exception:
+            return default
+
+    trend = _f(components.get("trend"), 0.0)
+    volatility = _f(components.get("volatility"), 0.0)
+    breadth = _f(components.get("breadth"), 0.0)
+    macro = _f(components.get("macro"), 0.0)
+
+    global_size = float(cfg.get("size_factor", 1.0) or 1.0)
+
+    momentum_factor = global_size
+    breakout_factor = global_size
+    whale_factor = global_size
+    sniper_factor = global_size
+
+    # Momentum : favorisé par trend fort + vol saine, pénalisé par macro négative.
+    if trend >= 0.8 and volatility >= 0.3:
+        momentum_factor = min(global_size, 0.85)
+    if macro < 0:
+        momentum_factor = min(momentum_factor, 0.70)
+    if breadth < 0:
+        momentum_factor = min(momentum_factor, 0.60)
+
+    # Breakout : très dépendant de la breadth. Breadth neutre/faible => prudence.
+    if breadth >= 0.5 and trend >= 0.5:
+        breakout_factor = min(global_size, 0.80)
+    elif breadth <= 0:
+        breakout_factor = min(global_size, 0.45)
+    if macro < -0.2:
+        breakout_factor = min(breakout_factor, 0.35)
+
+    # Whale : moins sensible à la macro, mais jamais au-dessus de global_size.
+    if trend >= 0.5:
+        whale_factor = min(global_size, 0.80)
+    if macro < -0.3:
+        whale_factor = min(whale_factor, 0.65)
+
+    # Sniper : très sélectif, mais peut rester actif en marché imparfait.
+    sniper_factor = min(global_size, 0.75)
+    if volatility < 0:
+        sniper_factor = min(sniper_factor, 0.55)
+    if macro < -0.3:
+        sniper_factor = min(sniper_factor, 0.60)
+
+    cfg["strategy_intensity_factors"] = {
+        "momentum": round(momentum_factor, 4),
+        "breakout": round(breakout_factor, 4),
+        "whale": round(whale_factor, 4),
+        "sniper": round(sniper_factor, 4),
+    }
+
+    strategy_vetos = {}
+    strategy_boosts = {}
+    strategy_rules = []
+
+    # V3 rules: vetos/boosts explicables, toujours bornés par le risk cap global.
+    if breadth <= -0.25:
+        strategy_vetos["breakout"] = "blocked: weak market breadth"
+        strategy_rules.append("breakout veto because breadth <= -0.25")
+    elif breadth <= 0.0:
+        strategy_boosts["breakout"] = "reduced: neutral/fragile breadth"
+        strategy_rules.append("breakout reduced because breadth <= 0.0")
+
+    if trend >= 0.8 and volatility >= 0.3 and macro >= -0.2:
+        strategy_boosts["momentum"] = "allowed: strong trend with acceptable volatility/macro"
+        strategy_rules.append("momentum allowed because trend >= 0.8 and volatility >= 0.3")
+
+    if macro < -0.3:
+        strategy_vetos["breakout"] = "blocked: macro pressure"
+        strategy_boosts["momentum"] = "reduced: macro pressure"
+        strategy_rules.append("macro pressure reduces directional risk")
+
+    if volatility < 0:
+        strategy_vetos["sniper"] = "blocked: toxic volatility"
+        strategy_rules.append("sniper veto because volatility < 0")
+
+    cfg["strategy_vetos"] = strategy_vetos
+    cfg["strategy_boosts"] = strategy_boosts
+
+    cfg["strategy_intensity_context"] = {
+        "engine": "strategy_intensity_v3",
+        "trend": trend,
+        "volatility": volatility,
+        "breadth": breadth,
+        "macro": macro,
+        "global_size_factor": global_size,
+        "logic": "V3 strategy factors + explicit veto/boost layer",
+        "rules": strategy_rules
+    }
+
+    cfg["effective_nsc_intensity"] = st.get("effective_intensity")
+    cfg["effective_nsc_mode"] = st.get("mode")
+    cfg["effective_nsc_engine"] = st.get("engine")
+    cfg["effective_nsc_updated_at"] = st.get("ts")
+
+    _save_json(RISK_LIMITS_FILE, cfg)
+    logger.info(
+        "[trading_kernel] effective_nsc_intensity applied idempotent: mode=%s intensity=%s size_factor=%s max_positions=%s trailing_atr_mult=%s",
+        cfg.get("effective_nsc_mode"),
+        cfg.get("effective_nsc_intensity"),
+        cfg.get("size_factor"),
+        cfg.get("max_positions"),
+        cfg.get("trailing_atr_mult"),
+    )
+
 def is_kill_switch_enabled() -> bool:
     """Compat: retourne True si kill-switch activé (enabled)."""
     try:
@@ -528,6 +717,7 @@ def run_once(max_new_positions: Optional[int] = None) -> None:
 
     # Sync risk_limits depuis orchestrator (si dispo) avant guards/sizing
     _apply_orchestrator_risk_limits()
+    _apply_effective_nsc_intensity_limits()
 
     # Orchestrator gate (source de vérité runtime)
     ok, orch_available = _check_orchestrator_gate()
@@ -568,6 +758,7 @@ def run_once(max_new_positions: Optional[int] = None) -> None:
     from src.v2.analysis.momentum_scoring import main as momentum_main
     from src.v2.analysis.signal_voting import main as signal_voting_main
     from src.v2.analysis.capital_allocator import main as capital_allocator_main
+    from src.v2.analysis.governance_engine_pro import main as governance_engine_main
     from src.v2.trading.position_manager import main as position_manager_main
 
     logger.info("[trading_kernel] Démarrage de la boucle hedge fund light (run_once).")
@@ -614,7 +805,6 @@ def run_once(max_new_positions: Optional[int] = None) -> None:
     os.environ['NSC_DRY_RUN'] = '1' if _dry else '0'
 
 
-
     # Étape 1 : momentum
     logger.info("[trading_kernel] Étape 1/4 : momentum_scoring")
     try:
@@ -625,31 +815,14 @@ def run_once(max_new_positions: Optional[int] = None) -> None:
 
     # Étape 2 : signal voting
     logger.info("[trading_kernel] Étape 2/4 : signal_voting")
-    logger.info("[trading_kernel] Étape 2.1/4 : position_sizing")
-    try:
-        import subprocess, sys
-        subprocess.run([sys.executable, '-m', 'src.v2.analysis.position_sizing', '--data-dir', str(DATA_DIR)], check=True)
-    except Exception:
-        logger.exception("[trading_kernel] position_sizing failed")
-    logger.info("[trading_kernel] Étape 2.2/4 : execution_engine_pro")
-    try:
-        import subprocess, sys
-        subprocess.run([sys.executable, '-m', 'src.v2.analysis.execution_engine_pro', '--data-dir', str(DATA_DIR)], check=True)
-    except Exception:
-        logger.exception("[trading_kernel] execution_engine_pro failed")
-
     try:
         signal_voting_main()
     except Exception:
         logger.exception("[trading_kernel] Erreur lors de signal_voting.main()")
         return
 
-
-
-    # Étape 2.4/4 : risk_engine_pro (global + per-asset compat)
+    # Étape 2.33/4 : market_regime_detector
     try:
-        # NSC_PREPROD_ALIGNMENT_STEP2_V1
-        # Étape 2.33/4 : market_regime_detector (input direct de risk_engine_pro)
         logger.info("[trading_kernel] Étape 2.33/4 : market_regime_detector")
 
         if os.getenv("NSC_SKIP_MARKET_REGIME_DETECTOR", "0") == "1":
@@ -658,12 +831,13 @@ def run_once(max_new_positions: Optional[int] = None) -> None:
             import subprocess, sys
             from pathlib import Path
 
-            snapshot = Path(os.getenv("NSC_MARKET_SNAPSHOT", str(DATA_DIR / "analysis" / "market_snapshot.json")))
+            snapshot = Path(os.getenv("NSC_MARKET_SNAPSHOT", "/opt/nsc/data/preprod/market_snapshot.json"))
             out_path = Path(str(DATA_DIR / "analysis" / "market_regime_detector.json"))
 
+            # Force PREPROD canonical snapshot; avoids stale env/wrapper value like "."
+            snapshot = Path("/opt/nsc/data/preprod/market_snapshot.json")
             logger.info("[trading_kernel] market_regime_detector CLI: snapshot=%s out=%s", snapshot, out_path)
 
-            # Exécute le module en CLI (argparse attend --snapshot)
             subprocess.run(
                 [
                     sys.executable,
@@ -675,7 +849,15 @@ def run_once(max_new_positions: Optional[int] = None) -> None:
             )
 
     except Exception:
-        logger.exception("[trading_kernel] Erreur lors de l'étape market_regime_detector (CLI) / wrapper risk_engine_pro")
+        logger.exception("[trading_kernel] Erreur lors de l'étape market_regime_detector (CLI)")
+        return
+
+    logger.info("[trading_kernel] Étape 2.5/4 : risk_engine_pro")
+    try:
+        import subprocess, sys
+        subprocess.run([sys.executable, "-m", "src.v2.analysis.risk_engine_pro"], check=True)
+    except Exception:
+        logger.exception("[trading_kernel] Erreur lors de risk_engine_pro")
         return
 
     logger.info("[trading_kernel] Étape 3/4 : capital_allocator")
@@ -685,13 +867,54 @@ def run_once(max_new_positions: Optional[int] = None) -> None:
         logger.exception("[trading_kernel] Erreur lors de capital_allocator.main()")
         return
 
-    # Étape 4 : position manager
+    logger.info("[trading_kernel] Étape 3.5/4 : governance_engine_pro")
+    try:
+        governance_engine_main()
+    except Exception:
+        logger.exception("[trading_kernel] Erreur lors de governance_engine_pro.main()")
+        return
+
+    logger.info("[trading_kernel] Étape 3.55/4 : strategy performance + selector")
+    try:
+        import subprocess, sys
+        subprocess.run([sys.executable, "-m", "src.v2.analysis.strategy_performance_engine"], check=False)
+        subprocess.run([sys.executable, "-m", "src.v2.analysis.strategy_selector"], check=False)
+    except Exception:
+        logger.exception("[trading_kernel] strategy performance/selector failed")
+
+    logger.info("[trading_kernel] Étape 3.6/4 : position_sizing")
+    try:
+        import subprocess, sys
+        subprocess.run([sys.executable, "-m", "src.v2.trading.position_sizing_institutionnel"], check=True)
+    except Exception:
+        logger.exception("[trading_kernel] position_sizing failed")
+        return
+
+    logger.info("[trading_kernel] Étape 3.7/4 : execution_engine_pro")
+    try:
+        import subprocess, sys
+        subprocess.run([sys.executable, "-m", "src.v2.analysis.execution_engine_pro", "--data-dir", str(DATA_DIR)], check=True)
+    except Exception:
+        logger.exception("[trading_kernel] execution_engine_pro failed")
+        return
+
     logger.info("[trading_kernel] Étape 4/4 : position_manager")
     try:
         # max_new_positions pas encore utilisé, mais gardé pour évolutions futures
         position_manager_main()
     except Exception:
         logger.exception("[trading_kernel] Erreur lors de position_manager.main()")
+        return
+
+    logger.info("[trading_kernel] Étape 4.1/4 : crypto_pnl_state_builder")
+    try:
+        import subprocess, sys
+        subprocess.run(
+            [sys.executable, "-m", "src.v2.analysis.crypto_pnl_state_builder"],
+            check=True,
+        )
+    except Exception:
+        logger.exception("[trading_kernel] crypto_pnl_state_builder failed")
         return
 
 

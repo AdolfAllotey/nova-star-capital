@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -289,7 +291,9 @@ def _build_asset_narrative(
         risk_flags.append(f"liquidity_{liq_flag}")
 
     # Vue synthétique entrée/surveillance/à éviter
-    if meta_score >= 70 and sentiment_score >= 0.55 and "liquidity_high" not in risk_flags:
+    META_THRESHOLD = float(os.getenv("NSC_META_SCORE_THRESHOLD", 70))
+
+    if meta_score >= META_THRESHOLD and sentiment_score >= 0.55 and "liquidity_high" not in risk_flags:
         trade_bias = "enter_long"
     elif weak_flag == "avoid" or liq_flag in {"low", "critical"} or mm_flag:
         trade_bias = "avoid"

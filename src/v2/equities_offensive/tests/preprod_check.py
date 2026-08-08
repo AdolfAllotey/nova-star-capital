@@ -9,22 +9,24 @@ from typing import Any, Dict, List, Tuple
 
 # Minimal required artifacts for this brique
 REQ_FILES = [
-    Path("data/equities_offensive/execution/execution_plan.json"),
-    Path("data/equities_offensive/execution/simulated_fills.jsonl"),
-    Path("data/equities_offensive/state/positions.json"),
-    Path("data/equities_offensive/state/exposure_snapshot.json"),
-    Path("data/equities_offensive/state/limits_report.json"),
-    Path("data/equities_offensive/state/position_report.json"),
-    Path("data/equities_offensive/ui/ui_bundle.json"),
-    Path("data/equities_offensive/ui/audit_trail.jsonl"),
+    Path("/opt/nsc/data/preprod/equities_offensive/execution/execution_plan.json"),
+    Path("/opt/nsc/data/preprod/equities_offensive/execution/simulated_fills.jsonl"),
+    Path("/opt/nsc/data/preprod/equities_offensive/state/positions.json"),
+    Path("/opt/nsc/data/preprod/equities_offensive/state/exposure_snapshot.json"),
+    Path("/opt/nsc/data/preprod/equities_offensive/state/limits_report.json"),
+    Path("/opt/nsc/data/preprod/equities_offensive/state/position_report.json"),
+    Path("/opt/nsc/data/preprod/equities_offensive/ui/ui_bundle.json"),
+    Path("/opt/nsc/data/preprod/equities_offensive/ui/audit_trail.jsonl"),
 ]
 
 # Optional but recommended
 OPT_FILES = [
-    Path("data/market/market_regime.json"),
-    Path("data/ops/us_holidays.json"),
-    Path("data/governance/governance_engine_pro.json"),
+    Path("/opt/nsc/data/preprod/equities_offensive/market/market_regime.json"),  # preferred (fallback global allowed)
+    Path("/opt/nsc/data/preprod/equities_offensive/ops/us_holidays.json"),
+    Path("/opt/nsc/data/preprod/equities_offensive/governance/governance_engine_pro.json"),
 ]
+
+OUT_PATH = Path("/opt/nsc/data/preprod/equities_offensive/tests/preprod_checks_result.json")
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -62,7 +64,7 @@ def check_required_files() -> Tuple[bool, List[str]]:
 def check_execution_plan() -> Tuple[bool, List[str]]:
     ok = True
     reasons = []
-    plan = load_json(Path("data/equities_offensive/execution/execution_plan.json"), default={}) or {}
+    plan = load_json(Path("/opt/nsc/data/preprod/equities_offensive/execution/execution_plan.json"), default={}) or {}
     if not isinstance(plan, dict):
         return False, ["execution_plan.json not a dict"]
 
@@ -73,7 +75,7 @@ def check_execution_plan() -> Tuple[bool, List[str]]:
 
     # Safe default in preprod: SIMULATED_ONLY
     pol = (plan.get("action_policy") or "").upper()
-    if pol not in {"SIMULATED_ONLY", "EXIT_ONLY", "LIVE"}:
+    if pol not in {"SIMULATED_ONLY", "SIMULATED_EXECUTION", "EXIT_ONLY", "LIVE"}:
         ok = False
         reasons.append(f"unknown action_policy={pol}")
 
@@ -97,7 +99,7 @@ def check_execution_plan() -> Tuple[bool, List[str]]:
     return ok, reasons
 
 def check_limits() -> Tuple[bool, List[str]]:
-    lim = load_json(Path("data/equities_offensive/state/limits_report.json"), default={}) or {}
+    lim = load_json(Path("/opt/nsc/data/preprod/equities_offensive/state/limits_report.json"), default={}) or {}
     if not isinstance(lim, dict):
         return False, ["limits_report.json not a dict"]
     # Must contain ok + soft_vetos
@@ -108,7 +110,7 @@ def check_limits() -> Tuple[bool, List[str]]:
     return True, []
 
 def check_ui_bundle() -> Tuple[bool, List[str]]:
-    ui = load_json(Path("data/equities_offensive/ui/ui_bundle.json"), default={}) or {}
+    ui = load_json(Path("/opt/nsc/data/preprod/equities_offensive/ui/ui_bundle.json"), default={}) or {}
     if not isinstance(ui, dict):
         return False, ["ui_bundle.json not a dict"]
     for k in ["kpis", "exposure", "limits", "plan", "recent_fills"]:
@@ -122,13 +124,13 @@ def check_jsonl_files() -> Tuple[bool, List[str]]:
     ok = True
     reasons = []
 
-    exists, n = read_jsonl_nonempty(Path("data/equities_offensive/execution/simulated_fills.jsonl"))
+    exists, n = read_jsonl_nonempty(Path("/opt/nsc/data/preprod/equities_offensive/execution/simulated_fills.jsonl"))
     if not exists:
         ok = False
         reasons.append("missing simulated_fills.jsonl")
     # can be empty in weekend/simulated_only => OK, just record
 
-    exists2, n2 = read_jsonl_nonempty(Path("data/equities_offensive/ui/audit_trail.jsonl"))
+    exists2, n2 = read_jsonl_nonempty(Path("/opt/nsc/data/preprod/equities_offensive/ui/audit_trail.jsonl"))
     if not exists2:
         ok = False
         reasons.append("missing audit_trail.jsonl")
@@ -144,6 +146,35 @@ def optional_warnings() -> List[str]:
         if not p.exists():
             warns.append(f"optional missing: {p}")
     return warns
+
+
+def check_buy_orders_have_live_prices():
+    import json
+    from pathlib import Path
+
+    plan_p = Path("/opt/nsc/data/preprod/equities_offensive/execution/execution_plan.json")
+    prices_p = Path("/opt/nsc/data/preprod/equities_offensive/market/prices.json")
+
+    if not plan_p.exists() or not prices_p.exists():
+        return {"name": "buy_orders_live_prices", "ok": False, "reasons": ["missing plan or prices file"]}
+
+    plan = json.loads(plan_p.read_text())
+    prices_doc = json.loads(prices_p.read_text())
+    live_prices = prices_doc.get("prices") or {}
+
+    missing = []
+    for o in plan.get("orders") or []:
+        if str(o.get("side", "")).upper() == "BUY":
+            sym = str(o.get("symbol", "")).upper()
+            if sym not in live_prices:
+                missing.append(sym)
+
+    return {
+        "name": "buy_orders_live_prices",
+        "ok": len(missing) == 0,
+        "reasons": [f"missing_live_price: {s}" for s in missing],
+    }
+
 
 def main():
     report = {
@@ -167,7 +198,15 @@ def main():
     run("ui_bundle", check_ui_bundle)
     run("jsonl_files", check_jsonl_files)
 
+    live_price_check = check_buy_orders_have_live_prices()
+    report["checks"].append(live_price_check)
+    if not live_price_check.get("ok"):
+        report["ok"] = False
+
     report["warnings"] = optional_warnings()
+
+    OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    OUT_PATH.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     print(json.dumps(report, ensure_ascii=False, indent=2))
     sys.exit(0 if report["ok"] else 2)

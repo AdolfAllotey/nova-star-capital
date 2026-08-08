@@ -1,577 +1,646 @@
-// src/pages/GoNoGo.jsx
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
-import SectionCard from "../components/ui/SectionCard";
-import DataState from "../components/ui/DataState";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
+
 import { fetchJson } from "../lib/apiClient";
 
-const OVERRIDE_KEY = "nsc_gonogo_overrides_v1";
 
-function Pill({ tone = "muted", children, onClick, title }) {
-  const cls =
-    tone === "ok"
-      ? "border-emerald-800 text-emerald-300 bg-emerald-950/40"
-      : tone === "warn"
-      ? "border-amber-800 text-amber-300 bg-amber-950/40"
-      : tone === "bad"
-      ? "border-red-800 text-red-300 bg-red-950/40"
-      : "border-zinc-800 text-zinc-300 bg-zinc-950/40";
+const MANUAL_STORAGE_KEY =
+  "nsc_go_no_go_manual_controls_v2";
 
-  const base =
-    "inline-flex items-center rounded-xl border px-2 py-1 text-xs select-none";
 
-  if (onClick) {
+function formatDate(value) {
+  if (!value) return "—";
+
+  try {
+    return new Date(value).toLocaleString("fr-FR");
+  } catch {
+    return String(value);
+  }
+}
+
+
+function formatValue(value) {
+  if (value === null || value === undefined) {
+    return "—";
+  }
+
+  if (typeof value === "boolean") {
+    return value ? "Oui" : "Non";
+  }
+
+  if (typeof value === "object") {
+    return JSON.stringify(value);
+  }
+
+  return String(value);
+}
+
+
+function loadManualState() {
+  try {
+    const raw = localStorage.getItem(
+      MANUAL_STORAGE_KEY
+    );
+
+    if (!raw) return {};
+
+    const parsed = JSON.parse(raw);
+
     return (
-      <button
-        type="button"
-        onClick={onClick}
-        title={title}
-        className={`${base} ${cls} hover:brightness-110 transition`}
-      >
-        {children}
-      </button>
+      parsed &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed)
+    )
+      ? parsed
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+
+function saveManualState(value) {
+  try {
+    localStorage.setItem(
+      MANUAL_STORAGE_KEY,
+      JSON.stringify(value)
+    );
+  } catch {
+    // Browser storage is optional.
+  }
+}
+
+
+function statusClasses(status) {
+  const normalized = String(
+    status || ""
+  ).toUpperCase();
+
+  if (
+    ["PASS", "OK", "GO", "APPROVED"].includes(
+      normalized
+    )
+  ) {
+    return (
+      "border-emerald-400/30 " +
+      "bg-emerald-400/10 text-emerald-200"
+    );
+  }
+
+  if (
+    ["FAIL", "BLOCKED", "NO_GO"].includes(
+      normalized
+    )
+  ) {
+    return (
+      "border-red-400/30 " +
+      "bg-red-400/10 text-red-200"
+    );
+  }
+
+  if (normalized === "WARN") {
+    return (
+      "border-amber-400/30 " +
+      "bg-amber-400/10 text-amber-200"
     );
   }
 
   return (
-    <span title={title} className={`${base} ${cls}`}>
-      {children}
+    "border-slate-500/30 " +
+    "bg-slate-500/10 text-slate-300"
+  );
+}
+
+
+function StatusBadge({ status }) {
+  return (
+    <span
+      className={
+        "inline-flex rounded-full border " +
+        "px-2.5 py-1 text-xs font-semibold " +
+        statusClasses(status)
+      }
+    >
+      {status || "UNKNOWN"}
     </span>
   );
 }
 
-function statusTone(status) {
-  if (status === "OK") return "ok";
-  if (status === "WARN") return "warn";
-  if (status === "BLOCKED") return "bad";
-  return "muted"; // TODO / UNKNOWN
-}
 
-function computeProgress(statuses) {
-  const total = statuses.length || 0;
-  const ok = statuses.filter((x) => x === "OK").length;
-  const pct = total ? Math.round((ok / total) * 100) : 0;
-  return { total, ok, pct };
-}
-
-function ProgressBar({ pct }) {
-  const v = Math.max(0, Math.min(100, Number(pct) || 0));
+function Card({
+  title,
+  subtitle,
+  children,
+  className = "",
+}) {
   return (
-    <div className="h-2 w-full rounded-full bg-zinc-900/70 border border-zinc-800 overflow-hidden">
-      <div className="h-full bg-emerald-500/60" style={{ width: `${v}%` }} />
-    </div>
-  );
-}
+    <section
+      className={
+        "rounded-2xl border border-slate-800 " +
+        "bg-slate-950/60 p-5 " +
+        className
+      }
+    >
+      <div className="mb-4">
+        <h2 className="text-base font-semibold text-white">
+          {title}
+        </h2>
 
-
-function safeJsonParse(s, fallback) {
-  try {
-    return JSON.parse(s);
-  } catch {
-    return fallback;
-  }
-}
-
-function nowLabel(ts) {
-  if (!ts) return "—";
-  try {
-    return new Date(ts).toLocaleString("fr-FR");
-  } catch {
-    return String(ts);
-  }
-}
-
-function cycleStatus(s) {
-  // Cycle pratique pour override manuel
-  if (s === "TODO") return "OK";
-  if (s === "OK") return "WARN";
-  if (s === "WARN") return "BLOCKED";
-  return "TODO";
-}
-
-function PhaseCard({ phase, overrides, onToggleOverride }) {
-  const progress = computeProgress((phase?.checks || []).map(c => c?.status));
-  return (
-    <div className="rounded-2xl border border-zinc-800 bg-zinc-950/40 p-4 space-y-3">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-sm font-semibold text-zinc-50">{phase.title}</div>
-          <div className="text-xs text-zinc-500">{phase.subtitle}</div>
-          {/* Progress (phase) */}
-          <div className="mt-2 space-y-1">
-            <ProgressBar pct={computeProgress((phase?.checks || []).map(c => c?.status)).pct} />
-            <div className="text-[11px] text-zinc-500">
-              {computeProgress((phase?.checks || []).map(c => c?.status)).ok}/{computeProgress((phase?.checks || []).map(c => c?.status)).total} checks OK · {computeProgress((phase?.checks || []).map(c => c?.status)).pct}%
-            </div>
-          </div>
-        </div>
-        <Pill tone={statusTone(phase.status)} title="Statut phase">
-          {phase.status}
-        </Pill>
+        {subtitle ? (
+          <p className="mt-1 text-sm text-slate-400">
+            {subtitle}
+          </p>
+        ) : null}
       </div>
 
-      <div className="space-y-2">
-        {phase.checks.map((c, idx) => {
-          const key = `${phase.id}:${idx}`;
-          const ov = overrides?.[key];
-          const effectiveStatus = ov?.status || c.status;
-          const note = ov?.note || c.note || c.hint;
-
-          return (
-            <div key={idx} className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="text-sm text-zinc-200">{c.label}</div>
-                {note ? <div className="text-xs text-zinc-500">{note}</div> : null}
-              </div>
-
-              <div className="shrink-0 flex items-center gap-2">
-                {ov ? (
-                  <span className="text-[10px] text-zinc-500">override</span>
-                ) : null}
-
-                <Pill
-                  tone={statusTone(effectiveStatus)}
-                  title="Clique pour override (cycle TODO → OK → WARN → BLOCKED)"
-                  onClick={() => onToggleOverride(phase.id, idx, effectiveStatus)}
-                >
-                  {effectiveStatus}
-                </Pill>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {phase.links?.length ? (
-        <div className="pt-2 flex flex-wrap gap-2">
-          {phase.links.map((l) => (
-            <Link
-              key={l.to}
-              to={l.to}
-              className="text-xs text-zinc-300 hover:text-white underline underline-offset-4"
-            >
-              {l.label}
-            </Link>
-          ))}
-        </div>
-      ) : null}
-    </div>
+      {children}
+    </section>
   );
-}
-
-function deepString(x) {
-  try {
-    return JSON.stringify(x ?? {}).toLowerCase();
-  } catch {
-    return String(x ?? "").toLowerCase();
-  }
-}
-
-function applyStatusSignals(statusItem, setCheckIfNotOverridden) {
-  // statusItem = { path, ok, data, error, ... } (structure tolérante)
-  if (!statusItem?.ok) return;
-
-  const d = statusItem.data || {};
-  const raw = deepString(d);
-
-  // 1) DRY_RUN enforced (préflight check #0)
-  const env = String(d?.env || "").toUpperCase();
-  const dryFlag = d?.dry_run_enforced;
-
-  const looksDry =
-    dryFlag === true ||
-    env === "PREPROD" ||
-    raw.includes("dry_run") ||
-    raw.includes("dryrun") ||
-    raw.includes("simulated") ||
-    raw.includes("preprod");
-
-  setCheckIfNotOverridden("preflight", 0, looksDry
-    ? { status: "OK", note: "Auto: /status indique PREPROD / dry_run_enforced." }
-    : { status: "WARN", note: "Auto: /status ne confirme pas DRY_RUN — vérifier." }
-  );
-
-  // 2) Uptime (préprod check #0)
-  const up = Number(d?.uptime_s);
-  if (!Number.isNaN(up)) {
-    setCheckIfNotOverridden("preprod", 0, up >= 3600
-      ? { status: "OK", note: `Auto: uptime ${Math.round(up)}s (>= 1h).` }
-      : { status: "WARN", note: `Auto: uptime ${Math.round(up)}s (< 1h).` }
-    );
-  }
 }
 
 
 export default function GoNoGo() {
+  const [payload, setPayload] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState(null);
-  const [lastRefresh, setLastRefresh] = useState(null);
+  const [error, setError] = useState(null);
 
-  const [overrides, setOverrides] = useState(() => {
-    const raw = localStorage.getItem(OVERRIDE_KEY);
-    return raw ? safeJsonParse(raw, {}) : {};
-  });
+  const [manualState, setManualState] = useState(
+    loadManualState
+  );
 
-  const overridesRef = useRef(overrides);
-  useEffect(() => {
-    overridesRef.current = overrides;
-    localStorage.setItem(OVERRIDE_KEY, JSON.stringify(overrides));
-  }, [overrides]);
-
-  const [phases, setPhases] = useState(() => [
-    {
-      id: "preflight",
-      title: "Préflight (bloquant)",
-      subtitle: "Avant de lancer la préprod 30j",
-      status: "TODO",
-      checks: [
-        {
-          label: "DRY_RUN enforced (aucun ordre réel)",
-          status: "TODO",
-          hint: "Auto depuis /status (dry_run / preprod / simulated).",
-        },
-        {
-          label: "Kill-switch opérationnel (hard_block ⇒ orders=0)",
-          status: "TODO",
-          hint: "Auto si /governance/status disponible (hard_block).",
-        },
-        {
-          label: "Caps globaux actifs (max_orders / max_notional)",
-          status: "TODO",
-          hint: "Auto si /governance/status ou /status expose des caps.",
-        },
-      ],
-      links: [
-        { to: "/system-status", label: "System Status" },
-        { to: "/risk", label: "Risk" },
-      ],
-    },
-    {
-      id: "preprod",
-      title: "Préprod 30 jours",
-      subtitle: "Stabilité runtime + absence d’incidents critiques",
-      status: "TODO",
-      checks: [
-        { label: "Process stable (uptime + pas de crash)", status: "TODO", hint: "Manuel / métriques uptime." },
-        { label: "Aucun ordre illégitime", status: "TODO", hint: "Manuel + logs (orders=0 si preprod)." },
-        { label: "Idempotence (pas de doublons d’ordres)", status: "TODO", hint: "Manuel + audit execution_plan." },
-        { label: "Backpressure / protection latence OK", status: "TODO", hint: "Auto si endpoint backpressure dispo." },
-      ],
-      links: [
-        { to: "/reporting/open-positions", label: "Open Positions" },
-        { to: "/reporting/worst-trades", label: "Worst Trades" },
-      ],
-    },
-    {
-      id: "stress",
-      title: "Stress tests",
-      subtitle: "Marché / système / logique",
-      status: "TODO",
-      checks: [
-        { label: "Scénarios extrêmes (drawdown/vol/liquidité)", status: "TODO" },
-        { label: "Auto-recovery / playbooks testés", status: "TODO" },
-        { label: "Kill-switch testé en conditions réalistes", status: "TODO" },
-      ],
-      links: [
-        { to: "/risk", label: "Risk Overview" },
-        { to: "/system-status", label: "System Status" },
-      ],
-    },
-    {
-      id: "observability",
-      title: "Observabilité",
-      subtitle: "Logs / métriques / alerting",
-      status: "TODO",
-      checks: [
-        { label: "Logs consolidés + alerting Telegram/Email", status: "TODO" },
-        { label: "KPIs quotidiens (drawdown, perf, latence)", status: "TODO" },
-        { label: "Audit / conformité pre-prod validés", status: "TODO" },
-      ],
-      links: [
-        { to: "/system-status", label: "System Status" },
-        { to: "/settings", label: "Settings" },
-      ],
-    },
-    {
-      id: "gonogo",
-      title: "Go / No-Go",
-      subtitle: "Décision finale",
-      status: "TODO",
-      checks: [
-        { label: "30 jours sans incident critique", status: "TODO" },
-        { label: "Kill-switch OK + testé", status: "TODO" },
-        { label: "Aucun ordre réel (préprod)", status: "TODO" },
-        { label: "Observabilité OK", status: "TODO" },
-      ],
-      links: [
-        { to: "/reporting/pnl", label: "PnL" },
-        { to: "/reporting/profitability", label: "Profitability" },
-      ],
-    },
-  ]);
-
-  function setCheckIfNotOverridden(phaseId, idx, patch) {
-    const key = `${phaseId}:${idx}`;
-    if (overridesRef.current?.[key]) return; // override gagne
-    setPhases((prev) =>
-      prev.map((p) => {
-        if (p.id !== phaseId) return p;
-        const checks = p.checks.map((c, i) => (i === idx ? { ...c, ...patch } : c));
-        return { ...p, checks };
-      })
-    );
-  }
-
-  function recomputePhaseStatuses() {
-    setPhases((prev) =>
-      prev.map((p) => {
-        const statuses = p.checks.map((c, idx) => {
-          const key = `${p.id}:${idx}`;
-          return overridesRef.current?.[key]?.status || c.status;
-        });
-
-        // BLOCKED > WARN > TODO > OK
-        let phaseStatus = "OK";
-        if (statuses.some((s) => s === "BLOCKED")) phaseStatus = "BLOCKED";
-        else if (statuses.some((s) => s === "WARN")) phaseStatus = "WARN";
-        else if (statuses.some((s) => s === "TODO")) phaseStatus = "TODO";
-
-        return { ...p, status: phaseStatus };
-      })
-    );
-  }
-
-  async function refresh() {
+  const refresh = useCallback(async () => {
     setLoading(true);
-    setErr(null);
+    setError(null);
 
-    // endpoints best-effort (si 404 => on ignore)
-    const endpoints = [
-      { name: "status", path: "/status" },
-      { name: "gov", path: "/governance/status" },
-      { name: "risk", path: "/risk/status" },
-      { name: "bp", path: "/monitoring/backpressure" },
-    ];
+    const response = await fetchJson(
+      "/api/system/go-no-go",
+      {
+        timeoutMs: 12000,
+      }
+    );
 
-    try {
-      const results = await Promise.all(
-        endpoints.map(async (e) => {
-          const r = await fetchJson(e.path, { timeoutMs: 7000 });
-          
-
-return { ...e, ok: r.ok, data: r.data, error: r.error };
-        })
+    if (!response?.ok) {
+      setPayload(null);
+      setError(
+        response?.error?.detail ||
+        response?.error?.message ||
+        "Impossible de charger le statut Go / No-Go."
       );
-
-      // ---- 1) DRY_RUN / PREPROD
-      const statusItem = results.find((x) => x.name === "status" && x.ok);
-      if (statusItem?.data) {
-        const d = statusItem.data;
-        const raw = deepString(d);
-
-        const dryFlag =
-          (d && typeof d === "object" && (d.dry_run === true || d.dryRun === true)) ||
-          raw.includes("dry_run") ||
-          raw.includes("dryrun") ||
-          raw.includes("simulated") ||
-          raw.includes("preprod");
-
-        if (dryFlag) {
-          setCheckIfNotOverridden("preflight", 0, {
-            status: "OK",
-            note: "Auto: /status indique un mode simulé / preprod (dry_run).",
-          });
-        } else {
-          setCheckIfNotOverridden("preflight", 0, {
-            status: "WARN",
-            note: "Auto: /status ne montre pas clairement dry_run/preprod. À vérifier.",
-          });
-        }
-      } else {
-        // pas de /status => on laisse TODO
-        setCheckIfNotOverridden("preflight", 0, {
-          status: "TODO",
-          note: "Endpoint /status indisponible (OK en SPA, mais API manquante).",
-        });
-      }
-
-      // ---- 2) Governance: kill-switch + caps
-      const govItem = results.find((x) => x.name === "gov" && x.ok);
-      if (govItem?.data) {
-        const d = govItem.data;
-        const raw = deepString(d);
-
-        const hardBlock =
-          (d && typeof d === "object" && (d.hard_block === true || d.hardBlock === true)) ||
-          raw.includes("hard_block") ||
-          raw.includes("hardblock");
-
-        const softVeto =
-          (d && typeof d === "object" && (d.soft_veto || d.softVeto)) ||
-          raw.includes("soft_veto") ||
-          raw.includes("exit-only") ||
-          raw.includes("simulated_only");
-
-        if (hardBlock) {
-          setCheckIfNotOverridden("preflight", 1, {
-            status: "OK",
-            note: "Auto: /governance/status indique hard_block actif.",
-          });
-        } else if (softVeto) {
-          setCheckIfNotOverridden("preflight", 1, {
-            status: "WARN",
-            note: "Auto: soft_veto détecté mais hard_block non confirmé. À valider (préprod ⇒ idéal hard_block).",
-          });
-        } else {
-          setCheckIfNotOverridden("preflight", 1, {
-            status: "WARN",
-            note: "Auto: aucun hard_block/soft_veto détecté. À vérifier.",
-          });
-        }
-
-        const capsDetected =
-          raw.includes("max_orders") ||
-          raw.includes("max_notional") ||
-          raw.includes("notional_cap") ||
-          raw.includes("caps");
-
-        setCheckIfNotOverridden("preflight", 2, {
-          status: capsDetected ? "OK" : "TODO",
-          note: capsDetected
-            ? "Auto: caps détectés dans /governance/status."
-            : "Auto: caps non détectés (ou non exposés).",
-        });
-      } else {
-        setCheckIfNotOverridden("preflight", 1, {
-          status: "TODO",
-          note: "Endpoint /governance/status indisponible (on laisse en manuel).",
-        });
-        setCheckIfNotOverridden("preflight", 2, {
-          status: "TODO",
-          note: "Caps: endpoint indisponible (manuel).",
-        });
-      }
-
-      // ---- 3) Backpressure
-      const bpItem = results.find((x) => x.name === "bp" && x.ok);
-      if (bpItem?.data) {
-        const raw = deepString(bpItem.data);
-        const seemsOk =
-          raw.includes("ok") || raw.includes("healthy") || raw.includes("green");
-        setCheckIfNotOverridden("preprod", 3, {
-          status: seemsOk ? "OK" : "WARN",
-          note: "Auto: /monitoring/backpressure consulté.",
-        });
-      } else {
-        setCheckIfNotOverridden("preprod", 3, {
-          status: "TODO",
-          note: "Endpoint backpressure indisponible (manuel).",
-        });
-      }
-
-      setLastRefresh(Date.now());
       setLoading(false);
-      recomputePhaseStatuses();
-    } catch (e) {
-      setErr({ message: String(e?.message || e) });
-      setLoading(false);
-      recomputePhaseStatuses();
+      return;
     }
-  }
 
-  function onToggleOverride(phaseId, idx, currentEffectiveStatus) {
-    const key = `${phaseId}:${idx}`;
-    setOverrides((prev) => {
-      const next = { ...(prev || {}) };
-
-      // si déjà override => on cycle + possibilité de supprimer quand revient TODO
-      const nextStatus = cycleStatus(currentEffectiveStatus);
-      if (nextStatus === "TODO") {
-        // supprimer override
-        delete next[key];
-      } else {
-        next[key] = { status: nextStatus, note: "Override manuel (localStorage)" };
-      }
-      return next;
-    });
-
-    // Recompute après override
-    setTimeout(() => recomputePhaseStatuses(), 0);
-  }
+    setPayload(response.data || null);
+    setLoading(false);
+  }, []);
 
   useEffect(() => {
     refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [refresh]);
 
-  // Recompute quand overrides changent
   useEffect(() => {
-    recomputePhaseStatuses();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [overrides]);
+    saveManualState(manualState);
+  }, [manualState]);
 
-  const summary = useMemo(() => {
-    const flat = phases.flatMap((p) =>
-      p.checks.map((c, idx) => overrides?.[`${p.id}:${idx}`]?.status || c.status)
+  const automaticChecks = useMemo(
+    () => (
+      Array.isArray(payload?.automatic_checks)
+        ? payload.automatic_checks
+        : []
+    ),
+    [payload]
+  );
+
+  const manualControls = useMemo(
+    () => (
+      Array.isArray(payload?.manual_controls)
+        ? payload.manual_controls
+        : []
+    ),
+    [payload]
+  );
+
+  const sources = useMemo(
+    () => (
+      Array.isArray(payload?.sources)
+        ? payload.sources
+        : []
+    ),
+    [payload]
+  );
+
+  const manualSummary = useMemo(() => {
+    const statuses = manualControls.map(
+      (control) => (
+        manualState?.[control.id] || "TODO"
+      )
     );
-    if (flat.some((s) => s === "BLOCKED")) return { tone: "bad", text: "BLOCKED — Corriger avant de poursuivre." };
-    if (flat.some((s) => s === "WARN")) return { tone: "warn", text: "WARN — Points à valider avant Go." };
-    if (flat.some((s) => s === "TODO")) return { tone: "muted", text: "TODO — Checklist incomplète." };
-    return { tone: "ok", text: "OK — Tous les checks sont au vert." };
-  }, [phases, overrides]);
+
+    return {
+      total: statuses.length,
+      ok: statuses.filter(
+        (status) => status === "OK"
+      ).length,
+      warnings: statuses.filter(
+        (status) => status === "WARN"
+      ).length,
+      blocked: statuses.filter(
+        (status) => status === "BLOCKED"
+      ).length,
+    };
+  }, [manualControls, manualState]);
+
+  function cycleManualStatus(controlId) {
+    const current =
+      manualState?.[controlId] || "TODO";
+
+    const next = (
+      current === "TODO"
+        ? "OK"
+        : current === "OK"
+          ? "WARN"
+          : current === "WARN"
+            ? "BLOCKED"
+            : "TODO"
+    );
+
+    setManualState((previous) => ({
+      ...previous,
+      [controlId]: next,
+    }));
+  }
+
+  const institutional =
+    payload?.institutional_state || {};
+
+  const isAutomaticGo =
+    payload?.automatic_pass === true;
 
   return (
-    <div className="space-y-6">
-      <header className="flex items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold text-zinc-50">Go / No-Go</h1>
-          <p className="text-sm text-zinc-400">
-            Checklist décisionnelle de préproduction (30j) + gates bloquants (auto si endpoints disponibles).
-          </p>
-        </div>
+    <div className="space-y-6 p-4 md:p-6">
+      <header
+        className={
+          "rounded-2xl border p-5 " +
+          (
+            isAutomaticGo
+              ? "border-emerald-400/30 bg-emerald-400/10"
+              : "border-red-400/30 bg-red-400/10"
+          )
+        }
+      >
+        <div
+          className={
+            "flex flex-col gap-4 " +
+            "lg:flex-row lg:items-center " +
+            "lg:justify-between"
+          }
+        >
+          <div>
+            <p
+              className={
+                "text-xs font-semibold uppercase " +
+                "tracking-[0.2em] text-slate-400"
+              }
+            >
+              Institutional release control
+            </p>
 
-        <div className="flex items-center gap-3">
-          <div className="text-xs text-zinc-500">
-            Last refresh: <span className="text-zinc-300">{nowLabel(lastRefresh)}</span>
+            <h1 className="mt-2 text-2xl font-semibold text-white">
+              Go / No-Go
+            </h1>
+
+            <p className="mt-2 text-sm text-slate-300">
+              Décision automatique issue des artefacts
+              institutionnels NSC. Les contrôles manuels ne
+              peuvent pas modifier cette décision.
+            </p>
           </div>
-          <button
-            type="button"
-            onClick={refresh}
-            className="rounded-xl border border-zinc-800 bg-zinc-950/40 px-3 py-2 text-xs text-zinc-200 hover:text-white hover:border-zinc-700 transition"
-          >
-            Refresh
-          </button>
+
+          <div className="flex flex-col items-start gap-2 lg:items-end">
+            <StatusBadge
+              status={
+                payload?.automatic_decision ||
+                "UNKNOWN"
+              }
+            />
+
+            <span className="text-xs text-slate-400">
+              Actualisé le{" "}
+              {formatDate(payload?.generated_at)}
+            </span>
+
+            <button
+              type="button"
+              onClick={refresh}
+              disabled={loading}
+              className={
+                "rounded-lg border border-slate-700 " +
+                "bg-slate-900 px-3 py-2 text-sm " +
+                "text-slate-200 hover:border-cyan-400/50 " +
+                "disabled:opacity-50"
+              }
+            >
+              {loading
+                ? "Actualisation…"
+                : "Actualiser"}
+            </button>
+          </div>
         </div>
       </header>
 
-      <SectionCard title="Résumé">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="text-sm text-zinc-300">
-            Les statuts sont auto-déduits quand l’API expose des infos (sinon on reste en manuel).
-            Clique sur un statut pour activer un <span className="text-zinc-50 font-semibold">override</span> local.
-          </div>
-          <Pill tone={summary.tone}>{summary.text}</Pill>
-        </div>
-      </SectionCard>
-
-      <SectionCard title="Phases & checks">
-        <DataState
-          loading={loading}
-          error={err}
-          empty={false}
+      {error ? (
+        <div
+          className={
+            "rounded-xl border border-red-400/30 " +
+            "bg-red-400/10 p-4 text-sm text-red-200"
+          }
         >
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            {phases.map((p) => (
-              <PhaseCard
-                key={p.id}
-                phase={p}
-                overrides={overrides}
-                onToggleOverride={onToggleOverride}
-              />
-            ))}
+          {String(error)}
+        </div>
+      ) : null}
+
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <Card title="RC1">
+          <div className="text-2xl font-semibold text-white">
+            {institutional.rc1_release || "—"}
           </div>
-        </DataState>
-      </SectionCard>
+
+          <div className="mt-2">
+            <StatusBadge
+              status={
+                institutional.rc1_release_decision
+              }
+            />
+          </div>
+        </Card>
+
+        <Card title="Readiness">
+          <div className="text-2xl font-semibold text-white">
+            {
+              institutional
+                .production_readiness_score ?? "—"
+            }
+            %
+          </div>
+
+          <div className="mt-2">
+            <StatusBadge
+              status={
+                institutional
+                  .production_readiness_decision
+              }
+            />
+          </div>
+        </Card>
+
+        <Card title="Supervision gate">
+          <div className="text-2xl font-semibold text-white">
+            {
+              institutional.supervision_gate_open
+                ? "OPEN"
+                : "CLOSED"
+            }
+          </div>
+
+          <p className="mt-2 text-sm text-slate-400">
+            Mode{" "}
+            {institutional.supervision_gate_mode || "—"}
+          </p>
+        </Card>
+
+        <Card title="Execution policy">
+          <div className="text-sm text-slate-300">
+            Réelle :{" "}
+            <strong>
+              {
+                institutional.real_execution_allowed
+                  ? "autorisée"
+                  : "interdite"
+              }
+            </strong>
+          </div>
+
+          <div className="mt-2 text-sm text-slate-300">
+            Simulée :{" "}
+            <strong>
+              {
+                institutional
+                  .simulated_execution_allowed
+                  ? "autorisée"
+                  : "interdite"
+              }
+            </strong>
+          </div>
+        </Card>
+      </div>
+
+      <Card
+        title="Contrôles automatiques"
+        subtitle={
+          `${payload?.automatic_pass_count || 0}/` +
+          `${payload?.automatic_check_count || 0} PASS`
+        }
+      >
+        <div className="space-y-3">
+          {automaticChecks.map((check) => (
+            <div
+              key={check.id}
+              className={
+                "flex flex-col gap-3 rounded-xl " +
+                "border border-slate-800 bg-slate-900/40 " +
+                "p-4 lg:flex-row lg:items-start " +
+                "lg:justify-between"
+              }
+            >
+              <div className="min-w-0">
+                <div className="font-medium text-slate-100">
+                  {check.label}
+                </div>
+
+                <div
+                  className={
+                    "mt-1 break-all font-mono " +
+                    "text-xs text-slate-500"
+                  }
+                >
+                  {formatValue(check.value)}
+                </div>
+
+                <div className="mt-1 text-xs text-slate-600">
+                  {check.source}
+                </div>
+              </div>
+
+              <StatusBadge status={check.status} />
+            </div>
+          ))}
+
+          {!automaticChecks.length && !loading ? (
+            <div className="text-sm text-slate-400">
+              Aucun contrôle automatique disponible.
+            </div>
+          ) : null}
+        </div>
+      </Card>
+
+      <Card
+        title="Contrôles manuels"
+        subtitle={
+          "Ces validations sont locales au navigateur et " +
+          "n’altèrent jamais la décision institutionnelle."
+        }
+      >
+        <div
+          className={
+            "mb-4 flex flex-wrap gap-3 text-xs text-slate-400"
+          }
+        >
+          <span>
+            OK {manualSummary.ok}/{manualSummary.total}
+          </span>
+          <span>WARN {manualSummary.warnings}</span>
+          <span>BLOCKED {manualSummary.blocked}</span>
+        </div>
+
+        <div className="space-y-3">
+          {manualControls.map((control) => {
+            const current =
+              manualState?.[control.id] || "TODO";
+
+            return (
+              <div
+                key={control.id}
+                className={
+                  "flex flex-col gap-3 rounded-xl " +
+                  "border border-slate-800 " +
+                  "bg-slate-900/40 p-4 " +
+                  "lg:flex-row lg:items-center " +
+                  "lg:justify-between"
+                }
+              >
+                <div>
+                  <div className="font-medium text-slate-100">
+                    {control.label}
+                  </div>
+
+                  <div className="mt-1 text-sm text-slate-400">
+                    {control.description}
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => (
+                    cycleManualStatus(control.id)
+                  )}
+                  title={
+                    "Cycle manuel : TODO → OK → WARN → " +
+                    "BLOCKED"
+                  }
+                  className="shrink-0"
+                >
+                  <StatusBadge status={current} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </Card>
+
+      <Card
+        title="Sources institutionnelles"
+        subtitle="Lineage exact de la décision automatique."
+      >
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-left text-sm">
+            <thead>
+              <tr className="border-b border-slate-800 text-slate-500">
+                <th className="px-3 py-2">Source</th>
+                <th className="px-3 py-2">Engine</th>
+                <th className="px-3 py-2">Âge</th>
+                <th className="px-3 py-2">Généré</th>
+              </tr>
+            </thead>
+
+            <tbody>
+              {sources.map((source) => (
+                <tr
+                  key={source.name}
+                  className="border-b border-slate-900"
+                >
+                  <td className="px-3 py-3 text-slate-200">
+                    <div>{source.name}</div>
+                    <div
+                      className={
+                        "mt-1 max-w-xl break-all " +
+                        "font-mono text-xs text-slate-600"
+                      }
+                    >
+                      {source.path}
+                    </div>
+                  </td>
+
+                  <td className="px-3 py-3 text-slate-400">
+                    {source.engine || "—"}
+                  </td>
+
+                  <td className="px-3 py-3 text-slate-400">
+                    {
+                      source.age_seconds === null ||
+                      source.age_seconds === undefined
+                        ? "—"
+                        : `${Math.round(
+                            source.age_seconds / 60
+                          )} min`
+                    }
+                  </td>
+
+                  <td className="px-3 py-3 text-slate-400">
+                    {formatDate(source.generated_at)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      <Card
+        title="Dette non bloquante acceptée"
+        subtitle={
+          "Éléments officiellement reportés au hardening " +
+          "RC2 ou à la production readiness."
+        }
+      >
+        <ul className="space-y-2 text-sm text-slate-300">
+          {Array.isArray(
+            institutional.accepted_non_blocking_debt
+          ) &&
+          institutional.accepted_non_blocking_debt.length
+            ? institutional.accepted_non_blocking_debt.map(
+                (item, index) => (
+                  <li
+                    key={`${index}-${item}`}
+                    className="flex gap-2"
+                  >
+                    <span className="text-amber-300">
+                      •
+                    </span>
+                    <span>{item}</span>
+                  </li>
+                )
+              )
+            : (
+              <li className="text-slate-500">
+                Aucune dette non bloquante déclarée.
+              </li>
+            )}
+        </ul>
+      </Card>
     </div>
   );
 }

@@ -11,12 +11,12 @@ from src.v2.utils.logger import get_logger
 
 logger = get_logger("capital_allocator")
 
-POLICY_PATH = Path("data/portfolio/capital_flow_policy.json")
-MASTER_CASH_PATH = Path("data/portfolio/master_cash.json")
-POCKETS_PATH = Path("data/portfolio/pockets.json")
+POLICY_PATH = Path("/opt/nsc/app/data/portfolio/capital_flow_policy.json")
+MASTER_CASH_PATH = Path("/opt/nsc/data/preprod/portfolio/capital_state.json")
+POCKETS_PATH = Path("/opt/nsc/data/preprod/portfolio/pockets.json")
 
-TRANSFERS_JSONL = Path("data/portfolio/transfer_instructions.jsonl")
-EVENTS_TRANSFERS_JSONL = Path("data/events/capital_transfers.jsonl")
+TRANSFERS_JSONL = Path("/opt/nsc/data/preprod/portfolio/transfer_instructions.jsonl")
+EVENTS_TRANSFERS_JSONL = Path("/opt/nsc/data/preprod/events/capital_transfers.jsonl")
 
 BRICKS = [
     "crypto",
@@ -56,20 +56,20 @@ def pick_phase(policy: Dict[str, Any], total_usd: float) -> Dict[str, Any]:
     for ph in phases:
         if not isinstance(ph, dict):
             continue
-        mn = _float(ph.get("min_total_usd", 0))
-        mx = _float(ph.get("max_total_usd", 1e18))
+        mn = _float(ph.get("min_total_usd", ph.get("min_total_eur", 0)))
+        mx = _float(ph.get("max_total_usd", ph.get("max_total_eur", 1e18)))
         if mn <= total_usd < mx:
             return ph
     return phases[-1] if phases else {}
 
 def load_master_cash() -> Dict[str, Any]:
-    return load_json_file(str(MASTER_CASH_PATH), default={"cash_total": 0.0, "currency": "USD"}) or {}
+    return load_json_file(str(MASTER_CASH_PATH), default={"total_capital_eur": 0.0, "currency": "EUR"}) or {}
 
 def load_pockets() -> Dict[str, Any]:
-    default = {"currency": "USD", "pockets": {b: {"budget_usd": 0.0} for b in BRICKS}}
+    default = {"currency": "EUR", "pockets": {b: {"budget_eur": 0.0} for b in BRICKS}}
     p = load_json_file(str(POCKETS_PATH), default=default) or default
     if "pockets" not in p or not isinstance(p.get("pockets"), dict):
-        p["pockets"] = {b: {"budget_usd": 0.0} for b in BRICKS}
+        p["pockets"] = {b: {"budget_eur": 0.0} for b in BRICKS}
     return p
 
 def compute_targets(total_usd: float, phase: Dict[str, Any]) -> Dict[str, float]:
@@ -110,7 +110,7 @@ def compute_transfers(
         dst, need = deficits[j]
         amt = min(avail, need)
         if amt >= min_transfer_usd:
-            transfers.append({"from": src, "to": dst, "amount_usd": round(amt, 2)})
+            transfers.append({"from": src, "to": dst, "amount_eur": round(amt, 2)})
         avail -= amt
         need -= amt
         surpluses[i] = (src, avail)
@@ -127,8 +127,8 @@ def run() -> Dict[str, Any]:
     master = load_master_cash()
     pockets = load_pockets()
 
-    currency = master.get("currency", pockets.get("currency", "USD"))
-    cash_total = _float(master.get("cash_total", 0.0))
+    currency = master.get("currency", pockets.get("currency", "EUR"))
+    cash_total = _float(master.get("deployable_capital_eur", master.get("total_capital_eur", master.get("cash_total", 0.0))))
 
     # In ARCH-005, total_usd is master cash only (positions reconciliation later).
     total_usd = cash_total
@@ -142,7 +142,7 @@ def run() -> Dict[str, Any]:
 
     # Current budgets
     cur_pockets = pockets.get("pockets", {})
-    current = {b: _float(cur_pockets.get(b, {}).get("budget_usd", 0.0)) for b in BRICKS}
+    current = {b: _float(cur_pockets.get(b, {}).get("budget_eur", cur_pockets.get(b, {}).get("budget_usd", 0.0))) for b in BRICKS}
 
     # Targets
     targets = compute_targets(total_usd, phase)
@@ -154,10 +154,10 @@ def run() -> Dict[str, Any]:
         "ts": ts,
         "engine": "capital_allocator_v1",
         "currency": currency,
-        "total_usd": round(total_usd, 2),
+        "total_eur": round(total_usd, 2),
         "phase": phase_name,
-        "targets_usd": {b: round(targets[b], 2) for b in BRICKS},
-        "current_usd": {b: round(current[b], 2) for b in BRICKS},
+        "targets_eur": {b: round(targets[b], 2) for b in BRICKS},
+        "current_eur": {b: round(current[b], 2) for b in BRICKS},
         "transfers": transfers,
         "notes": [
             "ARCH-005: targets computed from master cash only (positions reconciliation will be added later).",
@@ -170,7 +170,7 @@ def run() -> Dict[str, Any]:
         "ts": ts,
         "engine": "pockets_v1",
         "currency": currency,
-        "pockets": {b: {"budget_usd": round(targets[b], 2)} for b in BRICKS},
+        "pockets": {b: {"budget_eur": round(targets[b], 2)} for b in BRICKS},
     }
     save_json_file(str(POCKETS_PATH), new_pockets)
 

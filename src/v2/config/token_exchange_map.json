@@ -61,5 +61,9 @@
   "APT": "binance",
   "APTUSDT": "binance",
   "apt": "binance",
-  "aptusdt": "binance"
+  "aptusdt": "binance",
+  "OP": "binance",
+  "OPUSDT": "binance",
+  "op": "binance",
+  "opusdt": "binance"
 }

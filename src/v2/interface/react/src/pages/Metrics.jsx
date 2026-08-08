@@ -1,6 +1,6 @@
+import { buildApiUrl as apiUrl } from "../lib/apiBase";
 import React, { useEffect, useState } from "react";
 
-const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8000";
 
 function Row({ k, v }) {
   return (
@@ -18,7 +18,7 @@ export default function Metrics() {
     let alive = true;
     (async () => {
       try {
-        const r = await fetch(`${API_BASE}/metrics`, { cache: "no-store" });
+        const r = await fetch(apiUrl("/metrics"), { cache: "no-store" });
         if (!r.ok) throw new Error("metrics not ok");
         const j = await r.json();
         if (!alive) return;

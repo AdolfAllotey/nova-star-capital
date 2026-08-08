@@ -1,60 +1,55 @@
-// src/pages/OpenPositions.jsx
-// Vue des positions ouvertes à partir de /simulation/open-positions
-
 import React, { useEffect, useMemo, useState } from "react";
+import SectionCard from "../components/ui/SectionCard";
+import StatusBadge from "../components/ui/StatusBadge";
+import { fetchJson } from "../lib/apiClient";
 
-const API_BASE =
-  import.meta.env.VITE_API_BASE_URL ||
-  "https://api.preprod.novastarcapital.fr";
-
-function buildUrl(path) {
-  return `${API_BASE.replace(/\/+$/, "")}${path}`;
-}
-
-function Section({ title, description, children }) {
+function PageHeader({ title, subtitle, badges = [] }) {
   return (
-    <section className="mb-8">
-      <div className="flex items-baseline justify-between mb-3">
-        <h2 className="text-lg font-semibold text-zinc-100 border-b border-zinc-800 pb-1">
-          {title}
-        </h2>
-        {description && (
-          <p className="text-xs text-zinc-500 ml-4">{description}</p>
-        )}
+    <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+      <div>
+        <h1 className="text-[30px] font-semibold tracking-tight text-white">{title}</h1>
+        <p className="mt-1 text-sm text-zinc-400">{subtitle}</p>
       </div>
-      <div className="bg-zinc-900/70 border border-zinc-800 rounded-xl p-4">
-        {children}
+
+      <div className="flex flex-wrap gap-2">
+        {badges.map((badge, idx) => (
+          <StatusBadge
+            key={`${badge.label || badge.status || "badge"}-${idx}`}
+            status={badge.status}
+            label={badge.label}
+          />
+        ))}
       </div>
-    </section>
+    </div>
   );
 }
 
-function Stat({ label, value, hint }) {
+function MicroCard({ label, value, subvalue }) {
   return (
-    <div className="flex flex-col">
-      <span className="text-xs text-zinc-500">{label}</span>
-      <span className="text-sm font-semibold text-zinc-100">{value}</span>
-      {hint && <span className="text-[11px] text-zinc-500 mt-0.5">{hint}</span>}
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+      <div className="text-[10px] uppercase tracking-[0.16em] text-zinc-500">{label}</div>
+      <div className="mt-2 text-2xl font-semibold text-white">{value}</div>
+      {subvalue ? <div className="mt-1 text-sm text-zinc-400">{subvalue}</div> : null}
     </div>
   );
 }
 
 function formatCurrency(v) {
-  if (v === null || v === undefined || isNaN(v)) return "–";
-  return `${v.toFixed(2)} €`;
+  if (v === null || v === undefined || Number.isNaN(Number(v))) return "—";
+  return `${Number(v).toFixed(2)} €`;
 }
 
 function formatNumber(v, decimals = 4) {
-  if (v === null || v === undefined || isNaN(v)) return "–";
-  return v.toFixed(decimals);
+  if (v === null || v === undefined || Number.isNaN(Number(v))) return "—";
+  return Number(v).toFixed(decimals);
 }
 
 function formatDate(value) {
-  if (!value) return "–";
+  if (!value) return "—";
   try {
     const d = new Date(value);
     if (Number.isNaN(d.getTime())) return String(value);
-    return d.toLocaleString();
+    return d.toLocaleString("fr-FR");
   } catch {
     return String(value);
   }
@@ -72,28 +67,28 @@ export default function OpenPositionsPage() {
     async function fetchData() {
       setLoading(true);
       setError(null);
+
       try {
-        const res = await fetch(buildUrl("/simulation/open-positions"));
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`);
+        const res = await fetchJson("/simulation/open-positions", { timeoutMs: 8000 });
+        if (!res?.ok) {
+          throw new Error(`HTTP ${res?.status || "FETCH_FAILED"}`);
         }
-        const json = await res.json();
-        if (!cancelled) {
-          setData(json);
-          // tolérant: soit { items: [...] }, soit [...]
-          const list = Array.isArray(json)
-            ? json
-            : Array.isArray(json.items)
+
+        const json = res.data;
+        const list = Array.isArray(json)
+          ? json
+          : Array.isArray(json?.items)
             ? json.items
             : [];
+
+        if (!cancelled) {
+          setData(json);
           setItems(list);
         }
       } catch (err) {
         console.error("Error fetching open positions:", err);
         if (!cancelled) {
-          setError(
-            "Impossible de charger les positions ouvertes. Vérifie l’API /simulation/open-positions."
-          );
+          setError("Unable to load open positions.");
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -125,9 +120,11 @@ export default function OpenPositionsPage() {
         typeof p.avg_entry_price_eur === "number"
           ? p.avg_entry_price_eur
           : Number(p.avg_entry_price_eur ?? NaN);
-      if (!isNaN(size) && !isNaN(avgPrice)) {
+
+      if (!Number.isNaN(size) && !Number.isNaN(avgPrice)) {
         totalNotional += size * avgPrice;
       }
+
       if (p.exchange) {
         exchanges.add(String(p.exchange).toUpperCase());
       }
@@ -140,132 +137,128 @@ export default function OpenPositionsPage() {
     };
   }, [items]);
 
+  const narrative = useMemo(() => {
+    return [
+      `Open position count currently stands at ${aggregates.positionsCount}.`,
+      `Estimated total notional currently stands at ${formatCurrency(aggregates.totalNotional)}.`,
+      `The book is currently spread across ${aggregates.exchangesCount} exchange(s).`,
+      `This page tracks live open positions from the aggregated simulation endpoint.`,
+      `Position inventory updates should remain aligned with position manager outputs and exit events.`,
+    ];
+  }, [aggregates]);
+
   return (
-    <div className="space-y-8">
-      {/* Header */}
-      <header className="mb-4">
-        <h1 className="text-2xl font-semibold text-zinc-100 mb-1">
-          Positions ouvertes
-        </h1>
-        <p className="text-sm text-zinc-400">
-          Vue en temps quasi-réel des positions maintenues par le bot Nova Star
-          Capital (préprod). Cette page lit directement les données du
-          <code className="mx-1 px-1 py-0.5 rounded bg-zinc-900/80 border border-zinc-800 text-[11px]">
-            open_positions.json
-          </code>{" "}
-          agrégé côté API.
-        </p>
-      </header>
+    <div className="p-5 space-y-6">
+      <PageHeader
+        title="Open Positions"
+        subtitle="Near real-time inventory of currently open positions, exchange distribution, and theoretical deployed notional."
+        badges={[
+          { label: items.length > 0 ? "POSITIONS_ACTIVE" : "FLAT" },
+          { label: `Positions ${aggregates.positionsCount}` },
+          { label: `Exchanges ${aggregates.exchangesCount}` },
+        ]}
+      />
 
-      {/* Synthèse */}
-      <Section
-        title="Synthèse"
-        description="Aperçu global du risque engagé par le bot sur les différents exchanges."
-      >
+      {error && (
+        <div className="rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+          {error}
+        </div>
+      )}
+
+      <SectionCard title="Open Position Narrative" subtitle="How the current live inventory should be read">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
+          {narrative.map((line, idx) => (
+            <div
+              key={idx}
+              className="rounded-2xl border border-cyan-500/20 bg-cyan-500/5 px-4 py-3 text-sm text-cyan-100"
+            >
+              {line}
+            </div>
+          ))}
+        </div>
+      </SectionCard>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <MicroCard
+          label="Open Positions"
+          value={aggregates.positionsCount}
+          subvalue="Total active rows in the live book"
+        />
+        <MicroCard
+          label="Estimated Notional"
+          value={formatCurrency(aggregates.totalNotional)}
+          subvalue="Sum of size × average entry price"
+        />
+        <MicroCard
+          label="Exchanges"
+          value={aggregates.exchangesCount}
+          subvalue="Distinct venues currently in use"
+        />
+      </div>
+
+      <SectionCard title="Open Positions Table" subtitle="Detailed inventory by token, venue, size, entry price, and timestamps">
         {loading && !data ? (
-          <div className="text-sm text-zinc-400">Chargement…</div>
+          <div className="text-sm text-zinc-400">Loading…</div>
         ) : error ? (
           <div className="text-sm text-red-400">{error}</div>
         ) : !items.length ? (
           <div className="text-sm text-zinc-400">
-            Aucune position ouverte pour le moment.  
-            Dès que le bot prendra une première position, elle apparaîtra
-            automatiquement ici.
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <Stat
-              label="Nombre de positions"
-              value={aggregates.positionsCount}
-              hint="Total de lignes en portefeuille"
-            />
-            <Stat
-              label="Notionnel total"
-              value={formatCurrency(aggregates.totalNotional)}
-              hint="Somme (taille × prix d’entrée moyen)"
-            />
-            <Stat
-              label="Exchanges"
-              value={aggregates.exchangesCount}
-              hint="Nombre de plateformes utilisées (Binance, MEXC…)"
-            />
-          </div>
-        )}
-      </Section>
-
-      {/* Détail positions */}
-      <Section
-        title="Détail des positions"
-        description="Liste détaillée de chaque position, avec taille, prix moyen et timestamps."
-      >
-        {loading && !data ? (
-          <div className="text-sm text-zinc-400">Chargement…</div>
-        ) : error ? (
-          <div className="text-sm text-red-400">{error}</div>
-        ) : !items.length ? (
-          <div className="text-sm text-zinc-400">
-            Aucune position à afficher pour le moment.  
-            En préprod, tu peux vérifier que{" "}
-            <span className="font-medium text-emerald-400">
-              position_manager
-            </span>{" "}
-            met bien à jour <code>open_positions.json</code> après les entrées /
-            sorties de trades.
+            No open positions are currently available.
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="w-full min-w-[1180px] border-separate border-spacing-y-2 text-sm">
               <thead>
-                <tr className="border-b border-zinc-800 text-xs text-zinc-500">
-                  <th className="text-left py-2 pr-2">Token</th>
-                  <th className="text-left py-2 pr-2">Exchange</th>
-                  <th className="text-right py-2 pr-2">Taille</th>
-                  <th className="text-right py-2 pr-2">
-                    Prix moyen d’entrée (€)
-                  </th>
-                  <th className="text-right py-2 pr-2">
-                    Valeur théorique (≈) (€)
-                  </th>
-                  <th className="text-right py-2 pr-2">Ouverte le</th>
-                  <th className="text-right py-2 pl-2">Dernière mise à jour</th>
+                <tr className="text-left text-xs text-zinc-400">
+                  <th className="pb-2">Token</th>
+                  <th className="pb-2">Exchange</th>
+                  <th className="pb-2 text-right">Size</th>
+                  <th className="pb-2 text-right">Average Entry (€)</th>
+                  <th className="pb-2 text-right">Theoretical Value (€)</th>
+                  <th className="pb-2 text-right">Opened At</th>
+                  <th className="pb-2 text-right">Last Update</th>
                 </tr>
               </thead>
               <tbody>
                 {items.map((p, idx) => {
-                  const token = (p.token || p.symbol || p.id || "N/A").toUpperCase();
-                  const exchange = (p.exchange || "–").toUpperCase();
+                  const token = String(p.token || p.symbol || p.id || "N/A").toUpperCase();
+                  const exchange = String(p.exchange || "—").toUpperCase();
+
                   const size =
                     typeof p.size === "number"
                       ? p.size
                       : Number(p.size ?? NaN);
+
                   const avgPrice =
                     typeof p.avg_entry_price_eur === "number"
                       ? p.avg_entry_price_eur
                       : Number(p.avg_entry_price_eur ?? NaN);
 
                   const notional =
-                    !isNaN(size) && !isNaN(avgPrice) ? size * avgPrice : NaN;
+                    !Number.isNaN(size) && !Number.isNaN(avgPrice)
+                      ? size * avgPrice
+                      : NaN;
 
                   return (
                     <tr
                       key={`${token}-${exchange}-${idx}`}
-                      className="border-b border-zinc-800/60 hover:bg-zinc-900/60"
+                      className="rounded-xl border border-white/10 bg-black/20"
                     >
-                      <td className="py-2 pr-2 text-zinc-100">{token}</td>
-                      <td className="py-2 pr-2 text-zinc-300">{exchange}</td>
-                      <td className="py-2 pr-2 text-right text-zinc-100">
-                        {formatNumber(isNaN(size) ? null : size, 6)}
+                      <td className="rounded-l-xl px-4 py-3 text-zinc-100 font-medium">{token}</td>
+                      <td className="px-4 py-3 text-zinc-300">{exchange}</td>
+                      <td className="px-4 py-3 text-right text-zinc-100">
+                        {formatNumber(Number.isNaN(size) ? null : size, 6)}
                       </td>
-                      <td className="py-2 pr-2 text-right text-zinc-100">
-                        {formatCurrency(isNaN(avgPrice) ? null : avgPrice)}
+                      <td className="px-4 py-3 text-right text-zinc-100">
+                        {formatCurrency(Number.isNaN(avgPrice) ? null : avgPrice)}
                       </td>
-                      <td className="py-2 pr-2 text-right text-zinc-100">
-                        {formatCurrency(isNaN(notional) ? null : notional)}
+                      <td className="px-4 py-3 text-right text-zinc-100">
+                        {formatCurrency(Number.isNaN(notional) ? null : notional)}
                       </td>
-                      <td className="py-2 pr-2 text-right text-zinc-300">
+                      <td className="px-4 py-3 text-right text-zinc-300">
                         {formatDate(p.opened_at || p.openedAt)}
                       </td>
-                      <td className="py-2 pl-2 text-right text-zinc-300">
+                      <td className="rounded-r-xl px-4 py-3 text-right text-zinc-300">
                         {formatDate(p.last_update || p.lastUpdate)}
                       </td>
                     </tr>
@@ -275,37 +268,23 @@ export default function OpenPositionsPage() {
             </table>
           </div>
         )}
-      </Section>
+      </SectionCard>
 
-      {/* Explications */}
-      <Section
-        title="Rôle de cette vue en préproduction"
-        description="Contrôles à faire avant de passer en mode réel."
-      >
+      <SectionCard title="Preproduction Role" subtitle="What this screen validates before live deployment">
         <div className="space-y-2 text-sm text-zinc-300">
           <p>
-            Cette page te sert à vérifier que{" "}
-            <span className="font-medium text-emerald-400">
-              le tracking des positions ouvertes
-            </span>{" "}
-            fonctionne correctement : chaque entrée de trade devrait créer /
-            augmenter une ligne, et chaque sortie fermer ou réduire la taille.
+            This page validates that open-position tracking remains coherent across entries,
+            partial exits, and full closures.
           </p>
           <p>
-            En préprod, tu peux comparer cette vue aux fichiers{" "}
-            <code>trade_simulation.json</code>,{" "}
-            <code>open_positions.json</code> et <code>exit_events.json</code>{" "}
-            pour t’assurer que la logique de{" "}
-            <span className="font-medium">position_manager.py</span> se
-            comporte comme prévu.
+            In preproduction, it should stay aligned with position manager outputs, trade simulations,
+            and exit events generated by the strategy pipeline.
           </p>
-          <p className="text-xs text-zinc-500">
-            Une fois en production, cette page sera l’un des écrans
-            “salle de marché” principaux, avec un rafraîchissement régulier et
-            la synchronisation avec les exchanges (Binance, MEXC, etc.).
+          <p className="text-zinc-500">
+            In production, this screen becomes one of the core live monitoring views for the desk.
           </p>
         </div>
-      </Section>
+      </SectionCard>
     </div>
   );
 }

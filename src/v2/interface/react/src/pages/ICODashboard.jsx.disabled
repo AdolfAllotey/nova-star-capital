@@ -1,3 +1,0 @@
-// src/pages/ICODashboard.jsx
-// Wrapper (compat) pour route/import historique "ICODashboard"
-export { default } from "./IcoDashboard.jsx";

@@ -259,3 +259,60 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ==========================
+# NSC PROFIT FLOW V2
+# ==========================
+
+from pathlib import Path
+
+POLICY_PATH = Path("/opt/nsc/app/src/v2/config/profit_distribution_policy.json")
+
+
+def load_policy():
+    with open(POLICY_PATH, "r") as f:
+        return json.load(f)
+
+
+def get_applicable_tier(capital, tiers):
+    applicable = tiers[0]
+    for tier in tiers:
+        if capital >= tier["min_capital_eur"]:
+            applicable = tier
+    return applicable
+
+
+def compute_profit_flow(brick, profit_eur, capital_eur):
+    policy = load_policy()
+
+    tax_rate = policy["tax"]["rate"]
+    tiers = policy["tiers"]
+    split = policy["distribution_split"]
+
+    # 1. TAX
+    tax_amount = profit_eur * tax_rate
+    net_profit = profit_eur - tax_amount
+
+    # 2. TIER
+    tier = get_applicable_tier(capital_eur, tiers)
+
+    trading_part = net_profit * tier["trading"]
+    distribution_part = net_profit * tier["distribution"]
+
+    # 3. SPLIT
+    flows = {
+        "brick": brick,
+        "input_profit": profit_eur,
+        "tax": tax_amount,
+        "net_profit": net_profit,
+        "trading_reinvested": trading_part,
+        "distributed": {
+            "lt": distribution_part * split["lt"],
+            "bfr": distribution_part * split["bfr"],
+            "security": distribution_part * split["security"]
+        }
+    }
+
+    return flows
+

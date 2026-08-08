@@ -2,9 +2,15 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
+
+def data_root() -> Path:
+    return Path(os.getenv("NSC_DATA_DIR", "/opt/nsc/data/preprod"))
+
+ROOT = data_root()
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -43,15 +49,25 @@ def summarize_top(items: List[Dict[str, Any]], k: int = 5) -> List[Dict[str, Any
     return out
 
 def build_dashboard_payload(
-    market_regime_path: str = "data/market/market_regime.json",
-    signals_path: str = "data/equities_offensive/signals/signals_v1.json",
-    voted_path: str = "data/equities_offensive/voting/voted_signals.json",
-    risk_path: str = "data/equities_offensive/risk/risk_decisions.json",
-    plan_path: str = "data/equities_offensive/execution/execution_plan.json",
-    exposure_path: str = "data/equities_offensive/state/exposure_snapshot.json",
-    out_payload: str = "data/equities_offensive/reporting/dashboard_payload.json",
-    out_audit: str = "data/equities_offensive/reporting/audit_trail.jsonl",
+    market_regime_path: str | None = None,
+    global_market_regime_path: str | None = None,
+    signals_path: str | None = None,
+    voted_path: str | None = None,
+    risk_path: str | None = None,
+    plan_path: str | None = None,
+    exposure_path: str | None = None,
+    out_payload: str | None = None,
+    out_audit: str | None = None,
 ) -> Dict[str, Any]:
+
+    market_regime_path = market_regime_path or str(ROOT / "equities_offensive/market/market_regime.json")
+    signals_path = signals_path or str(ROOT / "equities_offensive/signals/signals_v1.json")
+    voted_path = voted_path or str(ROOT / "equities_offensive/voting/voted_signals.json")
+    risk_path = risk_path or str(ROOT / "equities_offensive/risk/risk_decisions.json")
+    plan_path = plan_path or str(ROOT / "equities_offensive/execution/execution_plan.json")
+    exposure_path = exposure_path or str(ROOT / "equities_offensive/state/exposure_snapshot.json")
+    out_payload = out_payload or str(ROOT / "equities_offensive/reporting/dashboard_payload.json")
+    out_audit = out_audit or str(ROOT / "equities_offensive/reporting/audit_trail.jsonl")
 
     market = load_json(Path(market_regime_path), default={}) or {}
     signals_doc = load_json(Path(signals_path), default={}) or {}
@@ -74,6 +90,8 @@ def build_dashboard_payload(
         "risk_decisions_count": len(decisions),
         "execution_candidate_orders": len(plan.get("candidate_orders") or []),
         "execution_orders_final": len(orders),
+        "display_candidates": len(voted),
+        "display_orders": len(orders),
         "open_positions": exposure.get("open_positions", 0),
         "total_notional_usd": exposure.get("total_notional_usd", 0.0),
         "action_policy": plan.get("action_policy"),
@@ -87,6 +105,8 @@ def build_dashboard_payload(
         "kpis": kpis,
         "market_regime": market,
         "top_voted": summarize_top(voted, k=5),
+        "signals": signals,
+        "voted_signals": voted,
         "risk_decisions": decisions[:10],   # UI can paginate later
         "execution_plan": {
             "plan_id": plan.get("plan_id"),
@@ -116,8 +136,8 @@ def build_dashboard_payload(
 def main():
     import argparse
     ap = argparse.ArgumentParser(description="Equities Offensive Report Builder V1")
-    ap.add_argument("--out", default="data/equities_offensive/reporting/dashboard_payload.json")
-    ap.add_argument("--audit", default="data/equities_offensive/reporting/audit_trail.jsonl")
+    ap.add_argument("--out", default=None)
+    ap.add_argument("--audit", default=None)
     args = ap.parse_args()
 
     payload = build_dashboard_payload(out_payload=args.out, out_audit=args.audit)

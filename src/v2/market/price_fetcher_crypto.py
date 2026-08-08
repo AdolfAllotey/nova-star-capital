@@ -1,5 +1,3 @@
-# src/v2/market/price_fetcher_crypto.py
-
 from __future__ import annotations
 
 import json
@@ -11,21 +9,19 @@ import urllib.request
 
 
 def _load_data_dir() -> Path:
-    # CLI --data-dir has priority
     import sys
+
     if "--data-dir" in sys.argv:
         try:
             return Path(sys.argv[sys.argv.index("--data-dir") + 1]).expanduser().resolve()
         except Exception:
             pass
 
-    # env fallback
     env_dd = (os.getenv("NSC_DATA_DIR") or "").strip()
     if env_dd:
         return Path(env_dd).expanduser().resolve()
 
-    # default
-    return Path("/opt/nsc/app/data").resolve()
+    return Path("/opt/nsc/data/preprod").resolve()
 
 
 def _read_json(path: Path, default: Any) -> Any:
@@ -53,29 +49,16 @@ def _http_get_json(url: str, timeout: int = 10) -> Any:
     return json.loads(data)
 
 
-def _normalize_symbol(sym: str) -> str:
-    return str(sym or "").strip().lower()
-
-
 def _to_binance_symbol(sym: str) -> Optional[str]:
-    """
-    Accepts: 'maticusdt', 'MATICUSDT', 'MATIC' -> returns 'MATICUSDT'
-    For now we only support USDT pairs.
-    """
     s = str(sym or "").strip().upper()
     if not s:
         return None
     if s.endswith("USDT"):
         return s
-    # assume base asset, force USDT
     return f"{s}USDT"
 
 
 def fetch_prices_binance(symbols: List[str]) -> Dict[str, float]:
-    """
-    Binance endpoint: /api/v3/ticker/price?symbol=XXX
-    We'll call per symbol (simple & robust).
-    """
     out: Dict[str, float] = {}
     for sym in symbols:
         bs = _to_binance_symbol(sym)
@@ -89,41 +72,99 @@ def fetch_prices_binance(symbols: List[str]) -> Dict[str, float]:
                 continue
             v = float(px)
             if v > 0:
-                # store in lowercase, keeping "maticusdt" style
-                out[_normalize_symbol(sym if sym.lower().endswith("usdt") else bs)] = v
-        except Exception:
+                out[str(sym).upper()] = v
+        except Exception as e:
+            print(f"[price_fetcher_crypto] fetch failed for {sym}: {e}")
             continue
     return out
+
+
+def _extract_symbols(items: Any) -> List[str]:
+    out: List[str] = []
+    if not isinstance(items, list):
+        return out
+
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+
+        candidate = (
+            it.get("symbol")
+            or it.get("token")
+            or it.get("asset")
+            or it.get("ticker")
+        )
+        if not candidate:
+            continue
+
+        s = str(candidate).strip().upper()
+        if s.endswith("USDT"):
+            s = s[:-4]
+        if s and s.isascii() and s.replace("_", "").isalnum():
+            out.append(s)
+
+    return list(dict.fromkeys(out))
+
+
+def _extract_symbols_from_selected(doc: Any) -> List[str]:
+    if not isinstance(doc, dict):
+        return []
+    items = doc.get("items", [])
+    return _extract_symbols(items)
 
 
 def main() -> int:
     data_dir = _load_data_dir()
     trading_dir = data_dir / "trading"
     market_dir = data_dir / "market"
-    prices_path = market_dir / "prices.json"
 
-    # universe tokens source: sized_signals symbols OR selected_tokens.json if you prefer
+    prices_path = market_dir / "prices.json"
+    crypto_spot_prices_path = market_dir / "crypto_spot_prices.json"
+
+    selected_path = trading_dir / "selected_tokens.dynamic.json"
     sized_path = trading_dir / "sized_signals.json"
+    candidates_path = data_dir / "analysis" / "signal_candidates.json"
+
+    selected = _read_json(selected_path, default={}) or {}
     sized = _read_json(sized_path, default=[]) or []
-    syms: List[str] = []
-    if isinstance(sized, list):
-        for it in sized:
-            if isinstance(it, dict) and it.get("symbol"):
-                syms.append(str(it["symbol"]))
-    # dedup
-    syms = list(dict.fromkeys(syms))
+    candidates = _read_json(candidates_path, default=[]) or []
+
+    # PREPROD MULTI-SOURCE RULE:
+    # Prices must cover the full actionable crypto universe:
+    # selected dynamic tokens + signal candidates + sized signals.
+    syms_selected = _extract_symbols_from_selected(selected)
+    syms_candidates = _extract_symbols(candidates)
+    syms_sized = _extract_symbols(sized)
+    syms_trades = []
+
+    syms = list(dict.fromkeys(syms_selected + syms_candidates + syms_sized))
+
+    print(f"[price_fetcher_crypto] symbols_from_selected={syms_selected}")
+    print(f"[price_fetcher_crypto] symbols_from_candidates={syms_candidates}")
+    print(f"[price_fetcher_crypto] symbols_from_sized={syms_sized}")
+    print(f"[price_fetcher_crypto] symbols_from_trades={syms_trades}")
+
+    print(f"[price_fetcher_crypto] data_dir={data_dir}")
+    print(f"[price_fetcher_crypto] selected_path={selected_path} exists={selected_path.exists()}")
+    print(f"[price_fetcher_crypto] candidates_path={candidates_path} exists={candidates_path.exists()}")
+    print(f"[price_fetcher_crypto] sized_path={sized_path} exists={sized_path.exists()}")
+    print(f"[price_fetcher_crypto] symbols={syms}")
 
     prices = fetch_prices_binance(syms)
 
-    obj = {
+    legacy_obj = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "source": "binance",
         "universe": os.getenv("NSC_UNIVERSE", "unknown"),
+        "symbols": syms,
         "prices": prices,
     }
-    _write_json(prices_path, obj)
+
+    _write_json(prices_path, legacy_obj)
+    _write_json(crypto_spot_prices_path, prices)
 
     print(f"[price_fetcher_crypto] wrote {len(prices)} prices -> {prices_path}")
+    print(f"[price_fetcher_crypto] wrote {len(prices)} prices -> {crypto_spot_prices_path}")
     return 0
 
 

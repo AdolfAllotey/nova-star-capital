@@ -15,11 +15,12 @@ from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
 # --------- Config chemins ---------
-DATA_ROOT = os.environ.get("NSC_DATA_ROOT", "/opt/nsc/app/data").rstrip("/")
+DATA_ROOT = os.environ.get("NSC_DATA_ROOT") or os.environ.get("NSC_DATA_DIR") or "/opt/nsc/data/preprod"
+DATA_ROOT = DATA_ROOT.rstrip("/")
 OUT_DIR   = f"{DATA_ROOT}/market"
 OUT_FILE  = f"{OUT_DIR}/top_movers.json"
 ARCHIVE_D = f"{OUT_DIR}/archive"
-LOG_FILE  = "/opt/nsc/src/v2/logs/build_top_movers.log"
+LOG_FILE = os.environ.get("NSC_TOP_MOVERS_LOG", "/var/log/nsc/preprod/build_top_movers.log")
 
 UA = os.environ.get("NSC_HTTP_UA", "NSC/2.0 (+https://novastarcapital.fr)")
 TIMEOUT = 15
@@ -143,22 +144,23 @@ def main():
     try:
         log("start")
         items = []
-        # 1) CoinGecko
+        # 1) Binance first: best source for tradable USDT pairs in NSC crypto execution.
         try:
-            items = fetch_from_coingecko()
-            log(f"coingecko items={len(items)}")
+            items = fetch_from_binance()
+            log(f"binance items={len(items)}")
         except Exception as e:
-            log(f"[coingecko] error: {e}")
+            log(f"[binance] error: {e}")
 
-        # 2) fallback Binance si 0
+        # 2) fallback CoinGecko only if Binance unavailable
         if not items:
             try:
-                items = fetch_from_binance()
-                log(f"binance items={len(items)}")
+                items = fetch_from_coingecko()
+                log(f"coingecko items={len(items)}")
             except Exception as e:
-                log(f"[binance] error: {e}")
+                log(f"[coingecko] error: {e}")
 
         items = normalize_items(items)
+
         out = {
             "updated_at": datetime.datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "items": items

@@ -1,5 +1,5 @@
+import { buildApiUrl as apiUrl } from "../lib/apiBase";
 import React, { useEffect, useState } from "react";
-const API = import.meta.env.VITE_API_BASE || "http://localhost:8000";
 
 export default function Debug() {
   const [metrics, setMetrics] = useState(null);
@@ -7,7 +7,7 @@ export default function Debug() {
   useEffect(() => {
     (async () => {
       try {
-        const r = await fetch(`${API}/metrics?detail=1`, { cache: "no-store" });
+        const r = await fetch(apiUrl("/metrics?detail=1"), { cache: "no-store" });
         if (!r.ok) return;
         setMetrics(await r.json());
       } catch {

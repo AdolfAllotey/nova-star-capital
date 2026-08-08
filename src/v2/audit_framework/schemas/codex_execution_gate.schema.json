@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://novastarcapital.local/schemas/codex_execution_gate.schema.json",
+  "title": "Nova Star Capital Codex Execution Gate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "gate_id",
+    "provider_id",
+    "audit_id",
+    "release",
+    "package_readiness_sha256",
+    "payload_sha256",
+    "requested_at",
+    "requested_by",
+    "approval_scope",
+    "execution_mode",
+    "expires_at",
+    "single_use",
+    "read_only",
+    "recommendation_only",
+    "automatic_remediation",
+    "allow_source_writes",
+    "allow_live_trading",
+    "allow_production_credentials",
+    "allow_network_side_effects",
+    "metadata"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "gate_id": {
+      "type": "string",
+      "pattern": "^GATE-CODEX-[A-Z0-9-]+$"
+    },
+    "provider_id": {
+      "type": "string",
+      "const": "OPENAI_CODEX"
+    },
+    "audit_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "release": {
+      "type": "string",
+      "const": "RC1"
+    },
+    "package_readiness_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "payload_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "requested_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "requested_by": {
+      "type": "string",
+      "minLength": 1
+    },
+    "approval_scope": {
+      "type": "string",
+      "const": "RC1_ENGINEERING_AUDIT_READ_ONLY"
+    },
+    "execution_mode": {
+      "type": "string",
+      "const": "CONTROLLED_PROVIDER_AUDIT"
+    },
+    "expires_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "single_use": {
+      "type": "boolean",
+      "const": true
+    },
+    "read_only": {
+      "type": "boolean",
+      "const": true
+    },
+    "recommendation_only": {
+      "type": "boolean",
+      "const": true
+    },
+    "automatic_remediation": {
+      "type": "boolean",
+      "const": false
+    },
+    "allow_source_writes": {
+      "type": "boolean",
+      "const": false
+    },
+    "allow_live_trading": {
+      "type": "boolean",
+      "const": false
+    },
+    "allow_production_credentials": {
+      "type": "boolean",
+      "const": false
+    },
+    "allow_network_side_effects": {
+      "type": "boolean",
+      "const": true
+    },
+    "metadata": {
+      "type": "object"
+    }
+  }
+}

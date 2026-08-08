@@ -1,0 +1,181 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://novastarcapital.local/schemas/provider_audit_payload.schema.json",
+  "title": "Nova Star Capital Provider Audit Payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "provider_id",
+    "adapter_version",
+    "audit_id",
+    "release",
+    "baseline_id",
+    "package_dir",
+    "package_manifest_path",
+    "package_readiness_sha256",
+    "execution_policy",
+    "system_instructions",
+    "audit_instructions",
+    "input_files",
+    "expected_deliverables",
+    "output_contract",
+    "metadata"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "provider_id": {
+      "type": "string",
+      "const": "OPENAI_CODEX"
+    },
+    "adapter_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "audit_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "release": {
+      "type": "string",
+      "const": "RC1"
+    },
+    "baseline_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "package_dir": {
+      "type": "string",
+      "minLength": 1
+    },
+    "package_manifest_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "package_readiness_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "execution_policy": {
+      "$ref": "#/$defs/executionPolicy"
+    },
+    "system_instructions": {
+      "type": "string",
+      "minLength": 1
+    },
+    "audit_instructions": {
+      "type": "string",
+      "minLength": 1
+    },
+    "input_files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/inputFile"
+      }
+    },
+    "expected_deliverables": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "output_contract": {
+      "type": "object"
+    },
+    "metadata": {
+      "type": "object"
+    }
+  },
+  "$defs": {
+    "executionPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "execution_mode",
+        "read_only",
+        "recommendation_only",
+        "automatic_remediation",
+        "allow_source_writes",
+        "allow_live_trading",
+        "allow_production_credentials",
+        "allow_network_side_effects",
+        "require_human_approval"
+      ],
+      "properties": {
+        "execution_mode": {
+          "type": "string",
+          "const": "DRY_RUN"
+        },
+        "read_only": {
+          "type": "boolean",
+          "const": true
+        },
+        "recommendation_only": {
+          "type": "boolean",
+          "const": true
+        },
+        "automatic_remediation": {
+          "type": "boolean",
+          "const": false
+        },
+        "allow_source_writes": {
+          "type": "boolean",
+          "const": false
+        },
+        "allow_live_trading": {
+          "type": "boolean",
+          "const": false
+        },
+        "allow_production_credentials": {
+          "type": "boolean",
+          "const": false
+        },
+        "allow_network_side_effects": {
+          "type": "boolean",
+          "const": false
+        },
+        "require_human_approval": {
+          "type": "boolean",
+          "const": true
+        }
+      }
+    },
+    "inputFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "role",
+        "required_for_audit",
+        "access_mode"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "role": {
+          "type": "string",
+          "minLength": 1
+        },
+        "required_for_audit": {
+          "type": "boolean"
+        },
+        "access_mode": {
+          "type": "string",
+          "const": "READ_ONLY"
+        }
+      }
+    }
+  }
+}

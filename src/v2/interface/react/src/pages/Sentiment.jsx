@@ -1,11 +1,18 @@
+
+const normalizeRegime = (r) => {
+  if (!r) return "UNKNOWN";
+  const v = r.toLowerCase();
+  if (v === "risk_on") return "BULL";
+  if (v === "risk_off") return "BEAR";
+  if (v === "neutral") return "NEUTRAL";
+  return "UNKNOWN";
+};
 // src/pages/Sentiment.jsx
 // Vue du sentiment agrégé à partir de /sentiment
 
+import { API_BASE, buildApiUrl as apiUrl } from "../lib/apiBase";
 import React, { useEffect, useMemo, useState } from "react";
 
-const API_BASE =
-  import.meta.env.VITE_API_BASE_URL ||
-  "https://api.preprod.novastarcapital.fr";
 
 function buildUrl(path) {
   return `${API_BASE.replace(/\/+$/, "")}${path}`;

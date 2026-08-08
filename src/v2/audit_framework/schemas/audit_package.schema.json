@@ -1,0 +1,186 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://novastarcapital.local/schemas/audit_package.schema.json",
+  "title": "Nova Star Capital Audit Package",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "framework_version",
+    "audit_id",
+    "audit_type",
+    "provider",
+    "status",
+    "created_at",
+    "target",
+    "objectives",
+    "constraints",
+    "requested_deliverables",
+    "artifacts"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "framework_version": {
+      "type": "string"
+    },
+    "audit_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "audit_type": {
+      "type": "string",
+      "enum": [
+        "BASELINE_ENGINEERING",
+        "RELEASE_READINESS",
+        "NON_REGRESSION",
+        "SECURITY",
+        "ARCHITECTURE",
+        "PERFORMANCE",
+        "UI_DATA_INTEGRITY",
+        "EXTERNAL_REVIEW"
+      ]
+    },
+    "provider": {
+      "type": "string",
+      "enum": [
+        "NONE",
+        "CODEX",
+        "OPENAI",
+        "SONARQUBE",
+        "SEMGREP",
+        "CODEQL",
+        "EXTERNAL"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "CREATED",
+        "COLLECTING",
+        "VALIDATING",
+        "READY",
+        "RUNNING",
+        "COMPLETED",
+        "FAILED",
+        "CANCELLED"
+      ]
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "target": {
+      "$ref": "#/$defs/auditTarget"
+    },
+    "objectives": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "constraints": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "requested_deliverables": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/auditArtifact"
+      }
+    },
+    "validations": {
+      "type": "object"
+    },
+    "metadata": {
+      "type": "object"
+    }
+  },
+  "$defs": {
+    "auditTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "project",
+        "release",
+        "baseline_id",
+        "baseline_status",
+        "source_root"
+      ],
+      "properties": {
+        "project": {
+          "type": "string"
+        },
+        "release": {
+          "type": "string"
+        },
+        "baseline_id": {
+          "type": "string"
+        },
+        "baseline_status": {
+          "type": "string"
+        },
+        "aggregate_sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_root": {
+          "type": "string"
+        }
+      }
+    },
+    "auditArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_id",
+        "role",
+        "source_path",
+        "package_path",
+        "sha256",
+        "size_bytes",
+        "required",
+        "metadata"
+      ],
+      "properties": {
+        "artifact_id": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "source_path": {
+          "type": "string"
+        },
+        "package_path": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "metadata": {
+          "type": "object"
+        }
+      }
+    }
+  }
+}

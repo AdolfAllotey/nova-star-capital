@@ -1,0 +1,12 @@
+{
+  "ui_version": "3.29.0",
+  "baseline": "Dashboard V3",
+  "last_update": "2026-03-30",
+  "scope": "Dashboard upgraded with allocator status widget showing audit, regime, approved actions, drift request, and funding mode",
+  "rules": {
+    "versioning": "semantic",
+    "major": "structural or UX overhaul",
+    "minor": "new pages or major page harmonization",
+    "patch": "visual fixes or minor improvements"
+  }
+}

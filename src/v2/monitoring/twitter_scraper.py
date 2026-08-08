@@ -3,6 +3,7 @@ import os
 import json
 import time
 import urllib.request
+from datetime import datetime, timezone
 import urllib.parse
 import urllib.error
 from typing import List, Dict, Any, Optional, Tuple
@@ -78,6 +79,36 @@ def _build_headers(bearer: str) -> Dict[str, str]:
         "Accept": "application/json",
     }
 
+
+
+def _is_usage_cap_exceeded(payload: Dict[str, Any]) -> bool:
+    """
+    Twitter/X peut renvoyer HTTP 429 pour un CAP PRODUIT mensuel (UsageCapExceeded),
+    ce n'est pas un rate-limit classique minute/15min.
+    Exemple:
+      {"title":"UsageCapExceeded","period":"Monthly","scope":"Product",...}
+    """
+    try:
+        title = str(payload.get("title", "")).lower()
+        detail = str(payload.get("detail", "")).lower()
+        ptype = str(payload.get("type", "")).lower()
+        if "usagecapexceeded" in title:
+            return True
+        if "usage cap exceeded" in detail:
+            return True
+        if "usage-capped" in ptype:
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def _ts_iso(ts: int) -> str:
+    try:
+        return datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat()
+    except Exception:
+        return str(ts)
+
 def _is_rate_limited(status: int, payload: Dict[str, Any]) -> bool:
     if status == 429:
         return True
@@ -110,6 +141,12 @@ async def scrape_twitter() -> None:
     state = load_json_file(STATE_PATH, default={}) or {}
     next_allowed = int(state.get("next_allowed_ts") or 0)
     now = int(time.time())
+
+    capped_until = int(state.get("capped_until_ts") or 0)
+    if capped_until and now < capped_until:
+        wait = capped_until - now
+        LOGGER.error(f"Twitter: usage cap actif — skip pendant {wait}s (capped_until_ts={capped_until} {_ts_iso(capped_until)})")
+        return
 
     if now < next_allowed:
         wait = next_allowed - now

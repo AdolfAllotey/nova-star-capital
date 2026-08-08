@@ -40,15 +40,15 @@ def run_checks() -> Dict[str, Any]:
 
     # Files expected (minimal)
     expected_files = [
-        "data/market/market_regime.json",
-        "data/equities_offensive/signals/signals_v1.json",
-        "data/equities_offensive/voting/voted_signals.json",
-        "data/equities_offensive/risk/risk_decisions.json",
-        "data/equities_offensive/risk/execution_candidates.json",
-        "data/equities_offensive/execution/execution_plan.json",
-        "data/equities_offensive/state/positions_state.json",
-        "data/equities_offensive/state/exposure_snapshot.json",
-        "data/equities_offensive/reporting/dashboard_payload.json",
+        "/opt/nsc/data/preprod/equities_offensive/market/market_regime.json",
+        "/opt/nsc/data/preprod/equities_offensive/signals/signals_v1.json",
+        "/opt/nsc/data/preprod/equities_offensive/voting/voted_signals.json",
+        "/opt/nsc/data/preprod/equities_offensive/risk/risk_decisions.json",
+        "/opt/nsc/data/preprod/equities_offensive/risk/execution_candidates.json",
+        "/opt/nsc/data/preprod/equities_offensive/execution/execution_plan.json",
+        "/opt/nsc/data/preprod/equities_offensive/state/positions_state.json",
+        "/opt/nsc/data/preprod/equities_offensive/state/exposure_snapshot.json",
+        "/opt/nsc/data/preprod/equities_offensive/reporting/dashboard_payload.json",
     ]
 
     for fp in expected_files:
@@ -57,7 +57,7 @@ def run_checks() -> Dict[str, Any]:
         ok = ok and passed
 
     # Content checks
-    plan = load_json(Path("data/equities_offensive/execution/execution_plan.json"), default={}) or {}
+    plan = load_json(Path("/opt/nsc/data/preprod/equities_offensive/execution/execution_plan.json"), default={}) or {}
     passed, msg = require_keys(plan, ["plan_id", "action_policy", "orders", "candidate_orders"])
     checks.append({"type": "plan_keys", "passed": passed, "msg": msg})
     ok = ok and passed
@@ -77,20 +77,20 @@ def run_checks() -> Dict[str, Any]:
 
     # Idempotence check: running plan builder twice should keep same plan_id
     plan_id_1 = plan.get("plan_id")
-    plan2 = load_json(Path("data/equities_offensive/execution/execution_plan.json"), default={}) or {}
+    plan2 = load_json(Path("/opt/nsc/data/preprod/equities_offensive/execution/execution_plan.json"), default={}) or {}
     plan_id_2 = plan2.get("plan_id")
     passed = (plan_id_1 == plan_id_2)
     checks.append({"type": "idempotence_plan_id_stable", "passed": passed, "msg": "ok" if passed else "plan_id changed"})
     ok = ok and passed
 
     # Dashboard payload sanity
-    dash = load_json(Path("data/equities_offensive/reporting/dashboard_payload.json"), default={}) or {}
+    dash = load_json(Path("/opt/nsc/data/preprod/equities_offensive/reporting/dashboard_payload.json"), default={}) or {}
     passed, msg = require_keys(dash, ["ts", "module", "kpis", "execution_plan", "exposure"])
     checks.append({"type": "dashboard_keys", "passed": passed, "msg": msg})
     ok = ok and passed
 
     # Exposure snapshot sanity
-    exposure = load_json(Path("data/equities_offensive/state/exposure_snapshot.json"), default={}) or {}
+    exposure = load_json(Path("/opt/nsc/data/preprod/equities_offensive/state/exposure_snapshot.json"), default={}) or {}
     passed, msg = require_keys(exposure, ["open_positions", "total_notional_usd", "by_symbol"])
     checks.append({"type": "exposure_keys", "passed": passed, "msg": msg})
     ok = ok and passed
@@ -106,7 +106,7 @@ def run_checks() -> Dict[str, Any]:
 
 def main():
     out = run_checks()
-    save_json(Path("data/equities_offensive/tests/preprod_checks_result.json"), out)
+    save_json(Path("/opt/nsc/data/preprod/equities_offensive/tests/preprod_checks_result.json"), out)
     print(json.dumps({"passed": out["passed"], "ts": out["ts"]}, ensure_ascii=False, indent=2))
     if not out["passed"]:
         raise SystemExit(1)

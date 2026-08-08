@@ -1,11 +1,9 @@
 // src/pages/Whales.jsx
 // Vue Whales & Smart Money à partir de /whales/leaderboard
 
+import { API_BASE, buildApiUrl as apiUrl } from "../lib/apiBase";
 import React, { useEffect, useState, useMemo } from "react";
 
-const API_BASE =
-  import.meta.env.VITE_API_BASE_URL ||
-  "https://api.preprod.novastarcapital.fr";
 
 function buildUrl(path) {
   return `${API_BASE.replace(/\/+$/, "")}${path}`;

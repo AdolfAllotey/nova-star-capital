@@ -9,6 +9,7 @@ NSC PREPROD pipeline entrypoint (simulated-only).
 from __future__ import annotations
 
 import argparse
+import subprocess
 import json
 import logging
 import sys
@@ -18,6 +19,10 @@ from typing import Any
 
 
 from src.v2.utils.logger import get_logger
+from src.v2.analysis.pnl_engine import save_pnl_state
+from src.v2.analysis.strategy_pnl_engine import save_strategy_pnl_state
+from src.v2.analysis.equity_curve_engine import save_equity_curve_state
+from src.v2.analysis.trade_journal_engine import save_trade_journal_state
 log = get_logger("nsc.pipeline")
 def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -94,6 +99,24 @@ def _run_preprod() -> int:
     alloc = alloc or {"status": "no_profit", "splits": {}}
     log.info("allocation=%s", alloc)
 
+
+    # 2.5) Actions offensives PREPROD (best-effort)
+    try:
+        log.info("equities_offensive_pipeline=start")
+        r = subprocess.run(
+            ["/bin/bash", "/opt/nsc/app/scripts/run_equities_offensive_pipeline.sh"],
+            cwd="/opt/nsc/app",
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if r.returncode != 0:
+            log.warning("equities_offensive_pipeline=failed rc=%s stderr=%s", r.returncode, r.stderr[-1000:])
+        else:
+            log.info("equities_offensive_pipeline=ok")
+    except Exception as e:
+        log.exception("equities_offensive_pipeline=exception %s", e)
+
     # 3) Risk controller
     _try_call("src.v2.monitoring.risk_controller", "main")
 
@@ -110,6 +133,15 @@ def _run_preprod() -> int:
 
     # 5) Worst trades (utiliser la version analytics si dispo; éviter les imports LLM)
     _try_call("src.v2.analysis.worst_trade_analyzer", "analyze_and_notify")
+    save_pnl_state()
+    save_strategy_pnl_state()
+    save_equity_curve_state()
+    save_trade_journal_state()
+
+    subprocess.run(
+        [sys.executable, "src/v2/portfolio/crypto_equity_curve_updater.py"],
+        check=False,
+    )
 
     print(json.dumps({"ts": _iso_now(), "scope": "run_pipeline", "event": "done"}, ensure_ascii=False))
     return 0

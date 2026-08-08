@@ -69,9 +69,9 @@ def filter_universe(
     return kept, dropped
 
 def build_universe(
-    shortlist_path: str = "data/equities_offensive/universe/shortlist_nasdaq.json",
-    metrics_path: str = "data/equities_offensive/universe/metrics_snapshot.json",
-    out_path: str = "data/equities_offensive/universe/universe_filtered.json"
+    shortlist_path: str = "/opt/nsc/data/preprod/equities_offensive/universe/shortlist_nasdaq.json",
+    metrics_path: str = "/opt/nsc/data/preprod/equities_offensive/universe/metrics_snapshot.json",
+    out_path: str = "/opt/nsc/data/preprod/equities_offensive/universe/universe_filtered.json"
 ) -> Dict[str, Any]:
     shortlist = load_json(Path(shortlist_path), default={}) or {}
     metrics_doc = load_json(Path(metrics_path), default={}) or {}
@@ -102,9 +102,9 @@ def build_universe(
 def main():
     import argparse
     ap = argparse.ArgumentParser(description="NSC Nasdaq Universe Loader (shortlist + metrics -> filtered)")
-    ap.add_argument("--shortlist", default="data/equities_offensive/universe/shortlist_nasdaq.json")
-    ap.add_argument("--metrics", default="data/equities_offensive/universe/metrics_snapshot.json")
-    ap.add_argument("--out", default="data/equities_offensive/universe/universe_filtered.json")
+    ap.add_argument("--shortlist", default="/opt/nsc/data/preprod/equities_offensive/universe/shortlist_nasdaq.json")
+    ap.add_argument("--metrics", default="/opt/nsc/data/preprod/equities_offensive/universe/metrics_snapshot.json")
+    ap.add_argument("--out", default="/opt/nsc/data/preprod/equities_offensive/universe/universe_filtered.json")
     args = ap.parse_args()
 
     out = build_universe(args.shortlist, args.metrics, args.out)

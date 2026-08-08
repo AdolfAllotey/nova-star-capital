@@ -2,7 +2,7 @@
 const KEY = "nsc_ui_settings_v1";
 
 const DEFAULTS = {
-  apiBase: "http://127.0.0.1:8000",
+  apiBase: "",
   refreshMs: 30000,
   theme: "dark",
 };

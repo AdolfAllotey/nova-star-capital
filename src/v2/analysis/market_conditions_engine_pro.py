@@ -258,7 +258,11 @@ def main() -> None:
             pass
 
         # aggregation (uniquement si score numérique)
+        # Certains moteurs sortent une confidence 0..1, d'autres un score 0..100.
+        # Pour l'agrégation Market Conditions, on normalise tout en 0..100.
         if score is not None:
+            if 0 <= score <= 1:
+                score = score * 100
             nb_with_score += 1
             weighted_sum += score * spec.weight
             weight_sum += spec.weight
@@ -319,7 +323,6 @@ def main() -> None:
     now = _iso_utc_now()
     result["timestamp"] = now
     result.setdefault("generated_at", now)
-    save_json_file(out_path, result)
     save_json_file(out_path, result)
 
     logger.info(

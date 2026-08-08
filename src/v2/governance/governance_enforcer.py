@@ -39,12 +39,13 @@ def enforce_governance_on_plan(
     caps = governance.get("caps", {}) or {}
     flags = governance.get("feature_flags", {}) or {}
 
-    # --- Global policy: PREPROD => SIMULATED_ONLY by default
-    if mode == "PREPROD" and policy != "SIMULATED_ONLY":
-        vetos.append(_veto("hard_block", "PREPROD_POLICY", "PREPROD must run in SIMULATED_ONLY"))
+    # --- Global policy: PREPROD => allow safe paper modes, forbid LIVE
+    allowed_preprod_policies = {"SIMULATED_ONLY", "SIMULATED_EXECUTION", "EXIT_ONLY"}
+    if mode == "PREPROD" and policy not in allowed_preprod_policies:
+        vetos.append(_veto("hard_block", "PREPROD_POLICY", "PREPROD must run in a safe simulated mode"))
         return (False, vetos, _attach(plan, vetos, is_simulated=True))
 
-    is_simulated = (policy == "SIMULATED_ONLY")
+    is_simulated = (policy in {"SIMULATED_ONLY", "SIMULATED_EXECUTION", "EXIT_ONLY"})
 
     # --- Correlation gate: per decision (per our NSC decision: correlation_gate_state.active => SOFT veto)
     if correlation_gate_state and bool(correlation_gate_state.get("active")):

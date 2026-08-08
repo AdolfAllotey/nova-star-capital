@@ -110,9 +110,9 @@ def score_symbol(px: Dict[str, Any], w: EngineWeights) -> Dict[str, Any]:
     }
 
 def generate_signals(
-    universe_path: str = "data/equities_offensive/universe/universe_filtered.json",
-    price_snapshot_path: str = "data/equities_offensive/universe/price_snapshot.json",
-    out_path: str = "data/equities_offensive/signals/signals_v1.json",
+    universe_path: str = "/opt/nsc/data/preprod/equities_offensive/universe/universe_filtered.json",
+    price_snapshot_path: str = "/opt/nsc/data/preprod/equities_offensive/universe/price_snapshot.json",
+    out_path: str = "/opt/nsc/data/preprod/equities_offensive/signals/signals_v1.json",
     min_score: float = 60.0
 ) -> Dict[str, Any]:
     uni = load_json(Path(universe_path), default={}) or {}
@@ -183,9 +183,9 @@ def generate_signals(
 def main():
     import argparse
     ap = argparse.ArgumentParser(description="Equities Offensive Signal Engine V1 (Nasdaq)")
-    ap.add_argument("--universe", default="data/equities_offensive/universe/universe_filtered.json")
-    ap.add_argument("--prices", default="data/equities_offensive/universe/price_snapshot.json")
-    ap.add_argument("--out", default="data/equities_offensive/signals/signals_v1.json")
+    ap.add_argument("--universe", default="/opt/nsc/data/preprod/equities_offensive/universe/universe_filtered.json")
+    ap.add_argument("--prices", default="/opt/nsc/data/preprod/equities_offensive/universe/price_snapshot.json")
+    ap.add_argument("--out", default="/opt/nsc/data/preprod/equities_offensive/signals/signals_v1.json")
     ap.add_argument("--min-score", type=float, default=60.0)
     args = ap.parse_args()
 

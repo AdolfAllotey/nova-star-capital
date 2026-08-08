@@ -272,6 +272,32 @@ def analyze_worst_trades_and_generate_summary() -> None:
     worst = _select_worst(trades, n=5)
     metrics = _metrics(worst)
 
+    # --- NSC PATCH: skip LLM if dataset not informative ---
+    total_pnl_eur = metrics.get("total_pnl_eur", 0.0)
+    avg_pnl_eur = metrics.get("avg_pnl_eur", 0.0)
+    top_strategies = metrics.get("top_strategies", [])
+
+    is_uninformative = (
+        total_pnl_eur == 0
+        or abs(avg_pnl_eur) < 1e-6
+        or all(s[0] == "unknown" for s in top_strategies)
+    )
+
+    if is_uninformative:
+        logger.warning("[worst_trade_analyzer] Dataset non exploitable → skip LLM")
+
+        payload = _base_payload(worst, metrics)
+        payload["summary"] = "Dataset not informative enough for LLM analysis (PnL ~ 0 or undefined strategies)."
+        payload["llm_status"] = "skipped_uninformative"
+        payload["tokens_to_blacklist"] = []
+        payload["suggested_rules"] = []
+
+        summary_path = Path(DATA_DIR) / "risk" / "worst_trades_summary.json"
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        save_json_file(str(summary_path), payload)
+        logger.info("✅ worst_trades_summary.json écrit (skip LLM): %s", str(summary_path))
+        return
+
     # Always write worst_trades.json (even empty list)
     worst_path = Path(DATA_DIR) / "risk" / "worst_trades.json"
     worst_path.parent.mkdir(parents=True, exist_ok=True)

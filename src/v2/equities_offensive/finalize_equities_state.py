@@ -1,7 +1,7 @@
 from pathlib import Path
 import subprocess
 
-BASE = Path("data/equities_offensive")
+BASE = Path("/opt/nsc/data/preprod/equities_offensive")
 
 REQUIRED = [
     BASE / "execution" / "simulated_fills.jsonl",

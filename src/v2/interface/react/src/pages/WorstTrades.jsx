@@ -1,72 +1,111 @@
-// src/pages/WorstTrades.jsx
-// Vue des pires trades à partir de /risk/worst-trades
-
 import React, { useEffect, useMemo, useState } from "react";
+import NscSidebar from "../components/layout/NscSidebar";
+import { fetchJson } from "../lib/apiClient";
 
-const API_BASE =
-  import.meta.env.VITE_API_BASE_URL ||
-  "https://api.preprod.novastarcapital.fr";
-
-function buildUrl(path) {
-  return `${API_BASE.replace(/\/+$/, "")}${path}`;
+function num(v, fallback = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
 }
 
-function Section({ title, description, children }) {
-  return (
-    <section className="mb-8">
-      <div className="flex items-baseline justify-between mb-3">
-        <h2 className="text-lg font-semibold text-zinc-100 border-b border-zinc-800 pb-1">
-          {title}
-        </h2>
-        {description && (
-          <p className="text-xs text-zinc-500 ml-4">{description}</p>
-        )}
-      </div>
-      <div className="bg-zinc-900/70 border border-zinc-800 rounded-xl p-4">
-        {children}
-      </div>
-    </section>
-  );
+function eur(v) {
+  return `${num(v).toLocaleString("fr-FR", { maximumFractionDigits: 2 })} €`;
 }
 
-function Stat({ label, value, hint }) {
+function money(v) {
+  if (v === null || v === undefined || Number.isNaN(Number(v))) return "—";
+  return eur(v);
+}
+
+function formatDate(d) {
+  if (!d) return "—";
+  const dt = new Date(d);
+  if (Number.isNaN(dt.getTime())) return String(d);
+  return dt.toLocaleString("fr-FR");
+}
+
+function getTradeDate(t) {
+  return t?.timestamp || t?.opened_at || t?.entry_time || t?.ts || null;
+}
+
+function getLossValue(t) {
+  const raw = t?.loss_eur ?? t?.pnl_eur ?? t?.pnl ?? t?.realized_pnl_eur ?? t?.realized_pnl ?? null;
+  const n = Number(raw);
+  return Number.isNaN(n) ? null : n;
+}
+
+
+function pillClass(tone = "slate") {
+  const tones = {
+    green: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
+    amber: "border-amber-500/30 bg-amber-500/10 text-amber-300",
+    red: "border-red-500/30 bg-red-500/10 text-red-300",
+    blue: "border-sky-500/30 bg-sky-500/10 text-sky-300",
+    slate: "border-slate-500/30 bg-slate-500/10 text-slate-300",
+  };
+  return tones[tone] || tones.slate;
+}
+
+function strategyLabel(t) {
+  return t?.strategy || t?.raw?.strategy || "unknown";
+}
+
+function riskModeLabel(t) {
+  return t?.risk_mode || t?.raw?.risk_mode || "—";
+}
+
+function Box({ children, className = "" }) {
+  return <div className={`rounded-xl border border-[#1f2a37] bg-[#09111a]/95 ${className}`}>{children}</div>;
+}
+
+function Title({ children, right }) {
   return (
-    <div className="flex flex-col">
-      <span className="text-xs text-zinc-500">{label}</span>
-      <span className="text-sm font-semibold text-zinc-100">{value}</span>
-      {hint && <span className="text-[11px] text-zinc-500 mt-0.5">{hint}</span>}
+    <div className="mb-3 flex items-center justify-between">
+      <h3 className="text-[13px] font-semibold uppercase tracking-wide text-white">{children}</h3>
+      {right ? <div className="text-[10px] uppercase tracking-wide text-slate-500">{right}</div> : null}
     </div>
   );
 }
 
-function formatMoney(val) {
-  if (val === null || val === undefined || isNaN(val)) return "–";
-  const abs = Math.abs(val);
-  let txt;
-  if (abs >= 1_000_000) {
-    txt = `${(abs / 1_000_000).toFixed(1)} M€`;
-  } else if (abs >= 1_000) {
-    txt = `${(abs / 1_000).toFixed(1)} k€`;
-  } else {
-    txt = `${abs.toFixed(0)} €`;
-  }
-  return val < 0 ? `- ${txt}` : txt;
+function Metric({ label, value, tone = "white" }) {
+  const tones = {
+    white: "text-white",
+    green: "text-emerald-400",
+    amber: "text-amber-300",
+    red: "text-red-400",
+    blue: "text-sky-300",
+    slate: "text-slate-300",
+  };
+
+  return (
+    <div className="rounded-lg border border-[#1c2633] bg-[#0d1520] px-3 py-2">
+      <div className="text-[9px] uppercase tracking-wider text-slate-500">{label}</div>
+      <div className={`mt-1 truncate text-lg font-semibold ${tones[tone] || tones.white}`}>{value}</div>
+    </div>
+  );
 }
 
-function formatDate(d) {
-  if (!d) return "–";
-  const dt = new Date(d);
-  if (Number.isNaN(dt.getTime())) return d;
-  return dt.toLocaleString();
+function StatusPill({ children, tone = "blue" }) {
+  const tones = {
+    green: "border-emerald-400/30 bg-emerald-400/10 text-emerald-300",
+    amber: "border-amber-400/30 bg-amber-400/10 text-amber-300",
+    red: "border-red-400/30 bg-red-400/10 text-red-300",
+    blue: "border-sky-400/30 bg-sky-400/10 text-sky-300",
+    slate: "border-slate-400/20 bg-slate-400/10 text-slate-300",
+  };
+
+  return (
+    <span className={`rounded-md border px-2 py-1 text-[10px] font-semibold uppercase ${tones[tone] || tones.blue}`}>
+      {children}
+    </span>
+  );
 }
 
-export default function WorstTradesPage() {
+export default function WorstTrades() {
   const [trades, setTrades] = useState([]);
+  const [summary, setSummary] = useState(null);
   const [updatedAt, setUpdatedAt] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-
-  // Limite d’affichage, au cas où la liste est longue
   const [limit, setLimit] = useState(20);
 
   useEffect(() => {
@@ -75,72 +114,67 @@ export default function WorstTradesPage() {
     async function fetchData() {
       setLoading(true);
       setError(null);
-      try {
-        const res = await fetch(buildUrl("/risk/worst-trades"));
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`);
-        }
-        const data = await res.json();
 
-        // Tolérant: soit {items: [...]}, soit un array direct
-        const items = Array.isArray(data)
-          ? data
-          : Array.isArray(data.items)
-          ? data.items
-          : [];
+      try {
+        const [tradesRes, summaryRes] = await Promise.all([
+          fetchJson("/risk/worst-trades", { timeoutMs: 8000 }),
+          fetchJson("/risk/worst-trades/summary", { timeoutMs: 8000 }),
+        ]);
+
+        if (!tradesRes?.ok) throw new Error("worst-trades fetch failed");
+        if (!summaryRes?.ok) throw new Error("worst-trades summary fetch failed");
+
+        const tradesData = tradesRes.data;
+        const summaryData = summaryRes.data;
+
+        const items = Array.isArray(tradesData)
+          ? tradesData
+          : Array.isArray(tradesData?.trades)
+            ? tradesData.trades
+            : Array.isArray(tradesData?.items)
+              ? tradesData.items
+              : [];
+
+        const derivedUpdatedAt =
+          summaryData?.context?.generated_at ||
+          summaryData?.updated_at ||
+          items.map(getTradeDate).filter(Boolean).sort().slice(-1)[0] ||
+          null;
 
         if (!cancelled) {
           setTrades(items);
-          setUpdatedAt(data.updated_at || null);
+          setSummary(summaryData || null);
+          setUpdatedAt(derivedUpdatedAt);
         }
-      } catch (err) {
-        if (!cancelled) {
-          console.error("Error fetching worst trades:", err);
-          setError(
-            "Impossible de charger les pires trades. Vérifie l’API /risk/worst-trades."
-          );
-        }
+      } catch {
+        if (!cancelled) setError("Unable to load worst trades.");
       } finally {
         if (!cancelled) setLoading(false);
       }
     }
 
     fetchData();
+    const id = setInterval(fetchData, 30000);
+
     return () => {
       cancelled = true;
+      clearInterval(id);
     };
   }, []);
 
   const stats = useMemo(() => {
     if (!trades.length) {
-      return {
-        count: 0,
-        totalLoss: null,
-        avgLoss: null,
-        worstLoss: null,
-      };
+      return { count: 0, totalLoss: 0, avgLoss: 0, worstLoss: 0 };
     }
 
-    // On part du principe que loss_eur est négatif ou que pnl_eur < 0
-    const losses = trades
-      .map((t) => {
-        const loss =
-          Number(
-            t.loss_eur ??
-              t.pnl_eur ??
-              t.pnl ??
-              (t.realized_pnl_eur ?? t.realized_pnl)
-          ) || 0;
-        return loss;
-      })
-      // On ne garde que les pertes (valeurs < 0)
-      .filter((v) => !Number.isNaN(v) && v < 0);
+    const numeric = trades.map(getLossValue).filter((v) => v !== null);
+    const losses = numeric.filter((v) => v < 0);
 
     if (!losses.length) {
       return {
         count: trades.length,
-        totalLoss: 0,
-        avgLoss: 0,
+        totalLoss: num(summary?.metrics?.total_pnl_eur),
+        avgLoss: num(summary?.metrics?.avg_pnl_eur),
         worstLoss: 0,
       };
     }
@@ -149,259 +183,172 @@ export default function WorstTradesPage() {
     const avgLoss = totalLoss / losses.length;
     const worstLoss = Math.min(...losses);
 
-    return {
-      count: trades.length,
-      totalLoss,
-      avgLoss,
-      worstLoss,
-    };
-  }, [trades]);
+    return { count: trades.length, totalLoss, avgLoss, worstLoss };
+  }, [trades, summary]);
 
-  const visibleTrades = useMemo(
-    () => trades.slice(0, limit),
-    [trades, limit]
-  );
+  const visibleTrades = useMemo(() => trades.slice(0, limit), [trades, limit]);
+  const summaryText = summary?.summary || "No backend risk summary available.";
+  const summaryCount = Number(summary?.metrics?.n_worst || 0);
+  const consistencyGap = summaryCount > 0 && summaryCount !== trades.length;
+  const llmStatus = summary?.llm_status || "unknown";
+  const riskState = stats.totalLoss < 0 ? "LOSS REVIEW" : "CLEAN";
 
   return (
-    <div className="space-y-8">
-      {/* Header */}
-      <header className="mb-4">
-        <h1 className="text-2xl font-semibold text-zinc-100 mb-1">
-          Pires trades &amp; zones de risque
-        </h1>
-        <p className="text-sm text-zinc-400">
-          Surveillance des{" "}
-          <span className="font-medium text-red-400">plus grosses pertes</span>{" "}
-          pour ajuster les règles du bot, affiner les blacklists et renforcer le
-          contrôle du risque.
-        </p>
-        {updatedAt && (
-          <p className="text-[11px] text-zinc-500 mt-1">
-            Dernière mise à jour : {updatedAt}
-          </p>
-        )}
-      </header>
+    <div className="min-h-screen bg-[#05080d] text-slate-100">
+      <NscSidebar footerText="Post-trade risk online" />
 
-      {/* Synthèse */}
-      <Section
-        title="Synthèse des pires trades"
-        description="Vue agrégée des pertes réalisées utilisées par le module de risk management."
-      >
-        {loading && !trades.length ? (
-          <div className="text-sm text-zinc-400">Chargement…</div>
-        ) : error ? (
-          <div className="text-sm text-red-400">{error}</div>
-        ) : trades.length === 0 ? (
-          <div className="text-sm text-zinc-400">
-            Aucun trade n’a encore été analysé.  
-            Dès que la simulation / le réel tournera, les{" "}
-            <span className="font-medium text-red-400">
-              pires trades apparaîtront ici
-            </span>{" "}
-            et alimenteront la blacklist.
+      <main className="ml-[235px] w-[calc(100%-235px)] p-4 pt-3">
+        <div className="mb-3 flex items-center justify-between">
+          <div>
+            <h1 className="text-lg font-semibold uppercase tracking-wide">Worst Trades</h1>
+            <p className="text-xs text-slate-400">
+              Post-mortem risk analysis, largest realized losses, fragile setups and blacklist intelligence
+            </p>
           </div>
-        ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 text-sm">
-            <Stat
-              label="Nombre de trades analysés"
-              value={stats.count || "–"}
-              hint="Base de calcul pour la synthèse"
-            />
-            <Stat
-              label="Perte totale (pire trades)"
-              value={
-                stats.totalLoss !== null ? formatMoney(stats.totalLoss) : "–"
-              }
-              hint="Somme des pertes sélectionnées"
-            />
-            <Stat
-              label="Perte moyenne"
-              value={stats.avgLoss !== null ? formatMoney(stats.avgLoss) : "–"}
-              hint="Moyenne par trade perdant"
-            />
-            <Stat
-              label="Plus grosse perte"
-              value={
-                stats.worstLoss !== null ? formatMoney(stats.worstLoss) : "–"
-              }
-              hint="Trade qui impacte le plus le P&L"
-            />
-          </div>
-        )}
-      </Section>
 
-      {/* Tableau détaillé */}
-      <Section
-        title="Détail des pires trades"
-        description="Liste triée des pires pertes. Sert de base au module worst_trade_analyzer & blacklist."
-      >
-        {loading && !trades.length ? (
-          <div className="text-sm text-zinc-400">Chargement…</div>
-        ) : error ? (
-          <div className="text-sm text-red-400">{error}</div>
-        ) : trades.length === 0 ? (
-          <div className="text-sm text-zinc-400">
-            Dès que le bot aura exécuté des trades perdants significatifs,
-            l’onglet montrera{" "}
-            <span className="font-medium text-red-400">
-              les cas à ne plus reproduire
-            </span>{" "}
-            (tokens, taille, timing…).
+          <div className="flex gap-2">
+            <StatusPill tone={trades.length > 0 ? "amber" : "slate"}>{trades.length > 0 ? "DATA AVAILABLE" : "NO DATA"}</StatusPill>
+            <StatusPill tone="blue">Trades {stats.count}</StatusPill>
+            {consistencyGap ? <StatusPill tone="amber">Summary gap</StatusPill> : null}
+            <StatusPill tone="slate">{updatedAt ? `Updated ${formatDate(updatedAt)}` : "NO TIMESTAMP"}</StatusPill>
           </div>
-        ) : (
-          <>
-            <div className="flex items-center justify-between mb-3 text-xs text-zinc-500">
-              <span>
-                Affichage des{" "}
-                <span className="text-zinc-200 font-medium">
-                  {visibleTrades.length}
-                </span>{" "}
-                pires trades sur{" "}
-                <span className="text-zinc-200 font-medium">
-                  {trades.length}
-                </span>{" "}
-                analysés.
-              </span>
-              <div className="flex items-center gap-2">
-                <span>Limiter à :</span>
-                {[5, 10, 20, 50].map((n) => (
-                  <button
-                    key={n}
-                    onClick={() => setLimit(n)}
-                    className={`px-2 py-0.5 rounded border text-xs ${
-                      limit === n
-                        ? "border-red-500 text-red-400 bg-red-500/10"
-                        : "border-zinc-700 text-zinc-300 hover:border-zinc-500"
-                    }`}
-                  >
-                    {n}
-                  </button>
-                ))}
+        </div>
+
+        {error ? (
+          <Box className="mb-3 border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">
+            {error}
+          </Box>
+        ) : null}
+
+        <div className="mb-3 grid grid-cols-4 gap-3">
+          <Metric label="Analyzed Trades" value={stats.count} />
+          <Metric label="Total Loss" value={money(stats.totalLoss)} tone={stats.totalLoss < 0 ? "red" : "slate"} />
+          <Metric label="Average Loss" value={money(stats.avgLoss)} tone={stats.avgLoss < 0 ? "red" : "slate"} />
+          <Metric label="Worst Loss" value={money(stats.worstLoss)} tone={stats.worstLoss < 0 ? "red" : "slate"} />
+        </div>
+
+        <div className="mb-3 grid grid-cols-[1.2fr_1fr] gap-3">
+          <Box className="p-4">
+            <Title right={loading ? "Loading" : "Live"}>Loss Command</Title>
+
+            <div className="grid grid-cols-4 gap-3">
+              <div className="rounded-lg border border-red-400/20 bg-red-400/5 p-3">
+                <div className="text-[10px] uppercase text-red-300">Risk State</div>
+                <div className="mt-1 text-sm font-semibold text-red-200">{riskState}</div>
+              </div>
+
+              <div className="rounded-lg border border-amber-400/20 bg-amber-400/5 p-3">
+                <div className="text-[10px] uppercase text-amber-300">Dataset</div>
+                <div className="mt-1 text-sm font-semibold text-amber-200">{stats.count} trades</div>
+              </div>
+
+              <div className="rounded-lg border border-red-400/20 bg-red-400/5 p-3">
+                <div className="text-[10px] uppercase text-red-300">Worst</div>
+                <div className="mt-1 text-sm font-semibold text-red-200">{money(stats.worstLoss)}</div>
+              </div>
+
+              <div className="rounded-lg border border-sky-400/20 bg-sky-400/5 p-3">
+                <div className="text-[10px] uppercase text-sky-300">Refresh</div>
+                <div className="mt-1 truncate text-sm font-semibold text-sky-200">
+                  {updatedAt ? formatDate(updatedAt) : "n/a"}
+                </div>
               </div>
             </div>
+          </Box>
 
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-zinc-800 text-xs text-zinc-500">
-                    <th className="text-left py-2 pr-2">Token</th>
-                    <th className="text-left py-2 pr-2">Side</th>
-                    <th className="text-right py-2 pr-2">Montant</th>
-                    <th className="text-right py-2 pr-2">Prix entrée</th>
-                    <th className="text-right py-2 pr-2">Prix sortie</th>
-                    <th className="text-right py-2 pr-2">P&L (€)</th>
-                    <th className="text-left py-2 pr-2">Stratégie</th>
-                    <th className="text-left py-2 pr-2">Exchange</th>
-                    <th className="text-left py-2 pl-2">Ouvert / Fermé</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {visibleTrades.map((t, idx) => {
-                    const token = t.token || t.symbol || "N/A";
-                    const side = (t.side || "").toUpperCase();
-                    const amount = Number(t.amount ?? t.size ?? NaN);
-                    const entry = Number(
-                      t.entry_price_eur ??
-                        t.entry_price ??
-                        t.price_entry_eur ??
-                        t.price_eur ??
-                        NaN
-                    );
-                    const exit = Number(
-                      t.exit_price_eur ??
-                        t.exit_price ??
-                        t.price_exit_eur ??
-                        t.exit_price_eur ??
-                        NaN
-                    );
-                    const pnl =
-                      Number(
-                        t.loss_eur ??
-                          t.pnl_eur ??
-                          t.pnl ??
-                          t.realized_pnl_eur ??
-                          t.realized_pnl ??
-                          NaN
-                      ) || null;
-
-                    const openedAt = t.opened_at || t.entry_time || t.timestamp;
-                    const closedAt = t.closed_at || t.exit_time;
-
-                    return (
-                      <tr
-                        key={t.id || `${token}-${idx}`}
-                        className="border-b border-zinc-800/60 hover:bg-zinc-900/60"
-                      >
-                        <td className="py-2 pr-2">
-                          <div className="flex flex-col">
-                            <span className="text-sm text-zinc-100">
-                              {token}
-                            </span>
-                            {t.reason && (
-                              <span className="text-[11px] text-zinc-500">
-                                {t.reason}
-                              </span>
-                            )}
-                          </div>
-                        </td>
-                        <td className="py-2 pr-2">
-                          <span
-                            className={
-                              side === "SELL"
-                                ? "text-red-400 text-xs font-semibold"
-                                : "text-zinc-300 text-xs"
-                            }
-                          >
-                            {side || "–"}
-                          </span>
-                        </td>
-                        <td className="py-2 pr-2 text-right text-zinc-100">
-                          {Number.isNaN(amount)
-                            ? "–"
-                            : amount.toLocaleString(undefined, {
-                                maximumFractionDigits: 6,
-                              })}
-                        </td>
-                        <td className="py-2 pr-2 text-right text-zinc-100">
-                          {Number.isNaN(entry)
-                            ? "–"
-                            : `${entry.toFixed(4)} €`}
-                        </td>
-                        <td className="py-2 pr-2 text-right text-zinc-100">
-                          {Number.isNaN(exit) ? "–" : `${exit.toFixed(4)} €`}
-                        </td>
-                        <td className="py-2 pr-2 text-right">
-                          {pnl !== null ? (
-                            <span className="text-red-400 font-semibold">
-                              {formatMoney(pnl)}
-                            </span>
-                          ) : (
-                            <span className="text-zinc-500">–</span>
-                          )}
-                        </td>
-                        <td className="py-2 pr-2 text-left text-xs text-zinc-200">
-                          {t.strategy || "–"}
-                        </td>
-                        <td className="py-2 pr-2 text-left text-xs text-zinc-200">
-                          {(t.exchange || "").toUpperCase() || "–"}
-                        </td>
-                        <td className="py-2 pl-2 text-left text-xs text-zinc-300">
-                          <div className="flex flex-col">
-                            <span>{openedAt ? formatDate(openedAt) : "–"}</span>
-                            <span className="text-[11px] text-zinc-500">
-                              {closedAt ? `Fermé : ${formatDate(closedAt)}` : ""}
-                            </span>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+          <Box className="p-4">
+            <Title>Risk Reading</Title>
+            <div className="rounded-lg border border-[#1c2633] bg-[#0d1520] p-4">
+              <div className="text-[10px] uppercase tracking-wider text-slate-500">Current Reading</div>
+              <div className={`mt-2 text-2xl font-semibold ${stats.totalLoss < 0 ? "text-red-400" : "text-emerald-400"}`}>
+                {stats.totalLoss < 0 ? "POST-MORTEM" : "CLEAN"}
+              </div>
+              <div className="mt-3 text-sm leading-5 text-slate-300">
+                This page isolates losing trades from market scanning. It is used for risk learning, weak-pattern detection and blacklist recommendations.
+              </div>
             </div>
-          </>
-        )}
-      </Section>
+          </Box>
+        </div>
+
+        <Box className="mb-3 p-4">
+          <Title right="Backend synthesis">Risk Summary</Title>
+          <div className="rounded-lg border border-[#1c2633] bg-[#0d1520] p-4 text-sm leading-6 text-slate-300">
+            <div>{summaryText}</div>
+
+            <div className="mt-3 flex flex-wrap gap-2">
+              <span className={`rounded-md border px-2 py-1 text-[10px] font-semibold uppercase ${pillClass(llmStatus === "skipped_uninformative" ? "amber" : "blue")}`}>
+                LLM {llmStatus}
+              </span>
+
+              {consistencyGap ? (
+                <span className={`rounded-md border px-2 py-1 text-[10px] font-semibold uppercase ${pillClass("amber")}`}>
+                  Summary {summaryCount} / API {trades.length}
+                </span>
+              ) : (
+                <span className={`rounded-md border px-2 py-1 text-[10px] font-semibold uppercase ${pillClass("green")}`}>
+                  Summary aligned
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-3 grid grid-cols-3 gap-3">
+            <Metric label="Worst Trades Count" value={summary?.metrics?.n_worst ?? "—"} />
+            <Metric label="Total PnL" value={money(summary?.metrics?.total_pnl_eur)} tone={num(summary?.metrics?.total_pnl_eur) < 0 ? "red" : "green"} />
+            <Metric label="Average PnL" value={money(summary?.metrics?.avg_pnl_eur)} tone={num(summary?.metrics?.avg_pnl_eur) < 0 ? "red" : "green"} />
+          </div>
+        </Box>
+
+        <Box className="p-4">
+          <Title right="Detailed loss list">Worst Trades Table</Title>
+
+          <div className="grid grid-cols-[0.9fr_150px_90px_120px_80px_100px_110px_110px] gap-2 border-b border-[#172231] pb-2 text-[9px] uppercase text-slate-500">
+            <div>Token</div>
+            <div>Date</div>
+            <div>Exchange</div>
+            <div>Strategy</div>
+            <div>Risk</div>
+            <div>Amount</div>
+            <div>Notional</div>
+            <div>PnL</div>
+          </div>
+
+          <div className="mt-3 space-y-2 rounded-lg border border-[#1c2633] bg-[#0d1520] p-3">
+            {loading && !trades.length ? (
+              <div className="rounded-lg border border-[#1c2633] bg-[#09111a] p-3 text-sm text-slate-400">
+                Loading worst trades...
+              </div>
+            ) : visibleTrades.length === 0 ? (
+              <div className="rounded-lg border border-[#1c2633] bg-[#09111a] p-3 text-sm text-slate-400">
+                No worst trades available.
+              </div>
+            ) : visibleTrades.map((t, i) => {
+              const pnl = getLossValue(t);
+              return (
+                <div key={`${t.token || t.symbol || "trade"}-${i}`} className="grid grid-cols-[0.9fr_150px_90px_120px_80px_100px_110px_110px] items-center gap-2 border-b border-[#172231] py-2 text-xs last:border-b-0">
+                  <div className="truncate font-semibold text-slate-200">{t.token || t.symbol || "—"}</div>
+                  <div className="truncate text-slate-400">{formatDate(getTradeDate(t))}</div>
+                  <div className="truncate text-slate-400">{t.exchange || "—"}</div>
+                  <div className="truncate text-slate-300">{strategyLabel(t)}</div>
+                  <div className="truncate text-amber-300">{riskModeLabel(t)}</div>
+                  <div className="text-slate-300">{money(t.amount)}</div>
+                  <div className="text-slate-300">{money(t.notional_eur)}</div>
+                  <div className={pnl !== null && pnl < 0 ? "font-semibold text-red-400" : "text-slate-300"}>{pnl === null ? "—" : money(pnl)}</div>
+                </div>
+              );
+            })}
+          </div>
+
+          {trades.length > limit ? (
+            <button
+              onClick={() => setLimit((v) => v + 20)}
+              className="mt-4 rounded-lg border border-[#1c2633] bg-[#0d1520] px-3 py-2 text-sm text-slate-200 hover:bg-[#111827]"
+            >
+              Show more
+            </button>
+          ) : null}
+        </Box>
+      </main>
     </div>
   );
 }

@@ -1,3 +1,4 @@
+import { getUiLabel } from "../lib/uiVersion";
 // src/components/Layout.jsx
 
 import React from "react";

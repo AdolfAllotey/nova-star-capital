@@ -3,11 +3,9 @@
 
 export const FEATURES = {
   // crypto modules
-  CRYPTO_ICO: true, // API /ico/* encore 404 en PREPROD
-
   // Briquets futures (V3/V4)
-  BRICK_OFFENSIVE: false,
-  BRICK_DEFENSIVE: false,
+  BRICK_OFFENSIVE: true,
+  BRICK_DEFENSIVE: true,
   BRICK_LT: false,
   BRICK_OPTIONS: false,
 

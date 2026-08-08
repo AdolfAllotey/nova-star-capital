@@ -1,3 +1,15 @@
+
+const normalizeRegime = (r) => {
+  if (!r) return "UNKNOWN";
+  const v = r.toLowerCase();
+
+  if (v === "risk_on") return "BULL";
+  if (v === "risk_off") return "BEAR";
+  if (v === "neutral") return "NEUTRAL";
+
+  return "UNKNOWN";
+};
+
 // src/ui/AppLayout.jsx
 // Layout principal : sidebar premium + contenu, avec barre de statut globale
 
@@ -13,7 +25,6 @@ import {
   LineChart,
   Target,
   Waves,
-  PlayCircle,
   FolderGit2,
   Filter,
   Star,
@@ -140,11 +151,6 @@ export default function AppLayout({ children }) {
               to="/market/regime"
               label="Market Regime"
               icon={Waves}
-            />
-            <_NavItem
-              to="/simulation/live"
-              label="Live Simulation"
-              icon={PlayCircle}
             />
           </div>
 

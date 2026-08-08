@@ -22,8 +22,8 @@ logger = get_logger(__name__)
 DATA_DIR = Path(get_data_dir()).resolve()
 
 # Seuils de scoring momentum
-MIN_META_FALLBACK = 35.0       # comportement legacy (sans early pump)
-MIN_META_WITH_PUMP = 45.0      # règle Saison 2.5 quand early_pump dispo
+MIN_META_FALLBACK = 30.0       # comportement legacy (sans early pump)
+MIN_META_WITH_PUMP = 40.0      # règle Saison 2.5 quand early_pump dispo
 EARLY_PUMP_MIN = 0.6           # early_pump_score minimal
 
 MOMENTUM_FILE = DATA_DIR / "analysis" / "momentum_scores.json"
@@ -248,9 +248,160 @@ def _compute_basic_momentum(candles: List[Dict[str, Any]]) -> Dict[str, float]:
     }
 
 
+# ================================
+# NSC_SCORING_V2_HELPERS BEGIN
+# ================================
+def _nsc_safe_float(x, default=0.0):
+    try:
+        return float(x)
+    except Exception:
+        return float(default)
+
+def _nsc_clip(x, lo=0.0, hi=100.0):
+    try:
+        x = float(x)
+    except Exception:
+        x = 0.0
+    return max(lo, min(hi, x))
+
+def _nsc_norm_0_100(x, lo, hi):
+    x = _nsc_safe_float(x, lo)
+    if hi <= lo:
+        return 0.0
+    return _nsc_clip((x - lo) / (hi - lo) * 100.0, 0.0, 100.0)
+
+def _nsc_build_meta_score_v2(
+    ret_15m=None,
+    ret_60m=None,
+    vol_ratio=None,
+    distance_ma20=None,
+    sentiment_score=None,
+    early_pump_score=None,
+    volume_spike=None,
+    risk_mode=None,
+    correlation_gate_active=None,
+):
+    ret_15m = _nsc_safe_float(ret_15m, 0.0)
+    ret_60m = _nsc_safe_float(ret_60m, 0.0)
+    vol_ratio = _nsc_safe_float(vol_ratio, 1.0)
+    distance_ma20 = _nsc_safe_float(distance_ma20, 0.0)
+    sentiment_score = _nsc_safe_float(sentiment_score, 0.0)
+    early_pump_score = _nsc_safe_float(early_pump_score, 0.0)
+    volume_spike = _nsc_safe_float(volume_spike, vol_ratio)
+
+    momentum_15 = _nsc_norm_0_100(ret_15m, -5.0, 10.0)
+    momentum_60 = _nsc_norm_0_100(ret_60m, -10.0, 20.0)
+    momentum = 0.45 * momentum_15 + 0.55 * momentum_60
+
+    volume = _nsc_norm_0_100(vol_ratio, 0.5, 3.0)
+    structure = _nsc_norm_0_100(distance_ma20, -10.0, 15.0)
+    sentiment = _nsc_norm_0_100(sentiment_score, -1.0, 1.0)
+
+    base = (
+        momentum * 0.40
+        + volume * 0.20
+        + sentiment * 0.20
+        + structure * 0.20
+    )
+
+    bonus = 0.0
+    malus = 0.0
+
+    if momentum >= 80:
+        bonus += 15.0
+    elif momentum >= 70:
+        bonus += 8.0
+
+    if volume_spike >= 2.5:
+        bonus += 10.0
+    elif volume_spike >= 1.8:
+        bonus += 5.0
+
+    if sentiment_score >= 0.60:
+        bonus += 10.0
+    elif sentiment_score >= 0.40:
+        bonus += 5.0
+
+    if early_pump_score >= 0.70:
+        bonus += 10.0
+    elif early_pump_score >= 0.50:
+        bonus += 5.0
+
+    if risk_mode in {"reduced", "risk_off"}:
+        malus += 10.0
+
+    if bool(correlation_gate_active):
+        malus += 10.0
+
+    final_score = _nsc_clip(base + bonus - malus, 0.0, 100.0)
+
+    return {
+        "momentum_component": round(momentum, 4),
+        "volume_component": round(volume, 4),
+        "sentiment_component": round(sentiment, 4),
+        "structure_component": round(structure, 4),
+        "bonus": round(bonus, 4),
+        "malus": round(malus, 4),
+        "meta_score_v2": round(final_score, 4),
+    }
+# ================================
+# NSC_SCORING_V2_HELPERS END
+# ================================
+
 # ---------------------------------------------------------------------------
 # Fonction principale
 # ---------------------------------------------------------------------------
+
+
+def _load_symbol_sentiment_scores(data_dir: Path) -> Dict[str, float]:
+    """
+    Safe fallback helper.
+    Returns per-symbol sentiment scores when available, otherwise {}.
+    """
+    candidates = [
+        data_dir / "market" / "sentiment_overview.json",
+        data_dir / "analysis" / "sentiment_overview.json",
+        data_dir / "sentiment_overview.json",
+    ]
+
+    out: Dict[str, float] = {}
+
+    for path in candidates:
+        raw = load_json_file(path, default=None)
+        if not raw:
+            continue
+
+        if isinstance(raw, dict):
+            items = raw.get("items") or raw.get("symbols") or raw.get("scores") or raw
+            if isinstance(items, list):
+                for row in items:
+                    if not isinstance(row, dict):
+                        continue
+                    sym = str(row.get("symbol") or row.get("token") or "").lower().strip()
+                    val = row.get("sentiment_score") or row.get("avg_sentiment") or row.get("score")
+                    try:
+                        if sym and val is not None:
+                            out[sym] = float(val)
+                    except Exception:
+                        pass
+
+            elif isinstance(items, dict):
+                for sym, payload in items.items():
+                    try:
+                        if isinstance(payload, dict):
+                            val = payload.get("sentiment_score") or payload.get("avg_sentiment") or payload.get("score")
+                        else:
+                            val = payload
+                        if val is not None:
+                            out[str(sym).lower().strip()] = float(val)
+                    except Exception:
+                        pass
+
+        if out:
+            return out
+
+    return {}
+
 
 def compute_momentum_scores(data_dir: Path | None = None) -> Dict[str, Any]:
     """
@@ -292,6 +443,29 @@ def compute_momentum_scores(data_dir: Path | None = None) -> Dict[str, Any]:
         return result
 
     early_pump_scores, early_pump_meta = _load_early_pump_scores(data_dir)
+    sentiment_scores = _load_symbol_sentiment_scores(data_dir)
+
+    risk_limits = load_json_file(data_dir / "trading" / "risk_limits.json", default={}) or {}
+    risk_mode = str(risk_limits.get("mode") or risk_limits.get("risk_mode") or "normal").lower()
+
+    correlation_gate_state = load_json_file(
+        data_dir / "state" / "correlation_gate_state.json",
+        default={}
+    ) or {}
+    correlation_gate_active = bool(correlation_gate_state.get("active", False))
+
+    risk_limits = load_json_file(data_dir / "trading" / "risk_limits.json", default={}) or {}
+    risk_mode = str(
+        risk_limits.get("mode")
+        or risk_limits.get("risk_mode")
+        or "normal"
+    ).lower()
+
+    correlation_gate_state = load_json_file(
+        data_dir / "state" / "correlation_gate_state.json",
+        default={}
+    ) or {}
+    correlation_gate_active = bool(correlation_gate_state.get("active", False))
     has_pump_data = len(early_pump_scores) > 0
 
     scores: List[Dict[str, Any]] = []
@@ -300,7 +474,43 @@ def compute_momentum_scores(data_dir: Path | None = None) -> Dict[str, Any]:
     for symbol, candles in ohlcv_by_symbol.items():
         symbol_norm = symbol.lower().strip()
         m = _compute_basic_momentum(candles)
-        meta_score = m["meta_score"]
+        # ================================
+        # NSC_V3_OVERRIDE_META
+        # ================================
+        legacy_meta_score = float(m["meta_score"])
+
+        sentiment_score = sentiment_scores.get(symbol)
+        sentiment_score = float(sentiment_score) if sentiment_score is not None else 0.0
+
+        early_pump = early_pump_scores.get(symbol)
+        early_pump = float(early_pump) if early_pump is not None else 0.0
+
+        v4 = _nsc_build_meta_score_v2(
+            ret_15m=m.get("ret_15m", 0.0),
+            ret_60m=m.get("ret_60m", 0.0),
+            vol_ratio=m.get("vol_ratio", 1.0),
+            distance_ma20=m.get("distance_ma20", 0.0),
+            sentiment_score=sentiment_score,
+            early_pump_score=early_pump,
+            volume_spike=m.get("vol_ratio", 1.0),
+            risk_mode=risk_mode,
+            correlation_gate_active=correlation_gate_active,
+        )
+
+        overlay_score = float(v4.get("meta_score_v2", legacy_meta_score))
+
+        # V4 hybride : on conserve la hiérarchie legacy
+        # et on applique seulement un overlay partiel
+        meta_score = round(legacy_meta_score * 0.7 + overlay_score * 0.3, 4)
+
+        bonus = float(v4.get("bonus", 0.0) or 0.0)
+        malus = float(v4.get("malus", 0.0) or 0.0)
+        momentum_component = float(v4.get("momentum_component", 0.0) or 0.0)
+        volume_component = float(v4.get("volume_component", 0.0) or 0.0)
+        structure_component = float(v4.get("structure_component", 0.0) or 0.0)
+        sentiment_component = float(v4.get("sentiment_component", 0.0) or 0.0)
+
+        
 
         early_pump = early_pump_scores.get(symbol_norm)
 
@@ -345,10 +555,13 @@ def compute_momentum_scores(data_dir: Path | None = None) -> Dict[str, Any]:
             "symbol": symbol_norm,
             "momentum_score": m["momentum_score"],
             "meta_score": meta_score,
+            "legacy_meta_score": legacy_meta_score,
             "ret_15m": m["ret_15m"],
             "ret_60m": m["ret_60m"],
             "distance_ma20": m["distance_ma20"],
             "near_7d_high": m["near_7d_high"],
+            "risk_mode": risk_mode,
+            "correlation_gate_active": correlation_gate_active,
             "early_pump_score": early_pump,
             "early_pump_gating_reason": gating_reason,
         }
@@ -371,6 +584,7 @@ def compute_momentum_scores(data_dir: Path | None = None) -> Dict[str, Any]:
                 {
                     "symbol": symbol_norm,
                     "meta_score": meta_score,
+                    "legacy_meta_score": legacy_meta_score,
                     "momentum_score": m["momentum_score"],
                     "early_pump_score": early_pump,
                     "momentum_regime": score_entry["momentum_regime"],
@@ -423,3 +637,23 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# ================================
+# NSC_V3_SENTIMENT_HELPER
+# ================================
+def _load_symbol_sentiment_scores(data_dir):
+    from src.v2.utils.file_utils import load_json_file
+
+    data = load_json_file(data_dir / "market" / "sentiment_overview.json", default={}) or {}
+    out = {}
+
+    for entry in (data.get("symbols") or []):
+        symbol = str(entry.get("symbol") or "").lower()
+        val = entry.get("sentiment_score") or entry.get("avg_sentiment") or entry.get("score")
+        try:
+            out[symbol] = float(val)
+        except:
+            continue
+
+    return out

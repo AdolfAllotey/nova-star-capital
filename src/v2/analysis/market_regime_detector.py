@@ -130,6 +130,37 @@ class RegimeResult:
     reasons: List[str]
     inputs: Dict[str, Any]
 
+
+
+def compute_confidence_score(
+    agg: float,
+    vix: float,
+    qqq: dict,
+    spy: dict,
+    breadth: dict,
+) -> float:
+    """
+    Confidence = conviction exploitable, pas simple direction du score.
+    On pénalise les inputs manquants pour éviter NEUTRAL / 100%.
+    """
+    base = min(1.0, abs(float(agg or 0.0)))
+
+    penalty = 0.0
+
+    if not vix or vix <= 0:
+        penalty += 0.30
+
+    if not isinstance(qqq, dict) or not qqq.get("close") or not qqq.get("ma50") or not qqq.get("ma200"):
+        penalty += 0.25
+
+    if not isinstance(spy, dict) or not spy.get("close") or not spy.get("ma50") or not spy.get("ma200"):
+        penalty += 0.25
+
+    if not isinstance(breadth, dict) or breadth.get("pct_above_ma200") is None:
+        penalty += 0.10
+
+    return round(max(0.0, min(1.0, base - penalty)), 4)
+
 # --- Core logic
 
 def detect_market_regime(snapshot: Dict[str, Any] | None = None) -> RegimeResult:
@@ -238,33 +269,21 @@ def detect_market_regime(snapshot: Dict[str, Any] | None = None) -> RegimeResult
     reasons.append(vol_reason)
 
     # Regime thresholds
-    if agg >= 0.35:
+    if agg >= 0.45:
         regime = "risk_on"
-    elif agg <= -0.25:
+    elif agg <= -0.35:
         regime = "risk_off"
     else:
         regime = "neutral"
 
-    # Confidence: distance from neutral band
-    # neutral band roughly [-0.25, 0.35]
-    if regime == "risk_on":
-        conf = clamp((agg - 0.35) / 0.65, 0.0, 1.0)
-    elif regime == "risk_off":
-        conf = clamp((abs(agg) - 0.25) / 0.75, 0.0, 1.0)
-    else:
-        # confidence of neutral = how close to 0
-        conf = clamp(1.0 - (abs(agg) / 0.35), 0.0, 1.0)
+    conf = float(abs(agg))
+    if regime == "neutral":
+        conf = max(0.4, 1.0 - min(1.0, abs(agg) / 0.45))
 
-    inputs = {
-        "vix": vix,
-        "qqq_trend": qqq_trend,
-        "spy_trend": spy_trend,
-        "breadth_pct_above_ma200": pct_above,
-        "aggregate_score": agg
-    }
+    if conf < 0.4:
+        conf = 0.4
 
-    return RegimeResult(regime=regime, confidence=conf, reasons=reasons, inputs=inputs)
-
+    return RegimeResult(regime=regime, confidence=float(conf), reasons=reasons, inputs=inputs)
 def write_market_regime(snapshot_path: str, out_path: str) -> Dict[str, Any]:
     snap = load_json(Path(snapshot_path), default={}) or {}
     res = detect_market_regime(snap)

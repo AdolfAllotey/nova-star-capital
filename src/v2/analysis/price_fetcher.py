@@ -26,13 +26,13 @@ except Exception:  # fallback si le logger centralisé n'est pas dispo
 # -----------------------------------------------------------------------------
 
 NSC_ENV = os.getenv("NSC_ENV", "LOCAL")
-DATA_ROOT = Path(os.getenv("DATA_ROOT", "/opt/nsc/app/data")).resolve()
+DATA_ROOT = Path(os.getenv("NSC_DATA_DIR") or "/opt/nsc/data/preprod").resolve()
 
 MARKET_DIR = DATA_ROOT / "market"
 MARKET_DIR.mkdir(parents=True, exist_ok=True)
 
 
-OUTPUT_FILE = MARKET_DIR / "ohlcv_combined.json"
+OUTPUT_FILE = DATA_ROOT / "market" / "ohlcv_combined.json"
 
 # --- Correlation universe support (optional) ---------------------------------
 CORRELATION_UNIVERSE_FILE = MARKET_DIR / "correlation_universe.json"
@@ -188,12 +188,14 @@ def load_selected_tokens() -> List[str]:
 
 def merge_token_lists() -> List[str]:
     """
-    Implémente l'Option 3 : fusion selected_tokens.json + BASE_TOKENS.
+    PREPROD MASTER RULE:
+    Crypto trading OHLCV universe = dynamic selected altcoins only.
+    Long-term majors must not be injected into the trading signal universe here.
     """
     selected = load_selected_tokens()
-    merged = sorted(set(selected + BASE_TOKENS))
+    merged = sorted(set(selected))
     logger.info(
-        "[price_fetcher] Liste finale de tokens (Option 3 = selected + base) : %s",
+        "[price_fetcher] Liste finale de tokens (dynamic-only trading universe) : %s",
         merged,
     )
     return merged
@@ -351,7 +353,7 @@ def build_asset_entry(symbol: str) -> Optional[Dict[str, Any]]:
 def run_price_fetcher() -> Dict[str, Any]:
     """
     Pipeline principal :
-    - fusion tokens (selected_tokens + base)
+    - charge tokens dynamiques uniquement
     - fetch Binance+MEXC
     - construit la liste assets[]
     - écrit ohlcv_combined.json

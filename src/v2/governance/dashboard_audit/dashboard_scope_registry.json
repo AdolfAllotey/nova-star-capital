@@ -1,0 +1,34 @@
+{
+  "dashboard_scope": [
+    "Dashboard",
+    "FamilyOfficeDashboard",
+    "Executive",
+    "ControlRoom",
+
+    "Portfolio",
+    "FundingPools",
+    "AllocationRebalance",
+    "LongTerm",
+
+    "RiskOverview",
+    "Protection",
+    "Governance",
+    "Anomalies",
+
+    "OrderBoard",
+    "PositionsBoard",
+    "FillsBoard",
+    "ExecutionTraceBoard",
+
+    "PnLOverview",
+    "AlphaBeta",
+    "Profitability",
+    "TradeJournal",
+    "WorstTrades",
+
+    "Explainability",
+    "SignalBoard",
+    "MarketRegime",
+    "TopMovers"
+  ]
+}

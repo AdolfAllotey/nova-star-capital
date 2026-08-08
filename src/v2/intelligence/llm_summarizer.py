@@ -2,7 +2,12 @@ import os
 import json
 from dotenv import load_dotenv
 import openai
-from datetime import datetime, timezone, timezone
+from datetime import datetime, timezone
+from src.v2.intelligence.llm_json_parser import (
+    parse_llm_json_object,
+    require_string,
+    require_string_list,
+)
 from src.v2.utils.logger import get_logger
 
 load_dotenv()
@@ -64,9 +69,21 @@ Respond in JSON format:
         )
 
         result = response.choices[0].message["content"]
-        summary_data = eval(result)  # à sécuriser dans version publique
+        payload = parse_llm_json_object(result)
 
-        summary_data["generated_at"] = datetime.now().isoformat()
+        summary_data = {
+            "summary": require_string(
+                payload,
+                "summary",
+            ),
+            "highlight_tokens": require_string_list(
+                payload,
+                "highlight_tokens",
+                max_items=20,
+                max_item_length=100,
+            ),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
 
         os.makedirs(os.path.dirname(SUMMARY_FILE), exist_ok=True)
         with open(SUMMARY_FILE, "w") as f:
@@ -80,7 +97,7 @@ Respond in JSON format:
         return {
             "summary": "Résumé non disponible.",
             "highlight_tokens": [],
-            "generated_at": datetime.now().isoformat()
+            "generated_at": datetime.now(timezone.utc).isoformat()
         }
 
 if __name__ == "__main__":
