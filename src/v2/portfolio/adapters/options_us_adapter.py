@@ -359,7 +359,18 @@ def build_payload() -> Dict[str, Any]:
     return payload
 
 
-if __name__ == "__main__":
+def export_options_us_to_portfolio_input() -> Dict[str, Any]:
+    """
+    Build, persist and return the canonical Options US portfolio input.
+
+    This is the Portfolio Adapter Layer entrypoint used by the
+    global PREPROD master refresh.
+    """
     payload = build_payload()
     save_json(OUTPUT_PATH, payload)
+    return payload
+
+
+if __name__ == "__main__":
+    payload = export_options_us_to_portfolio_input()
     print(json.dumps(payload, indent=2, ensure_ascii=False))

@@ -13,6 +13,9 @@ from src.v2.portfolio.adapters.defensive_equities_adapter import (
 from src.v2.portfolio.adapters.offensive_equities_adapter import (
     export_offensive_equities_to_portfolio_input,
 )
+from src.v2.portfolio.adapters.options_us_adapter import (
+    export_options_us_to_portfolio_input,
+)
 
 
 AdapterFunction = Callable[[], Dict[str, Any]]
@@ -60,6 +63,10 @@ def main() -> int:
         (
             "crypto",
             export_crypto_to_portfolio_input,
+        ),
+        (
+            "options_us",
+            export_options_us_to_portfolio_input,
         ),
     ]
 
