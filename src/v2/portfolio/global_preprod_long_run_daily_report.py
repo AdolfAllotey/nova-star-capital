@@ -32,7 +32,7 @@ def load(path: Path, default=None):
 
 def compute_long_run_progress(session):
     started_raw = session.get("started_at") or session.get("generated_at")
-    target_days = int(session.get("target_duration_days") or 60)
+    target_days = int(session.get("target_duration_days") or 30)
 
     # fallback: session created manually after 48h shadow
     if not started_raw:
@@ -163,7 +163,7 @@ payload = {
         "PREPROD long run remains simulated-only. No real execution is authorized."
     ),
     "decision": {
-        "continue_60d_global_preprod": status in ("OK", "WARNING"),
+        "continue_active_preprod_session": status in ("OK", "WARNING"),
         "pause_required": status == "BLOCKING",
         "next_step": "continue_monitoring" if status in ("OK", "WARNING") else "manual_review_required",
     },

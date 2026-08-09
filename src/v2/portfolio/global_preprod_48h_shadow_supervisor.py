@@ -70,7 +70,7 @@ add_check(
         "status": session.get("status"),
         "mode": session.get("mode"),
         "preprod_safe_nominal": preprod_safe_nominal,
-        "rule": "48h shadow is superseded by active 60D PREPROD long run when PREPROD SAFE nominal is ready.",
+        "rule": "48h shadow is superseded by the active PREPROD session when PREPROD SAFE nominal is ready.",
     },
 )
 
@@ -122,7 +122,7 @@ failed = [c for c in checks if not c["passed"]]
 
 shadow_status = "RUNNING"
 if preprod_safe_nominal and institutional_ready and not failed:
-    shadow_status = "SUPERSEDED_BY_60D_LONG_RUN"
+    shadow_status = "SUPERSEDED_BY_ACTIVE_PREPROD_SESSION"
 elif failed:
     shadow_status = "ATTENTION"
 elif progress_pct >= 100:
@@ -160,7 +160,7 @@ payload = {
     "decision": {
         "can_continue_shadow": len(failed) == 0,
         "requires_intervention": len(failed) > 0,
-        "next_step": "continue_60d_global_preprod" if preprod_safe_nominal and institutional_ready and not failed else ("continue_48h_shadow" if progress_pct < 100 and not failed else "review_shadow_report"),
+        "next_step": "continue_active_preprod_session" if preprod_safe_nominal and institutional_ready and not failed else ("continue_48h_shadow" if progress_pct < 100 and not failed else "review_shadow_report"),
     },
 }
 

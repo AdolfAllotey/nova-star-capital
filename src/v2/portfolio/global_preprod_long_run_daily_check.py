@@ -106,7 +106,7 @@ payload = {
     "decision": {
         "can_continue_long_run": failed == 0,
         "requires_intervention": failed > 0,
-        "next_step": "continue_60d_global_preprod" if failed == 0 else "review_failed_checks",
+        "next_step": "continue_active_preprod_session" if failed == 0 else "review_failed_checks",
     },
 }
 
