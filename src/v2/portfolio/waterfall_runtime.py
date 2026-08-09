@@ -438,6 +438,76 @@ def process_brick(
         )
     )
 
+    max_source_age_minutes = float(
+        cfg.get(
+            "max_source_age_minutes",
+            0.0,
+        )
+        or 0.0
+    )
+
+    if not source_path.exists():
+        state_row["status"] = (
+            "SOURCE_UNAVAILABLE"
+        )
+
+        return {
+            "brick": brick,
+            "source": str(source_path),
+            "status": "blocked",
+            "reason": "SOURCE_UNAVAILABLE",
+            "max_source_age_minutes": (
+                max_source_age_minutes
+            ),
+        }
+
+    now_ts = datetime.now(
+        timezone.utc
+    ).timestamp()
+
+    source_mtime_ts = (
+        source_path.stat().st_mtime
+    )
+
+    source_age_minutes = max(
+        0.0,
+        (
+            now_ts
+            - source_mtime_ts
+        ) / 60.0,
+    )
+
+    source_mtime = (
+        datetime.fromtimestamp(
+            source_mtime_ts,
+            tz=timezone.utc,
+        ).isoformat()
+    )
+
+    if (
+        max_source_age_minutes > 0
+        and source_age_minutes
+        > max_source_age_minutes
+    ):
+        state_row["status"] = (
+            "SOURCE_STALE"
+        )
+
+        return {
+            "brick": brick,
+            "source": str(source_path),
+            "source_mtime": source_mtime,
+            "source_age_minutes": round(
+                source_age_minutes,
+                4,
+            ),
+            "max_source_age_minutes": (
+                max_source_age_minutes
+            ),
+            "status": "blocked",
+            "reason": "SOURCE_STALE",
+        }
+
     current_native, currency, source_ts = (
         read_realized_source(
             brick,
@@ -471,6 +541,14 @@ def process_brick(
         "source": str(source_path),
         "source_timestamp": source_ts,
         "source_currency": currency,
+        "source_mtime": source_mtime,
+        "source_age_minutes": round(
+            source_age_minutes,
+            4,
+        ),
+        "max_source_age_minutes": (
+            max_source_age_minutes
+        ),
         "previous_realized_pnl_native": round(
             previous_native,
             8,

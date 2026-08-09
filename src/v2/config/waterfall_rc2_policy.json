@@ -2,25 +2,24 @@
   "version": "1.0",
   "environment": "PREPROD",
   "mode": "SIMULATED_ONLY",
-
   "alpha_bricks": {
     "crypto": {
       "enabled": true,
       "seed_waterfall_capital_eur": 4500.0,
       "source_pool": "crypto_exchange_pool",
       "realized_pnl_source": "/opt/nsc/data/preprod/analysis/pnl_state.json",
-      "source_currency": "EUR"
+      "source_currency": "EUR",
+      "max_source_age_minutes": 30
     },
-
     "equities_offensive": {
       "enabled": true,
       "seed_waterfall_capital_eur": 4500.0,
       "source_pool": "ibkr_pool",
       "realized_pnl_source": "/opt/nsc/data/preprod/equities_offensive/state/trade_ledger.json",
-      "source_currency": "USD"
+      "source_currency": "USD",
+      "max_source_age_minutes": 90
     }
   },
-
   "safety": {
     "execution_allowed": false,
     "real_money_enabled": false,
@@ -29,7 +28,6 @@
     "manual_review_required": true,
     "transfer_mode": "simulated_manual_review"
   },
-
   "accounting": {
     "process_realized_pnl_only": true,
     "ignore_unrealized_pnl": true,
