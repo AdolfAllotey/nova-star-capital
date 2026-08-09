@@ -61,9 +61,9 @@ def default_phases() -> List[Phase]:
     """
     return [
         Phase("Accélération", 0.0, 5000.0, 1.00, 0.00, 0.30),
-        Phase("Équilibrage", 5000.0, 10000.0, 0.70, 0.30, 0.30),
-        Phase("Structuration", 10000.0, 25000.0, 0.60, 0.40, 0.30),
-        Phase("Maturité", 25000.0, None, 0.50, 0.50, 0.30),
+        Phase("Équilibrage", 5000.0, 10000.0, 0.80, 0.20, 0.30),
+        Phase("Structuration", 10000.0, 20000.0, 0.70, 0.30, 0.30),
+        Phase("Maturité", 20000.0, None, 0.60, 0.40, 0.30),
     ]
 
 def pick_phase(equity: float, phases: List[Phase]) -> Phase:
@@ -289,6 +289,23 @@ def compute_profit_flow(brick, profit_eur, capital_eur):
     tax_rate = policy["tax"]["rate"]
     tiers = policy["tiers"]
     split = policy["distribution_split"]
+
+    # Fail-safe contract:
+    # losses and zero profit never generate tax withholding,
+    # reinvestment or downstream distributions.
+    if profit_eur <= 0:
+        return {
+            "brick": brick,
+            "input_profit": profit_eur,
+            "tax": 0.0,
+            "net_profit": 0.0,
+            "trading_reinvested": 0.0,
+            "distributed": {
+                "lt": 0.0,
+                "bfr": 0.0,
+                "security": 0.0,
+            },
+        }
 
     # 1. TAX
     tax_amount = profit_eur * tax_rate
