@@ -197,14 +197,32 @@ def main() -> int:
         or {}
     )
 
-    expected_bricks = {
-        "bonds",
-        "crypto",
-        "equities_defensive",
-        "equities_offensive",
-        "options_us",
-        "precious_metals",
-    }
+    # Governed bricks must follow the current Portfolio Engine target,
+    # not a static RC inventory. Disabled and observation-only bricks
+    # must not become mandatory simply because they exist in the system.
+    portfolio_target_path = Path(
+        "/opt/nsc/data/preprod/portfolio/portfolio_target.json"
+    )
+
+    portfolio_target = {}
+    if portfolio_target_path.exists():
+        try:
+            portfolio_target = json.loads(
+                portfolio_target_path.read_text(
+                    encoding="utf-8"
+                )
+            )
+        except Exception:
+            portfolio_target = {}
+
+    final_brick_weights = (
+        portfolio_target.get("final_brick_weights")
+        or {}
+    )
+
+    expected_bricks = set(
+        final_brick_weights.keys()
+    )
 
     missing_bricks = sorted(
         expected_bricks
@@ -219,6 +237,7 @@ def main() -> int:
 
     forbidden_bricks = {
         "options_v2_shadow",
+        "options_v3_shadow",
         "long_term",
     }
 
