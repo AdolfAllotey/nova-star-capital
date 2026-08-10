@@ -33,6 +33,7 @@ run_all() {
   /opt/nsc/.venv/bin/python -m src.v2.portfolio.waterfall_runtime --write
 
   echo "[run_kernel_preprod] step 8/8: refresh master portfolio layer"
+  /opt/nsc/.venv/bin/python -m src.v2.portfolio.adapters.run_all_portfolio_adapters
   /opt/nsc/.venv/bin/python /opt/nsc/app/src/v2/portfolio/portfolio_engine_v1.py
   /opt/nsc/.venv/bin/python /opt/nsc/app/src/v2/portfolio/portfolio_state_builder.py
   /opt/nsc/.venv/bin/python /opt/nsc/app/src/v2/portfolio/master_rebalance_builder.py

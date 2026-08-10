@@ -111,9 +111,13 @@ def build_payload() -> Dict[str, Any]:
         capital_state.get("total_capital_eur")
         or capital_state.get("capital_eur")
     )
+    deployable_capital_eur = safe_float(
+        capital_state.get("deployable_capital_eur")
+    )
     target_weight = (
-        options_budget_eur / total_capital_eur
-        if total_capital_eur > 0
+        options_budget_eur
+        / deployable_capital_eur
+        if deployable_capital_eur > 0
         else 0.0
     )
 
@@ -243,7 +247,7 @@ def build_payload() -> Dict[str, Any]:
         and dashboard
         and portfolio_selected
         and options_budget_eur > 0
-        and total_capital_eur > 0
+        and deployable_capital_eur > 0
         and target_weight > 0
     )
 
@@ -259,6 +263,10 @@ def build_payload() -> Dict[str, Any]:
             "pocket": "options_us",
             "pocket_budget_eur": round(options_budget_eur, 2),
             "total_capital_eur": round(total_capital_eur, 2),
+            "deployable_capital_eur": round(
+                deployable_capital_eur,
+                2,
+            ),
             "global_target_weight": round(target_weight, 6),
             "internal_used_risk_eur": safe_float(
                 portfolio.get("used_risk_eur")

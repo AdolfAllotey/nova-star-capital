@@ -99,15 +99,41 @@ def export_crypto_to_portfolio_input(
 
     regime = data.get("regime", "unknown")
 
-    # target_weight must be GLOBAL NSC weight, not internal crypto trading_ratio.
-    # Example PREPROD: crypto pool 4000 / total virtual capital 10000 = 0.40.
+    # Canonical portfolio weights are measured against deployable capital only.
+    # Treasury is part of total virtual capital but is not trading capital.
     capital_pools = load_json("/opt/nsc/data/preprod/capital/capital_pools.json")
+    capital_state = load_json("/opt/nsc/data/preprod/portfolio/capital_state.json")
     try:
-        crypto_pool = float(((capital_pools.get("pools") or {}).get("crypto_exchange_pool") or {}).get("total_eur") or 0.0)
-        total_virtual = float(capital_pools.get("total_virtual_capital_eur") or 0.0)
-        target_weight = round(crypto_pool / total_virtual, 6) if total_virtual > 0 else float(data.get("trading_ratio", 0.0) or 0.0)
+        crypto_pool = float(
+            (
+                (
+                    capital_pools.get("pools")
+                    or {}
+                ).get("crypto_exchange_pool")
+                or {}
+            ).get("total_eur")
+            or 0.0
+        )
+        deployable_capital = float(
+            capital_state.get("deployable_capital_eur")
+            or 0.0
+        )
+        target_weight = (
+            round(
+                crypto_pool / deployable_capital,
+                6,
+            )
+            if deployable_capital > 0
+            else float(
+                data.get("trading_ratio", 0.0)
+                or 0.0
+            )
+        )
     except Exception:
-        target_weight = float(data.get("trading_ratio", 0.0) or 0.0)
+        target_weight = float(
+            data.get("trading_ratio", 0.0)
+            or 0.0
+        )
 
     confidence, confidence_details = compute_dynamic_crypto_confidence(regime, signal_votes)
 
