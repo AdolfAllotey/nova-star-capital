@@ -27,9 +27,9 @@ dashboard_status = None
 try:
     raw = subprocess.check_output(
         [
-            "bash",
-            "-lc",
-            "curl -sS http://127.0.0.1:8000/dashboard/v3"
+            "curl",
+            "-sS",
+            "http://127.0.0.1:8000/dashboard/v3",
         ],
         text=True,
         timeout=5,

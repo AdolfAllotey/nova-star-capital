@@ -44,7 +44,7 @@ run_all() {
   /opt/nsc/.venv/bin/python /opt/nsc/app/src/v2/portfolio/institutional_supervision_summary.py
 }
 
-if flock -n "$NSC_KERNEL_LOCK" /bin/bash -lc "set -euo pipefail; $(declare -f run_all); run_all"; then
+if flock -n "$NSC_KERNEL_LOCK" /bin/bash -c "set -euo pipefail; $(declare -f run_all); run_all"; then
   exit 0
 else
   rc=$?
