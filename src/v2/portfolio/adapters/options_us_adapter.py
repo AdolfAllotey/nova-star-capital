@@ -201,6 +201,7 @@ def build_payload() -> Dict[str, Any]:
 
     operational_timestamp = latest_timestamp(
         [
+            dashboard.get("ts"),
             *[
                 item.get("ts")
                 for item in portfolio_selected
@@ -245,10 +246,15 @@ def build_payload() -> Dict[str, Any]:
         pipeline_healthy
         and safety_contract_ok
         and dashboard
-        and portfolio_selected
         and options_budget_eur > 0
         and deployable_capital_eur > 0
         and target_weight > 0
+    )
+
+    opportunity_status = (
+        "ACTIVE_SELECTION"
+        if portfolio_selected
+        else "NO_CURRENT_OPPORTUNITY"
     )
 
     payload = {
@@ -259,6 +265,7 @@ def build_payload() -> Dict[str, Any]:
         "target_weight": round(target_weight, 6),
         "confidence": round(confidence, 4),
         "regime": "active_simulated",
+        "opportunity_status": opportunity_status,
         "allocation": {
             "pocket": "options_us",
             "pocket_budget_eur": round(options_budget_eur, 2),
@@ -340,7 +347,7 @@ def build_payload() -> Dict[str, Any]:
                 parse_timestamp(dashboard.get("ts"))
             ),
             "freshness_source": (
-                "dashboard_portfolio_selected_positions_and_closed_trades"
+                "dashboard_runtime_plus_selected_positions_and_closed_trades"
             ),
             "legacy_status_source_deprecated": True,
         },
