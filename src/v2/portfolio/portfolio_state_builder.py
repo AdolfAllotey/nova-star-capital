@@ -175,15 +175,21 @@ def get_real_brick_state(brick: str, deployable_capital_eur: float):
             or 0.0
         )
 
+        current_exposure_eur = (
+            internal_used_risk_eur
+            if open_count > 0
+            else 0.0
+        )
+
         current_weight = (
-            pocket_budget_eur / deployable_capital_eur
+            current_exposure_eur / deployable_capital_eur
             if deployable_capital_eur > 0
             else 0.0
         )
 
         return {
             "current_exposure_eur": round(
-                pocket_budget_eur,
+                current_exposure_eur,
                 2,
             ),
             "current_weight_estimate": round(
@@ -191,7 +197,7 @@ def get_real_brick_state(brick: str, deployable_capital_eur: float):
                 6,
             ),
             "state_origin": (
-                "options_us_funded_pocket_runtime"
+                "options_us_open_positions_runtime"
             ),
             "positions_count": open_count,
             "state_source": str(dashboard_path),

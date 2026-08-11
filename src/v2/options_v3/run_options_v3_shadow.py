@@ -703,12 +703,46 @@ def main():
     closed_positions = load("options_v3_positions_closed.json", [])
     # ===== END FORCE =====
 
+    infrastructure_failure_reasons = [
+        d.get("reason", "")
+        for d in decisions
+        if isinstance(d, dict)
+        and (
+            "OptionChainUnavailableError" in str(d.get("reason", ""))
+            or "DataSource" in str(d.get("reason", ""))
+            or "ProviderUnavailable" in str(d.get("reason", ""))
+        )
+    ]
+
+    pipeline_status = (
+        "degraded"
+        if infrastructure_failure_reasons
+        else "ok"
+    )
+
+    opportunity_status = (
+        "DATA_SOURCE_FAILURE"
+        if infrastructure_failure_reasons
+        else (
+            "ACTIVE_SELECTION"
+            if candidates_validated
+            else "NO_CURRENT_OPPORTUNITY"
+        )
+    )
+
     dashboard = {
 
         "ts": now(),
         "engine": "options_v3_autonomous_shadow",
         "module": "options_v3",
-        "status": {"pipeline_status": "ok", "mode": "SHADOW"},
+        "status": {
+            "pipeline_status": pipeline_status,
+            "mode": "SHADOW",
+            "opportunity_status": opportunity_status,
+            "infrastructure_failure_count": len(
+                infrastructure_failure_reasons
+            ),
+        },
         "kpis": {
             "signals_total": len(all_signals),
             "candidates_raw": len(candidates_raw),

@@ -315,7 +315,10 @@ def build_payload() -> Dict[str, Any]:
             "win_rate_pct": win_rate_pct,
         },
         "risk_flags": {
-            "shadow_mode": mode == "SHADOW",
+            # options_us is a governed simulated portfolio brick.
+            # The underlying Options V3 engine still runs in SHADOW mode.
+            "shadow_mode": False,
+            "runtime_shadow_mode": mode == "SHADOW",
             "simulation_mode": True,
             "runtime_mode": mode,
             "execution_blocked": execution_allowed is False,
