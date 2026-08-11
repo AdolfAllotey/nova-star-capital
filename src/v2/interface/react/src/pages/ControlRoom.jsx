@@ -741,7 +741,7 @@ const longRunManualFunding = longRunDailyHeadline?.manual_funding_required === t
 const longRunDailyFailed = Number(longRunDailyKpis?.daily_checks_failed || 0);
 const longRunBlocking = Number(longRunDailyKpis?.orchestration_blocking_checks || 0);
 const longRunProgressPct = Number(longRunProgress?.progress_pct || 0);
-const longRunCurrentDay = Number(longRunProgress?.current_day || 1);
+const longRunCurrentDay = Number(longRunProgress?.current_day ?? 0);
 const longRunTargetDays = Number(longRunProgress?.target_duration_days || 60);
 const longRunRemainingDays = Math.max(0, longRunTargetDays - longRunCurrentDay);
 
@@ -795,17 +795,26 @@ const dynamicMetricsFreshnessAvg = dynamicMetricsResults.length
   ? Math.round(dynamicMetricsResults.reduce((sum, r) => sum + Number(r.freshness_sec || 0), 0) / dynamicMetricsResults.length)
   : 0;
 
-const longRunTimeline = [
-  { day: 1, label: "Runtime stability validation" },
-  { day: 3, label: "API/UI consistency supervision" },
-  { day: 7, label: "Governance drift review" },
-  { day: 10, label: "Robustness checkpoint" },
-  { day: 20, label: "Strategy quality review" },
-  { day: 30, label: "Risk & governance audit" },
-  { day: 40, label: "Funding & rebalance validation" },
-  { day: 50, label: "Explainability review" },
-  { day: 60, label: "Production readiness decision" },
-];
+const longRunTimeline =
+  longRunTargetDays <= 30
+    ? [
+        { day: 0, label: "Official RC2 launch" },
+        { day: 7, label: "Week 1 stability review" },
+        { day: 14, label: "Mid-cycle strategy & risk review" },
+        { day: 21, label: "Performance & explainability review" },
+        { day: 30, label: "RC2 final observation review" },
+      ]
+    : [
+        { day: 1, label: "Runtime stability validation" },
+        { day: 3, label: "API/UI consistency supervision" },
+        { day: 7, label: "Governance drift review" },
+        { day: 10, label: "Robustness checkpoint" },
+        { day: 20, label: "Strategy quality review" },
+        { day: 30, label: "Risk & governance audit" },
+        { day: 40, label: "Funding & rebalance validation" },
+        { day: 50, label: "Explainability review" },
+        { day: 60, label: "Production readiness decision" },
+      ];
 
 
 const shadowSignals48h = global.globalPreprod48hShadowSupervisor || {};
@@ -1298,7 +1307,7 @@ const cashBuffer = Number(
 
               <div className="mt-3">
                 <div className="mb-1 flex items-center justify-between text-[10px] text-slate-400">
-                  <span>Progress J{longRunProgress.current_day || "—"}/{longRunProgress.target_duration_days || 60}</span>
+                  <span>Progress J{longRunProgress.current_day ?? "—"}/{longRunProgress.target_duration_days || 60}</span>
                   <span>{longRunProgress.progress_pct ?? 0}%</span>
                 </div>
                 <div className="h-1.5 rounded bg-[#1a2532]">
@@ -1420,7 +1429,7 @@ const cashBuffer = Number(
               </div>
 
               <div className="mt-3 text-[10px] leading-relaxed text-cyan-100/80">
-                60-day PREPROD session active under SIMULATED_ONLY governance.
+                {longRunTargetDays}-day PREPROD observation active under SIMULATED_ONLY governance.
                 Real execution disabled. Manual funding separation remains enforced.
               </div>
             </Box>
@@ -1551,7 +1560,7 @@ const cashBuffer = Number(
               </div>
 
               <div className="mt-2 text-[10px] leading-relaxed text-emerald-100/80">
-                Weekly review consolidates stability, governance, risk drift and anomaly trend across the 60-day PREPROD cycle.
+                Weekly review consolidates stability, governance, risk drift and anomaly trend across the active PREPROD observation cycle.
               </div>
             </Box>
 
