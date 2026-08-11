@@ -22,9 +22,16 @@ OUT.mkdir(parents=True, exist_ok=True)
 
 SRC = Path("/opt/nsc/app/src/v2")
 PATHS = {
-    "external_signals": SRC / "options/data/external_signals.json",
-    "external_watchlists": SRC / "options/data/external_watchlists.json",
-    "external_equity_positions": SRC / "options/data/external_equity_positions.json",
+    # RC2 canonical live inputs.
+    "offensive_execution": Path(
+        "/opt/nsc/data/preprod/equities_offensive/risk/"
+        "execution_candidates.json"
+    ),
+    "defensive_state": Path(
+        "/opt/nsc/data/preprod/defensive/defensive_state.json"
+    ),
+
+    # Transitional analytical dependencies retained by Options V3.
     "volatility_context": SRC / "options_v2/data/volatility_context_v2.json",
     "v2_dashboard": SRC / "options_v2/data/options_v2_dashboard.json",
     "v2_decisions": SRC / "options_v2/data/options_v2_decisions.json",
@@ -482,6 +489,136 @@ def load(path, default):
 def save(name, data):
     (OUT / name).write_text(json.dumps(data, indent=2))
 
+def build_live_offensive_signals(document):
+    """
+    Convert the canonical Offensive Equities execution contract into
+    Options V3 directional signals.
+
+    Only risk-approved execution candidates are accepted. Market price is
+    deliberately not copied into the signal: the Options V3 provider owns
+    the canonical underlying market price during contract selection.
+    """
+    if not isinstance(document, dict):
+        return []
+
+    candidates = document.get("candidates", [])
+    if not isinstance(candidates, list):
+        return []
+
+    direction_map = {
+        "long": "bullish",
+        "short": "bearish",
+        "bullish": "bullish",
+        "bearish": "bearish",
+    }
+
+    signals = []
+
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+
+        if item.get("allowed") is not True:
+            continue
+
+        ticker = str(
+            item.get("symbol") or item.get("ticker") or ""
+        ).strip().upper()
+
+        if not ticker:
+            continue
+
+        direction = direction_map.get(
+            str(item.get("direction") or "").strip().lower(),
+            "neutral",
+        )
+
+        raw_score = item.get("meta_score")
+
+        try:
+            confidence = float(raw_score) / 100.0
+        except (TypeError, ValueError):
+            confidence = 0.5
+
+        confidence = max(0.0, min(1.0, confidence))
+
+        signals.append({
+            "ticker": ticker,
+            "signal_type": "offensive_runtime",
+            "direction": direction,
+            "confidence": confidence,
+            "setup": item.get("setup"),
+            "source": "equities_offensive_execution_candidates",
+            "source_ts": item.get("ts"),
+            "source_meta_score": raw_score,
+            "source_allowed": True,
+            "source_engine": item.get("engine"),
+            "source_regime": item.get("regime"),
+        })
+
+    return signals
+
+
+def build_live_covered_call_signals(document):
+    """
+    Convert canonical Defensive Equity positions into covered-call
+    overlays only where at least one standard 100-share contract is
+    actually covered.
+
+    Fractional simulated equity positions therefore cannot manufacture
+    covered-call capacity.
+    """
+    if not isinstance(document, dict):
+        return []
+
+    positions = document.get("positions", [])
+    if not isinstance(positions, list):
+        return []
+
+    signals = []
+
+    for position in positions:
+        if not isinstance(position, dict):
+            continue
+
+        if str(position.get("type") or "").lower() != "stock":
+            continue
+
+        ticker = str(
+            position.get("symbol") or position.get("ticker") or ""
+        ).strip().upper()
+
+        if not ticker:
+            continue
+
+        try:
+            quantity = float(position.get("qty") or 0.0)
+        except (TypeError, ValueError):
+            continue
+
+        covered_contract_capacity = int(quantity // 100)
+
+        if covered_contract_capacity <= 0:
+            continue
+
+        signals.append({
+            "ticker": ticker,
+            "signal_type": "existing_equity_overlay",
+            "direction": "neutral",
+            "confidence": 0.65,
+            "setup": "covered_call_candidate",
+            "underlying_equity_quantity": quantity,
+            "covered_contract_capacity":
+                covered_contract_capacity,
+            "source": "defensive_state",
+            "source_ts": document.get("generated_at"),
+            "source_position_price":
+                position.get("price"),
+        })
+
+    return signals
+
+
 def vol_for(ticker, volatility_context):
     tickers = volatility_context.get("tickers", {})
     if isinstance(tickers, dict):
@@ -584,25 +721,26 @@ def main():
     closed_positions = []
     print("===== OPTIONS V3 AUTONOMOUS SHADOW RUN =====")
 
-    external_signals = load(PATHS["external_signals"], [])
-    external_positions = load(PATHS["external_equity_positions"], [])
+    offensive_execution = load(
+        PATHS["offensive_execution"],
+        {},
+    )
+    defensive_state = load(
+        PATHS["defensive_state"],
+        {},
+    )
     volatility_context = load(PATHS["volatility_context"], {})
     v2_dashboard = load(PATHS["v2_dashboard"], {})
     v2_decisions = load(PATHS["v2_decisions"], [])
 
-    overlay_signals = []
-    for p in external_positions:
-        overlay_signals.append({
-            "ticker": p.get("ticker"),
-            "signal_type": "existing_equity_overlay",
-            "direction": "neutral",
-            "confidence": 0.65,
-            "setup": "covered_call_candidate",
-            "spot": p.get("current_price"),
-            "underlying_equity_quantity": p.get("quantity"),
-        })
+    offensive_signals = build_live_offensive_signals(
+        offensive_execution
+    )
+    overlay_signals = build_live_covered_call_signals(
+        defensive_state
+    )
 
-    all_signals = external_signals + overlay_signals
+    all_signals = offensive_signals + overlay_signals
 
     candidates_raw = [build_candidate(s, volatility_context) for s in all_signals]
 
