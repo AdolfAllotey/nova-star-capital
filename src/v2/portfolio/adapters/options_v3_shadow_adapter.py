@@ -131,41 +131,70 @@ def build_payload() -> Dict[str, Any]:
         else 0.0
     )
 
-    realized_pnl = round(
-        sum(
-            safe_float(item.get("pnl_eur"))
-            for item in positions_closed
-            if isinstance(item, dict)
-        ),
-        2,
+    # RC2 provenance contract:
+    # performance must not be inferred from legacy synthetic PnL.
+    certified_closed = [
+        item
+        for item in positions_closed
+        if isinstance(item, dict)
+        and item.get("pnl_eur") is not None
+        and item.get("pnl_provenance_status")
+        not in {
+            "NO_CERTIFIED_OPTION_MARK_PROVENANCE",
+            "LEGACY_SYNTHETIC_PNL_NON_CERTIFIED",
+        }
+    ]
+
+    certified_open = [
+        item
+        for item in positions_open
+        if isinstance(item, dict)
+        and item.get("pnl_eur") is not None
+        and item.get("pnl_provenance_status")
+        not in {
+            "NO_CERTIFIED_OPTION_MARK_PROVENANCE",
+            "LEGACY_SYNTHETIC_PNL_NON_CERTIFIED",
+        }
+    ]
+
+    performance_available = bool(
+        certified_closed or certified_open
     )
 
-    unrealized_pnl = round(
-        sum(
-            safe_float(item.get("pnl_eur"))
-            for item in positions_open
-            if isinstance(item, dict)
-        ),
-        2,
+    realized_pnl = (
+        round(
+            sum(float(item["pnl_eur"]) for item in certified_closed),
+            2,
+        )
+        if certified_closed
+        else None
+    )
+
+    unrealized_pnl = (
+        round(
+            sum(float(item["pnl_eur"]) for item in certified_open),
+            2,
+        )
+        if certified_open
+        else None
     )
 
     wins = sum(
-        1
-        for item in positions_closed
-        if isinstance(item, dict) and safe_float(item.get("pnl_eur")) > 0
+        1 for item in certified_closed
+        if float(item["pnl_eur"]) > 0
     )
 
     losses = sum(
-        1
-        for item in positions_closed
-        if isinstance(item, dict) and safe_float(item.get("pnl_eur")) < 0
+        1 for item in certified_closed
+        if float(item["pnl_eur"]) < 0
     )
 
-    closed_count = len(positions_closed)
+    certified_closed_count = len(certified_closed)
+
     win_rate_pct = (
-        round((wins / closed_count) * 100.0, 2)
-        if closed_count > 0
-        else 0.0
+        round((wins / certified_closed_count) * 100.0, 2)
+        if certified_closed_count > 0
+        else None
     )
 
     operational_timestamp = latest_timestamp(
@@ -251,6 +280,17 @@ def build_payload() -> Dict[str, Any]:
             "wins": wins,
             "losses": losses,
             "win_rate_pct": win_rate_pct,
+            "performance_available": performance_available,
+            "performance_status": (
+                "AVAILABLE_CERTIFIED"
+                if performance_available
+                else "UNAVAILABLE_NO_CERTIFIED_MARKET_VALUATION"
+            ),
+            "performance_provenance_status": (
+                "CERTIFIED_OPTION_MARK_PROVENANCE"
+                if performance_available
+                else "NO_CERTIFIED_OPTION_MARK_PROVENANCE"
+            ),
         },
         "risk_flags": {
             "shadow_mode": mode == "SHADOW",

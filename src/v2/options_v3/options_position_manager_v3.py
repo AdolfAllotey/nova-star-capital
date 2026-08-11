@@ -13,9 +13,10 @@ from datetime import datetime, timezone
 
 BASE = Path("/opt/nsc/data/preprod/options_v3")
 
-TAKE_PROFIT = 0.20
-STOP_LOSS = -0.20
 MAX_DAYS = 45
+
+PNL_STATUS_UNAVAILABLE = "UNAVAILABLE_NO_CERTIFIED_MARKET_VALUATION"
+PNL_PROVENANCE_STATUS = "NO_CERTIFIED_OPTION_MARK_PROVENANCE"
 
 def evaluate_position_capabilities_v3(
     position: dict,
@@ -158,9 +159,27 @@ def update_positions():
                 "source": "options_v3_portfolio_selected",
             }
 
+        # RC2 valuation contract:
+        # no synthetic PnL is permitted. Until a certified option market
+        # valuation source is available, PnL must explicitly fail closed.
+        pos["pnl_eur"] = None
+        pos["pnl_pct"] = None
+        pos["pnl_status"] = PNL_STATUS_UNAVAILABLE
+        pos["pnl_provenance_status"] = PNL_PROVENANCE_STATUS
+
         lifecycle_input = dict(selected)
         lifecycle_input.update(pos)
         pos = evaluate_position_capabilities_v3(lifecycle_input)
+
+        # Capability enrichment must never reintroduce synthetic valuation.
+        pos["pnl_eur"] = None
+        pos["pnl_pct"] = None
+        pos["pnl_status"] = PNL_STATUS_UNAVAILABLE
+        pos["pnl_provenance_status"] = PNL_PROVENANCE_STATUS
+
+        opened_at = datetime.fromisoformat(pos["opened_at"])
+        days = (now() - opened_at).days
+        pos["days_in_trade"] = days
 
         if pos.get("capability_lifecycle_action") == "SIMULATED_CLOSE_REVIEW":
             pos["status"] = "CLOSED"
@@ -172,27 +191,9 @@ def update_positions():
             newly_closed.append(pos)
             continue
 
-        entry_risk = float(pos.get("entry_risk_eur") or 0)
-        pos["pnl_eur"] = round(float(pos.get("pnl_eur") or 0) + entry_risk * 0.01, 2)
-        pos["pnl_pct"] = round(pos["pnl_eur"] / entry_risk, 4) if entry_risk else 0
-
-        opened_at = datetime.fromisoformat(pos["opened_at"])
-        days = (now() - opened_at).days
-        pos["days_in_trade"] = days
-
-        if pos["pnl_pct"] >= TAKE_PROFIT:
+        if days >= MAX_DAYS:
             pos["status"] = "CLOSED"
-            pos["close_reason"] = "TAKE_PROFIT"
-            pos["closed_at"] = now().isoformat()
-            newly_closed.append(pos)
-        elif pos["pnl_pct"] <= STOP_LOSS:
-            pos["status"] = "CLOSED"
-            pos["close_reason"] = "STOP_LOSS"
-            pos["closed_at"] = now().isoformat()
-            newly_closed.append(pos)
-        elif days >= MAX_DAYS:
-            pos["status"] = "CLOSED"
-            pos["close_reason"] = "EXPIRY"
+            pos["close_reason"] = "MAX_HOLD_DAYS"
             pos["closed_at"] = now().isoformat()
             newly_closed.append(pos)
         else:

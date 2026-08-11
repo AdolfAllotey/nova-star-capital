@@ -32,9 +32,11 @@ PATHS = {
     ),
 
     # Transitional analytical dependencies retained by Options V3.
-    "volatility_context": SRC / "options_v2/data/volatility_context_v2.json",
-    "v2_dashboard": SRC / "options_v2/data/options_v2_dashboard.json",
-    "v2_decisions": SRC / "options_v2/data/options_v2_decisions.json",
+    #
+    # IMPORTANT RC2 CONTRACT:
+    # V2 volatility_context is intentionally NOT a runtime decision input.
+    # Its IV Rank values originate from legacy sandbox/bootstrap data and
+    # have no certified external market provenance.
 }
 
 def enrich_candidate_capabilities_v3(
@@ -619,39 +621,67 @@ def build_live_covered_call_signals(document):
     return signals
 
 
-def vol_for(ticker, volatility_context):
-    tickers = volatility_context.get("tickers", {})
-    if isinstance(tickers, dict):
-        return tickers.get(ticker, {})
-    if isinstance(tickers, list):
-        for item in tickers:
-            if item.get("ticker") == ticker:
-                return item
-    return {}
+IV_RANK_STATUS_UNAVAILABLE = "UNAVAILABLE_INSUFFICIENT_HISTORY"
+IV_PERCENTILE_STATUS_UNAVAILABLE = "UNAVAILABLE_INSUFFICIENT_HISTORY"
+IV_PROVENANCE_STATUS = "NO_CERTIFIED_HISTORICAL_PROVENANCE"
 
-def choose_strategy(signal, vol):
+
+def choose_strategy(signal):
+    """
+    Choose only strategies that are demonstrable with certified RC2 inputs.
+
+    IV Rank and IV Percentile are unavailable until sufficient comparable
+    provider-backed history exists. Strategies whose selection depends on
+    IV Rank therefore fail closed instead of silently treating missing data
+    as zero or inheriting legacy V1/V2 sandbox values.
+    """
     direction = signal.get("direction", "neutral")
     signal_type = signal.get("signal_type", "")
-    iv_rank = float(vol.get("iv_rank") or 0)
-    vol_regime = vol.get("vol_regime") or ("high" if iv_rank >= 60 else "mid")
 
     if direction == "bearish":
-        strategy = "bear_put_spread"
-        role = "hedge"
-    elif direction in ["bullish", "strong_bullish"]:
-        strategy = "bull_call_spread" if iv_rank >= 50 else "long_call"
-        role = "alpha"
-    elif direction == "neutral_to_bullish":
-        strategy = "cash_secured_put" if iv_rank >= 50 else "bull_put_spread"
-        role = "entry_yield"
-    elif signal_type == "existing_equity_overlay":
-        strategy = "covered_call"
-        role = "yield"
-    else:
-        strategy = "neutral_spread"
-        role = "neutral"
+        return (
+            "bear_put_spread",
+            "hedge",
+            "unknown",
+            "SELECTED",
+            None,
+        )
 
-    return strategy, role, vol_regime
+    if direction in ["bullish", "strong_bullish"]:
+        return (
+            None,
+            "alpha",
+            "unknown",
+            "REJECTED",
+            "iv_rank_unavailable_for_strategy_selection",
+        )
+
+    if direction == "neutral_to_bullish":
+        return (
+            None,
+            "entry_yield",
+            "unknown",
+            "REJECTED",
+            "iv_rank_unavailable_for_strategy_selection",
+        )
+
+    if signal_type == "existing_equity_overlay":
+        return (
+            "covered_call",
+            "yield",
+            "unknown",
+            "SELECTED",
+            None,
+        )
+
+    return (
+        "neutral_spread",
+        "neutral",
+        "unknown",
+        "SELECTED",
+        None,
+    )
+
 
 def estimate_risk(strategy, spot):
     spot = float(spot or 0)
@@ -665,33 +695,74 @@ def estimate_risk(strategy, spot):
         return round(max(spot * 0.5, 100), 2)
     return round(max(spot * 1.0, 300), 2)
 
-def build_candidate(signal, volatility_context):
+def build_candidate(signal):
     ticker = signal.get("ticker")
-    vol = vol_for(ticker, volatility_context)
-    strategy, role, vol_regime = choose_strategy(signal, vol)
 
-    confidence = float(signal.get("confidence") or 0.5)
-    spot = float(signal.get("spot") or vol.get("spot") or vol.get("underlying_spot") or 0)
-    risk = estimate_risk(strategy, spot)
+    (
+        strategy,
+        role,
+        vol_regime,
+        strategy_selection_status,
+        strategy_selection_reason,
+    ) = choose_strategy(signal)
 
-    score = round(
-        confidence * 60
-        + min(float(vol.get("iv_rank") or 0), 100) * 0.25
-        + (10 if role in ["alpha", "hedge"] else 5),
-        2
+    confidence = float(
+        signal.get("confidence") or 0.5
     )
+    spot = float(
+        signal.get("spot") or 0
+    )
+
+    if strategy is None:
+        risk = 0.0
+        score = None
+    else:
+        risk = estimate_risk(
+            strategy,
+            spot,
+        )
+        score = round(
+            confidence * 60
+            + (
+                10
+                if role in ["alpha", "hedge"]
+                else 5
+            ),
+            2,
+        )
 
     return {
         "ts": now(),
         "ticker": ticker,
         "strategy": strategy,
-        "direction": signal.get("direction", "neutral"),
+        "direction": signal.get(
+            "direction",
+            "neutral",
+        ),
         "role": role,
         "score": score,
         "confidence": confidence,
         "estimated_risk_eur": risk,
         "vol_regime": vol_regime,
-        "iv_rank": vol.get("iv_rank"),
+
+        # RC2 volatility provenance contract.
+        "iv_rank": None,
+        "iv_rank_status": IV_RANK_STATUS_UNAVAILABLE,
+        "iv_percentile": None,
+        "iv_percentile_status": (
+            IV_PERCENTILE_STATUS_UNAVAILABLE
+        ),
+        "iv_provenance_status": (
+            IV_PROVENANCE_STATUS
+        ),
+
+        "strategy_selection_status": (
+            strategy_selection_status
+        ),
+        "strategy_selection_reason": (
+            strategy_selection_reason
+        ),
+
         "source_signal": signal,
         "underlying_equity_quantity": signal.get(
             "underlying_equity_quantity"
@@ -701,6 +772,18 @@ def build_candidate(signal, volatility_context):
             f"strategy={strategy}",
             f"role={role}",
             f"vol_regime={vol_regime}",
+            (
+                "iv_rank="
+                "UNAVAILABLE_INSUFFICIENT_HISTORY"
+            ),
+            (
+                "iv_percentile="
+                "UNAVAILABLE_INSUFFICIENT_HISTORY"
+            ),
+            (
+                "strategy_selection_status="
+                f"{strategy_selection_status}"
+            ),
         ],
     }
 
@@ -708,10 +791,46 @@ def validate(candidate):
     if not candidate.get("ticker"):
         return False, "missing_ticker"
 
-    if candidate["score"] < 55:
+    if (
+        candidate.get("strategy_selection_status")
+        != "SELECTED"
+    ):
+        return False, (
+            candidate.get("strategy_selection_reason")
+            or "strategy_selection_not_selected"
+        )
+
+    if not candidate.get("strategy"):
+        return False, "missing_strategy"
+
+    score = candidate.get("score")
+
+    if score is None:
+        return False, "score_unavailable"
+
+    try:
+        score = float(score)
+    except (TypeError, ValueError):
+        return False, "invalid_score"
+
+    if score < 55:
         return False, "score_below_threshold"
 
-    if candidate["estimated_risk_eur"] > 2000:
+    estimated_risk_eur = candidate.get(
+        "estimated_risk_eur"
+    )
+
+    if estimated_risk_eur is None:
+        return False, "estimated_risk_unavailable"
+
+    try:
+        estimated_risk_eur = float(
+            estimated_risk_eur
+        )
+    except (TypeError, ValueError):
+        return False, "invalid_estimated_risk"
+
+    if estimated_risk_eur > 2000:
         return False, "risk_above_limit"
 
     return True, "approved"
@@ -729,9 +848,6 @@ def main():
         PATHS["defensive_state"],
         {},
     )
-    volatility_context = load(PATHS["volatility_context"], {})
-    v2_dashboard = load(PATHS["v2_dashboard"], {})
-    v2_decisions = load(PATHS["v2_decisions"], [])
 
     offensive_signals = build_live_offensive_signals(
         offensive_execution
@@ -742,7 +858,10 @@ def main():
 
     all_signals = offensive_signals + overlay_signals
 
-    candidates_raw = [build_candidate(s, volatility_context) for s in all_signals]
+    candidates_raw = [
+        build_candidate(s)
+        for s in all_signals
+    ]
 
     candidates_validated = []
     decisions = []
@@ -781,42 +900,59 @@ def main():
     for c in candidates_raw:
         contract_selection_error = None
 
-        try:
-            c = enrich_candidate_contract_selection_v3(
-                c,
-                option_chain_cycle_cache,
-            )
-
-        except Exception as exc:
-            contract_selection_error = (
-                f"contract_selection_failed:"
-                f"{type(exc).__name__}:{exc}"
-            )
-
-        if contract_selection_error:
+        if (
+            c.get("strategy_selection_status")
+            != "SELECTED"
+        ):
             ok = False
-            reason = contract_selection_error
+            reason = (
+                c.get("strategy_selection_reason")
+                or "strategy_selection_failed"
+            )
 
         else:
-            c = enrich_candidate_capabilities_v3(
-                c,
-                risk_context={
-                    "internal_available_risk_eur":
-                        options_max_total_risk_eur,
-                    "internal_max_trade_risk_eur":
-                        options_max_trade_risk_eur,
-                },
-            )
-
-            if c.get("capability_enrichment_status") != "complete":
-                ok = False
-                reason = c.get(
-                    "capability_rejection_reason",
-                    "options_v3_capability_enrichment_failed",
+            try:
+                c = enrich_candidate_contract_selection_v3(
+                    c,
+                    option_chain_cycle_cache,
                 )
 
+            except Exception as exc:
+                contract_selection_error = (
+                    f"contract_selection_failed:"
+                    f"{type(exc).__name__}:{exc}"
+                )
+
+            if contract_selection_error:
+                ok = False
+                reason = contract_selection_error
+
             else:
-                ok, reason = validate(c)
+                c = enrich_candidate_capabilities_v3(
+                    c,
+                    risk_context={
+                        "internal_available_risk_eur":
+                            options_max_total_risk_eur,
+                        "internal_max_trade_risk_eur":
+                            options_max_trade_risk_eur,
+                    },
+                )
+
+                if (
+                    c.get("capability_enrichment_status")
+                    != "complete"
+                ):
+                    ok = False
+                    reason = c.get(
+                        "capability_rejection_reason",
+                        (
+                            "options_v3_"
+                            "capability_enrichment_failed"
+                        ),
+                    )
+
+                else:
+                    ok, reason = validate(c)
         decision = {
             "ts": now(),
             "ticker": c.get("ticker"),
@@ -826,6 +962,25 @@ def main():
             "score": c.get("score"),
             "estimated_risk_eur": c.get("estimated_risk_eur"),
             "role": c.get("role"),
+            "strategy_selection_status": c.get(
+                "strategy_selection_status"
+            ),
+            "strategy_selection_reason": c.get(
+                "strategy_selection_reason"
+            ),
+            "iv_rank": c.get("iv_rank"),
+            "iv_rank_status": c.get(
+                "iv_rank_status"
+            ),
+            "iv_percentile": c.get(
+                "iv_percentile"
+            ),
+            "iv_percentile_status": c.get(
+                "iv_percentile_status"
+            ),
+            "iv_provenance_status": c.get(
+                "iv_provenance_status"
+            ),
         }
         decisions.append(decision)
         if ok:
@@ -937,11 +1092,6 @@ def main():
             "max_trade_risk_eur": portfolio.get(
                 "max_trade_risk_eur", 0
             ),
-        },
-        "comparison_reference": {
-            "v2_realized_pnl_eur": v2_dashboard.get("kpis", {}).get("realized_pnl_eur"),
-            "v2_win_rate_pct": v2_dashboard.get("kpis", {}).get("win_rate_pct"),
-            "v2_decisions_count": len(v2_decisions) if isinstance(v2_decisions, list) else 0,
         },
         "conclusion": "Options V3 autonomous shadow generated candidates from native options inputs.",
     }
