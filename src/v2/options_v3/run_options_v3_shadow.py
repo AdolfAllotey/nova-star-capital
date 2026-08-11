@@ -167,6 +167,33 @@ def enrich_candidate_capabilities_v3(
 
         enriched["contract_sizing"] = sizing_payload
         enriched["contract_quantity"] = quantity
+
+        # Preserve the pre-sizing estimate for audit/explainability, but
+        # promote the post-sizing risk as the canonical downstream risk.
+        #
+        # Downstream consumers (validation, decisions, ranking, portfolio
+        # allocation and position lifecycle) use estimated_risk_eur.
+        # Therefore it must represent the executable/sized contract risk,
+        # not the coarse upstream strategy estimate.
+        pre_sizing_estimated_risk_eur = enriched.get(
+            "estimated_risk_eur"
+        )
+        sized_estimated_risk_eur = sizing_payload.get(
+            "estimated_risk_eur"
+        )
+
+        enriched["pre_sizing_estimated_risk_eur"] = (
+            pre_sizing_estimated_risk_eur
+        )
+        enriched["sized_estimated_risk_eur"] = (
+            sized_estimated_risk_eur
+        )
+
+        if sized_estimated_risk_eur is not None:
+            enriched["estimated_risk_eur"] = float(
+                sized_estimated_risk_eur
+            )
+
         enriched["premium_per_contract"] = (
             sizing_input.premium_per_contract
         )
