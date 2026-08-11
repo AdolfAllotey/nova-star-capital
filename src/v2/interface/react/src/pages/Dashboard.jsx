@@ -418,23 +418,18 @@ export default function DashboardV4() {
   const bricks = portfolioState?.bricks || portfolioState?.data?.bricks || {};
   const finalWeights = portfolioTarget?.final_brick_weights || portfolioTarget?.data?.final_brick_weights || {};
 
-  const equityCurve = useMemo(() => {
+  const filteredChartHistory = useMemo(() => {
     const raw = Array.isArray(dashboard?.equityCurve?.history)
       ? dashboard.equityCurve.history
       : [];
 
-    const now = Date.now();
-    const rangeMs =
-      chartRange === "1D" ? 24 * 60 * 60 * 1000 :
-      chartRange === "7D" ? 7 * 24 * 60 * 60 * 1000 :
-      chartRange === "30D" ? 30 * 24 * 60 * 60 * 1000 :
-      chartRange === "90D" ? 90 * 24 * 60 * 60 * 1000 :
-      chartRange === "YTD" ? now - new Date(new Date().getFullYear(), 0, 1).getTime() :
-      null;
-
     const validRaw = raw
       .filter((row) => row && typeof row === "object")
-      .filter((row) => "active_pnl_eur" in row && "unrealized_pnl_eur" in row)
+      .filter(
+        (row) =>
+          "active_pnl_eur" in row &&
+          "unrealized_pnl_eur" in row
+      )
       .filter((row) =>
         Number.isFinite(
           Number(
@@ -445,21 +440,68 @@ export default function DashboardV4() {
             0
           )
         )
+      )
+      .filter((row) => {
+        if (!row.ts) return false;
+        return Number.isFinite(new Date(row.ts).getTime());
+      })
+      .sort(
+        (a, b) =>
+          new Date(a.ts).getTime() -
+          new Date(b.ts).getTime()
       );
 
-    const filtered = rangeMs
-      ? validRaw.filter((row) => row.ts && (now - new Date(row.ts).getTime()) <= rangeMs)
-      : validRaw;
+    if (chartRange === "ALL") {
+      return validRaw;
+    }
 
-    const rows = filtered.length ? filtered : validRaw.slice(-1);
+    const now = Date.now();
 
-    return rows.map((row, idx) => {
-      const date = row.ts ? new Date(row.ts) : null;
-      const label = idx === rows.length - 1
-        ? "Now"
-        : date
-          ? date.toLocaleDateString("fr-FR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })
-          : String(idx + 1);
+    let cutoff = null;
+
+    if (chartRange === "1D") {
+      cutoff = now - 24 * 60 * 60 * 1000;
+    } else if (chartRange === "7D") {
+      cutoff = now - 7 * 24 * 60 * 60 * 1000;
+    } else if (chartRange === "30D") {
+      cutoff = now - 30 * 24 * 60 * 60 * 1000;
+    } else if (chartRange === "90D") {
+      cutoff = now - 90 * 24 * 60 * 60 * 1000;
+    } else if (chartRange === "YTD") {
+      cutoff = new Date(
+        new Date().getFullYear(),
+        0,
+        1
+      ).getTime();
+    }
+
+    if (cutoff === null) {
+      return validRaw;
+    }
+
+    return validRaw.filter(
+      (row) =>
+        new Date(row.ts).getTime() >= cutoff
+    );
+  }, [dashboard?.equityCurve?.history, chartRange]);
+
+  const equityCurve = useMemo(() => {
+    return filteredChartHistory.map((row, idx) => {
+      const date = row.ts
+        ? new Date(row.ts)
+        : null;
+
+      const label =
+        idx === filteredChartHistory.length - 1
+          ? "Now"
+          : date
+            ? date.toLocaleDateString("fr-FR", {
+                day: "2-digit",
+                month: "short",
+                hour: "2-digit",
+                minute: "2-digit",
+              })
+            : String(idx + 1);
 
       return {
         d: label,
@@ -472,63 +514,77 @@ export default function DashboardV4() {
             0
           )
         ),
-        realized: Math.round(Number(row.realized_pnl_eur ?? 0)),
+        realized: Math.round(
+          Number(row.realized_pnl_eur ?? 0)
+        ),
         ts: row.ts,
       };
     });
-  }, [dashboard?.equityCurve?.history, chartRange]);
+  }, [filteredChartHistory]);
 
   const ddCurve = useMemo(() => {
-    const rawRows = Array.isArray(dashboard?.equityCurve?.history)
-      ? dashboard.equityCurve.history
-      : [];
-
-    const validRows = rawRows
-      .filter((row) => row && typeof row === "object")
-      .filter((row) => "active_pnl_eur" in row && "unrealized_pnl_eur" in row)
-      .filter((row) =>
-        Number.isFinite(
-          Number(
-            row.total_pnl_eur ??
-            row.total_pnl_including_options_eur ??
-            row.total_pnl_including_shadow_eur ??
-            row.realized_pnl_eur ??
-            0
-          )
-        )
-      );
-
     let peak = null;
 
-    return validRows.map((row, idx) => {
-      const date = row.ts ? new Date(row.ts) : null;
-      const label = idx === validRows.length - 1
-        ? "Now"
-        : date
-          ? date.toLocaleDateString("fr-FR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })
-          : String(idx + 1);
+    return filteredChartHistory.map((row, idx) => {
+      const date = row.ts
+        ? new Date(row.ts)
+        : null;
+
+      const label =
+        idx === filteredChartHistory.length - 1
+          ? "Now"
+          : date
+            ? date.toLocaleDateString("fr-FR", {
+                day: "2-digit",
+                month: "short",
+                hour: "2-digit",
+                minute: "2-digit",
+              })
+            : String(idx + 1);
 
       const value = Number(
         row.total_pnl_eur ??
         row.total_pnl_including_options_eur ??
         row.total_pnl_including_shadow_eur ??
+        row.realized_pnl_eur ??
         0
       );
-      peak = peak === null ? value : Math.max(peak, value);
-      const dd = peak > 0 ? ((value - peak) / peak) * 100 : 0;
+
+      peak =
+        peak === null
+          ? value
+          : Math.max(peak, value);
+
+      const dd =
+        peak > 0
+          ? ((value - peak) / peak) * 100
+          : 0;
 
       return {
         d: label,
         v: Number(dd.toFixed(2)),
+        ts: row.ts,
       };
     });
-  }, [dashboard?.equityCurve?.history]);
+  }, [filteredChartHistory]);
 
   const chartPointsCount = equityCurve?.length || 0;
-  const latestCurveTs = equityCurve?.length ? equityCurve[equityCurve.length - 1]?.ts : null;
+
+  const latestCurveTs =
+    equityCurve?.length
+      ? equityCurve[equityCurve.length - 1]?.ts
+      : null;
+
   const latestCurveLabel = latestCurveTs
-    ? new Date(latestCurveTs).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })
+    ? new Date(latestCurveTs).toLocaleTimeString(
+        "fr-FR",
+        {
+          hour: "2-digit",
+          minute: "2-digit",
+        }
+      )
     : "—";
+
   const currentDrawdown = ddCurve?.length ? Number(ddCurve[ddCurve.length - 1]?.v || 0) : 0;
   const maxDrawdown = ddCurve?.length
     ? Math.min(...ddCurve.map((x) => Number(x.v || 0)))
@@ -1642,7 +1698,11 @@ const allocationRows = portfolioKeys.map((key) => {
                     <option>ALL</option>
                   </select>
                   <span className="text-[10px] text-slate-400">{ddCurve?.length || 0} pts</span>
-                  <span className="text-xs font-semibold text-red-400">{ddCurve?.length ? `${ddCurve[ddCurve.length - 1].v}%` : "0%"}</span>
+                  <span className="text-xs font-semibold text-red-400">
+                    {ddCurve?.length
+                      ? `${ddCurve[ddCurve.length - 1].v}%`
+                      : "0%"}
+                  </span>
                 </div>
               </div>
 
@@ -1667,7 +1727,27 @@ const allocationRows = portfolioKeys.map((key) => {
                       </linearGradient>
                     </defs>
                     <CartesianGrid stroke="#1f2a37" strokeOpacity={0.4} vertical={true} />
-                    <XAxis dataKey="d" tick={{ fill: "#94a3b8", fontSize: 9 }} />
+                    <XAxis
+                      dataKey="d"
+                      tick={{ fill: "#94a3b8", fontSize: 9 }}
+                      tickFormatter={(value) => {
+                        const date = new Date(value);
+
+                        if (Number.isNaN(date.getTime())) {
+                          return value;
+                        }
+
+                        return chartRange === "1D"
+                          ? date.toLocaleTimeString("fr-FR", {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })
+                          : date.toLocaleDateString("fr-FR", {
+                              day: "2-digit",
+                              month: "short",
+                            });
+                      }}
+                    />
                     <YAxis
                       tick={{ fill: "#94a3b8", fontSize: 9 }}
                       tickFormatter={(v) => `${v}%`}
@@ -1737,30 +1817,28 @@ const allocationRows = portfolioKeys.map((key) => {
                   </span>
                 </div>
 
-                <div className="my-2 flex justify-center">
-                  <div className="relative h-16 w-32">
+                <div className="my-2 flex flex-col items-center justify-center gap-3">
+                  <div className="relative h-16 w-32 shrink-0">
                     <div className={`absolute bottom-0 left-0 h-16 w-32 rounded-t-full border-[10px] border-b-0 opacity-95 ${riskGaugeArcClass}`} />
                     <div className={`absolute bottom-0 left-1/2 h-11 w-[2px] origin-bottom bg-white shadow signals-[0_0_12px_rgba(255,255,255,0.75)] transition-transform duration-700 ${riskNeedleClass}`} />
                     <div className="absolute bottom-0 left-1/2 h-2.5 w-2.5 -translate-x-1/2 rounded-full bg-white" />
-                  
-</div>
+                  </div>
 
-<div className="mb-2 text-center">
-  <div className="text-[8px] uppercase tracking-[0.18em] text-slate-500">
-    Severity Score
-  </div>
+                  <div className="min-w-[92px] text-center leading-tight">
+                    <div className="text-[8px] uppercase tracking-[0.18em] text-slate-500">
+                      Severity Score
+                    </div>
 
-  <div className={`text-sm font-semibold ${
-    riskSeverityScore >= 70
-      ? "text-red-400"
-      : riskSeverityScore >= 35
-      ? "text-amber-300"
-      : "text-emerald-400"
-  }`}>
-    {riskSeverityScore}/100
-  </div>
-</div>
-
+                    <div className={`mt-1 text-sm font-semibold ${
+                      riskSeverityScore >= 70
+                        ? "text-red-400"
+                        : riskSeverityScore >= 35
+                        ? "text-amber-300"
+                        : "text-emerald-400"
+                    }`}>
+                      {riskSeverityScore}/100
+                    </div>
+                  </div>
                 </div>
 
 
