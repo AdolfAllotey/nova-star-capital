@@ -58,13 +58,35 @@ def get_real_brick_state(brick: str, deployable_capital_eur: float):
     if brick == "equities_offensive":
         path = DATA_DIR / "equities_offensive" / "state" / "exposure_snapshot.json"
         state = load_json(path, default={}) or {}
-        exposure = float(state.get("total_notional_usd", 0.0) or 0.0)
-        if exposure > 0 and deployable_capital_eur > 0:
+
+        # RC2 runtime-state contract:
+        # a valid zero-position snapshot is a real runtime state and must
+        # never fall back to a signal-derived target allocation.
+        if (
+            isinstance(state, dict)
+            and "total_notional_usd" in state
+            and "open_positions" in state
+            and deployable_capital_eur > 0
+        ):
+            exposure = float(
+                state.get("total_notional_usd", 0.0) or 0.0
+            )
+            open_count = int(
+                state.get(
+                    "open_positions",
+                    len(state.get("positions") or []),
+                )
+                or 0
+            )
+
             return {
                 "current_exposure_eur": round(exposure, 2),
-                "current_weight_estimate": round(exposure / deployable_capital_eur, 6),
+                "current_weight_estimate": round(
+                    exposure / deployable_capital_eur,
+                    6,
+                ),
                 "state_origin": "brick_state_simulated",
-                "positions_count": int(state.get("open_positions", len(state.get("positions") or [])) or 0),
+                "positions_count": open_count,
                 "state_source": str(path),
             }
 
