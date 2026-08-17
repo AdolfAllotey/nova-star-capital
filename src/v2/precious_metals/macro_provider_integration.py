@@ -343,13 +343,43 @@ def build_macro_provenance(
 
         observed_at = timestamp
 
-        latest = field_evidence.get(
-            "latest_observation"
+        latest = (
+            field_evidence.get("latest_observation")
+            or field_evidence.get("latest")
         )
+
+        if (
+            latest is None
+            and field == "inflation.inflation_trend_3m"
+        ):
+            current_yoy = field_evidence.get(
+                "current_yoy"
+            )
+
+            if isinstance(current_yoy, Mapping):
+                latest = current_yoy.get(
+                    "latest"
+                )
         if isinstance(latest, Mapping):
-            observed_at = str(
+            raw_observed_at = str(
                 latest.get("date", timestamp)
             )
+
+            # FRED observation dates are returned as YYYY-MM-DD.
+            # Preserve the economic observation date while making
+            # provenance timestamps timezone-aware as required by
+            # the RC2 contract.
+            if (
+                len(raw_observed_at) == 10
+                and raw_observed_at[4] == "-"
+                and raw_observed_at[7] == "-"
+            ):
+                observed_at = (
+                    raw_observed_at
+                    + "T00:00:00+00:00"
+                )
+            else:
+                observed_at = raw_observed_at
 
         if field.startswith("inflation."):
             if field.endswith(
