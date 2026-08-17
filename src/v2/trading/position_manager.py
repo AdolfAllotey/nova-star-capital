@@ -708,6 +708,17 @@ PARTIAL_RATIOS = [0.40, 0.30]   # 40 %, puis 30 % (reste trailing)
 STOP_LOSS_LEVEL = -0.10         # -10 %
 STOP_LOSS_COOLDOWN_HOURS = 24     # évite de rouvrir immédiatement un token stoppé
 
+# RC2 Reentry Quality Gate V1.
+#
+# Purpose:
+# - preserve the existing stop-loss cooldown;
+# - allow legitimate second momentum entries;
+# - prevent repeated exploitation of an exhausted impulse;
+# - reject an extended TP1-only reentry when momentum confirmation
+#   was insufficient to reach TP2 on the previous cycle.
+PROFIT_REENTRY_LOOKBACK_HOURS = 24
+PROFIT_REENTRY_TP1_ONLY_MAX_EXTENSION_PCT = 12.5
+
 MARKET_MOMENTUM_PARTIAL_LEVELS = [0.12, 0.25]  # +12 %, +25 %
 MARKET_MOMENTUM_STOP_LOSS_LEVEL = -0.07        # -7 %
 
@@ -914,6 +925,199 @@ def _recent_stoploss_symbols(exit_events, now_dt, hours=24):
         if sym and dt >= cutoff:
             out.add(sym)
     return out
+
+
+def _profit_reentry_quality_gate(
+    exit_events,
+    symbol,
+    now_dt,
+    candidate_entry_price=None,
+):
+    """
+    RC2 Reentry Quality Gate V1.
+
+    This gate applies only to NEW positions. Existing-position
+    reinforcement remains governed by the existing sizing logic.
+
+    Rules:
+    1. Stop-loss cooldown is handled independently by
+       _recent_stoploss_symbols().
+    2. Consider positive TP/trailing economic exits from the last
+       PROFIT_REENTRY_LOOKBACK_HOURS.
+    3. Group those exits by entry price to approximate distinct
+       momentum-entry cycles.
+    4. The number of profitable cycles is recorded for observation
+       only and is not an autonomous veto.
+    5. After a TP1-only cycle, reject an extended reentry if the
+       candidate price is more than the configured percentage above
+       that cycle's entry price.
+
+    Returns:
+        (allowed: bool, reason: str, context: dict)
+    """
+    symbol_norm = _normalize_symbol(symbol)
+
+    if not symbol_norm:
+        return True, "no_symbol", {}
+
+    cutoff = now_dt - timedelta(
+        hours=PROFIT_REENTRY_LOOKBACK_HOURS
+    )
+
+    profitable_types = {
+        "partial_tp1",
+        "partial_tp2",
+        "trailing_stop",
+    }
+
+    cycles = {}
+
+    for event in exit_events:
+        if not isinstance(event, dict):
+            continue
+
+        event_symbol = _normalize_symbol(
+            event.get("symbol")
+        )
+
+        if event_symbol != symbol_norm:
+            continue
+
+        exit_type = str(
+            event.get("exit_type") or ""
+        ).strip().lower()
+
+        if exit_type not in profitable_types:
+            continue
+
+        try:
+            pnl = float(event.get("pnl") or 0.0)
+        except Exception:
+            pnl = 0.0
+
+        if pnl <= 0:
+            continue
+
+        raw_ts = str(
+            event.get("timestamp") or ""
+        )
+
+        try:
+            event_dt = datetime.fromisoformat(
+                raw_ts.replace("Z", "+00:00")
+            )
+        except Exception:
+            continue
+
+        if event_dt < cutoff:
+            continue
+
+        try:
+            entry_price = float(
+                event.get("entry_price") or 0.0
+            )
+        except Exception:
+            entry_price = 0.0
+
+        if entry_price <= 0:
+            continue
+
+        # Entry price identifies one position lifecycle in the
+        # current crypto runtime. Rounding protects grouping from
+        # harmless float serialization noise.
+        cycle_key = round(entry_price, 12)
+
+        cycle = cycles.setdefault(
+            cycle_key,
+            {
+                "entry_price": entry_price,
+                "exit_types": set(),
+                "latest_exit_at": event_dt,
+                "realized_pnl": 0.0,
+            },
+        )
+
+        cycle["exit_types"].add(exit_type)
+        cycle["realized_pnl"] += pnl
+
+        if event_dt > cycle["latest_exit_at"]:
+            cycle["latest_exit_at"] = event_dt
+
+    ordered_cycles = sorted(
+        cycles.values(),
+        key=lambda x: x["latest_exit_at"],
+    )
+
+    context = {
+        "profitable_cycles": len(ordered_cycles),
+        "lookback_hours": (
+            PROFIT_REENTRY_LOOKBACK_HOURS
+        ),
+    }
+
+    if not ordered_cycles:
+        return True, "first_entry", context
+
+    latest = ordered_cycles[-1]
+
+    latest_types = latest["exit_types"]
+
+    # TP2 confirms that the preceding impulse had enough breadth
+    # to permit one additional opportunity. TP1 alone does not.
+    tp1_only = (
+        "partial_tp1" in latest_types
+        and "partial_tp2" not in latest_types
+    )
+
+    try:
+        candidate_price = float(
+            candidate_entry_price or 0.0
+        )
+    except Exception:
+        candidate_price = 0.0
+
+    previous_entry = float(
+        latest["entry_price"]
+    )
+
+    if (
+        tp1_only
+        and candidate_price > 0
+        and previous_entry > 0
+    ):
+        extension_pct = (
+            (
+                candidate_price
+                / previous_entry
+            )
+            - 1.0
+        ) * 100.0
+
+        context["previous_entry_price"] = (
+            round(previous_entry, 12)
+        )
+        context["candidate_entry_price"] = (
+            round(candidate_price, 12)
+        )
+        context["extension_pct"] = round(
+            extension_pct,
+            4,
+        )
+
+        if extension_pct > (
+            PROFIT_REENTRY_TP1_ONLY_MAX_EXTENSION_PCT
+        ):
+            context["rule"] = (
+                "tp1_only_extended_reentry"
+            )
+
+            return (
+                False,
+                "tp1_only_extended_reentry",
+                context,
+            )
+
+    return True, "reentry_quality_pass", context
 
 
 def update_positions(
@@ -1334,6 +1538,48 @@ def update_positions(
                     continue
 
             skip_counts["already_open"] += 1
+            continue
+
+        # ----------------------------------------------------------
+        # RC2 REENTRY QUALITY GATE V1
+        #
+        # Important:
+        # this is deliberately AFTER active_by_symbol handling.
+        # Existing-position reinforcement is therefore unchanged.
+        # ----------------------------------------------------------
+        candidate_entry_price = (
+            sig.get("entry_price")
+            or sig.get("price_ref")
+            or sig.get("price")
+        )
+
+        (
+            reentry_allowed,
+            reentry_reason,
+            reentry_context,
+        ) = _profit_reentry_quality_gate(
+            exit_events=exit_events,
+            symbol=symbol_raw,
+            now_dt=now_dt,
+            candidate_entry_price=(
+                candidate_entry_price
+            ),
+        )
+
+        if not reentry_allowed:
+            skip_counts[
+                "reentry_quality_gate"
+            ] += 1
+
+            logger.info(
+                "[position_manager] "
+                "skip reentry quality gate "
+                "symbol=%s reason=%s context=%s",
+                symbol_raw,
+                reentry_reason,
+                reentry_context,
+            )
+
             continue
 
         side = _normalize_side(sig.get("side"))
