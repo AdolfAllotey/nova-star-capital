@@ -40,41 +40,6 @@ def _cap_and_renormalize_weights(signals, max_gross=1.0, max_single=0.25):
 def _norm_sym(x: str) -> str:
     return str(x or "").strip().lower()
 
-def _cap_and_renormalize_weights(signals, max_gross=1.0, max_single=0.25):
-
-    cleaned = []
-
-    for s in (signals or []):
-
-        if not isinstance(s, dict):
-
-            continue
-
-        w = float(s.get("weight") or 0.0)
-
-        if w <= 0:
-
-            continue
-
-        s["weight"] = min(w, max_single)
-
-        cleaned.append(s)
-
-    if not cleaned:
-
-        return []
-
-    total = sum(float(x.get("weight") or 0.0) for x in cleaned)
-
-    if total > max_gross and total > 0:
-
-        scale = max_gross / total
-
-        for x in cleaned:
-
-            x["weight"] = min(float(x.get("weight") or 0.0) * scale, max_single)
-
-    return cleaned
 
 def _load_candidates_meta_map(data_dir):
     """
@@ -108,41 +73,6 @@ def _load_candidates_meta_map(data_dir):
     except Exception:
         return {}
 
-def _cap_and_renormalize_weights(signals, max_gross=1.0, max_single=0.25):
-
-    cleaned = []
-
-    for s in (signals or []):
-
-        if not isinstance(s, dict):
-
-            continue
-
-        w = float(s.get("weight") or 0.0)
-
-        if w <= 0:
-
-            continue
-
-        s["weight"] = min(w, max_single)
-
-        cleaned.append(s)
-
-    if not cleaned:
-
-        return []
-
-    total = sum(float(x.get("weight") or 0.0) for x in cleaned)
-
-    if total > max_gross and total > 0:
-
-        scale = max_gross / total
-
-        for x in cleaned:
-
-            x["weight"] = min(float(x.get("weight") or 0.0) * scale, max_single)
-
-    return cleaned
 
 def _attach_meta_score_pro(sized_list, meta_map: dict):
     """
@@ -170,41 +100,6 @@ def _attach_meta_score_pro(sized_list, meta_map: dict):
 
 
 
-def _cap_and_renormalize_weights(signals, max_gross=1.0, max_single=0.25):
-
-    cleaned = []
-
-    for s in (signals or []):
-
-        if not isinstance(s, dict):
-
-            continue
-
-        w = float(s.get("weight") or 0.0)
-
-        if w <= 0:
-
-            continue
-
-        s["weight"] = min(w, max_single)
-
-        cleaned.append(s)
-
-    if not cleaned:
-
-        return []
-
-    total = sum(float(x.get("weight") or 0.0) for x in cleaned)
-
-    if total > max_gross and total > 0:
-
-        scale = max_gross / total
-
-        for x in cleaned:
-
-            x["weight"] = min(float(x.get("weight") or 0.0) * scale, max_single)
-
-    return cleaned
 
 def _nsc_pick_score(sig: dict) -> float:
     """Extract a ranking score from heterogeneous signal formats."""
@@ -264,41 +159,6 @@ DATA_DIR = Path(os.getenv("NSC_DATA_DIR") or os.getenv("NSC_DATA_ROOT") or ROOT_
 MAJORS = {"bitcoin", "ethereum", "solana", "bnb"}
 
 
-def _cap_and_renormalize_weights(signals, max_gross=1.0, max_single=0.25):
-
-    cleaned = []
-
-    for s in (signals or []):
-
-        if not isinstance(s, dict):
-
-            continue
-
-        w = float(s.get("weight") or 0.0)
-
-        if w <= 0:
-
-            continue
-
-        s["weight"] = min(w, max_single)
-
-        cleaned.append(s)
-
-    if not cleaned:
-
-        return []
-
-    total = sum(float(x.get("weight") or 0.0) for x in cleaned)
-
-    if total > max_gross and total > 0:
-
-        scale = max_gross / total
-
-        for x in cleaned:
-
-            x["weight"] = min(float(x.get("weight") or 0.0) * scale, max_single)
-
-    return cleaned
 
 def _build_index(items: List[Dict[str, Any]], key: str) -> Dict[str, Dict[str, Any]]:
     """Indexe une liste de dicts par une clé (ex: symbol)."""
@@ -311,41 +171,6 @@ def _build_index(items: List[Dict[str, Any]], key: str) -> Dict[str, Dict[str, A
     return out
 
 
-def _cap_and_renormalize_weights(signals, max_gross=1.0, max_single=0.25):
-
-    cleaned = []
-
-    for s in (signals or []):
-
-        if not isinstance(s, dict):
-
-            continue
-
-        w = float(s.get("weight") or 0.0)
-
-        if w <= 0:
-
-            continue
-
-        s["weight"] = min(w, max_single)
-
-        cleaned.append(s)
-
-    if not cleaned:
-
-        return []
-
-    total = sum(float(x.get("weight") or 0.0) for x in cleaned)
-
-    if total > max_gross and total > 0:
-
-        scale = max_gross / total
-
-        for x in cleaned:
-
-            x["weight"] = min(float(x.get("weight") or 0.0) * scale, max_single)
-
-    return cleaned
 
 def _load_signals(data_dir: Path) -> List[Dict[str, Any]]:
     """
@@ -370,41 +195,6 @@ def _load_signals(data_dir: Path) -> List[Dict[str, Any]]:
     return signals
 
 
-def _cap_and_renormalize_weights(signals, max_gross=1.0, max_single=0.25):
-
-    cleaned = []
-
-    for s in (signals or []):
-
-        if not isinstance(s, dict):
-
-            continue
-
-        w = float(s.get("weight") or 0.0)
-
-        if w <= 0:
-
-            continue
-
-        s["weight"] = min(w, max_single)
-
-        cleaned.append(s)
-
-    if not cleaned:
-
-        return []
-
-    total = sum(float(x.get("weight") or 0.0) for x in cleaned)
-
-    if total > max_gross and total > 0:
-
-        scale = max_gross / total
-
-        for x in cleaned:
-
-            x["weight"] = min(float(x.get("weight") or 0.0) * scale, max_single)
-
-    return cleaned
 
 def _load_risk_engine(data_dir: Path) -> Dict[str, Dict[str, Any]]:
     """Charge le résultat de risk_engine_pro.json et indexe par symbol."""
@@ -427,41 +217,6 @@ def _load_risk_engine(data_dir: Path) -> Dict[str, Dict[str, Any]]:
     return _build_index(assets, "symbol")
 
 
-def _cap_and_renormalize_weights(signals, max_gross=1.0, max_single=0.25):
-
-    cleaned = []
-
-    for s in (signals or []):
-
-        if not isinstance(s, dict):
-
-            continue
-
-        w = float(s.get("weight") or 0.0)
-
-        if w <= 0:
-
-            continue
-
-        s["weight"] = min(w, max_single)
-
-        cleaned.append(s)
-
-    if not cleaned:
-
-        return []
-
-    total = sum(float(x.get("weight") or 0.0) for x in cleaned)
-
-    if total > max_gross and total > 0:
-
-        scale = max_gross / total
-
-        for x in cleaned:
-
-            x["weight"] = min(float(x.get("weight") or 0.0) * scale, max_single)
-
-    return cleaned
 
 def _load_weak_signals(data_dir: Path) -> Dict[str, Dict[str, Any]]:
     """
@@ -486,41 +241,6 @@ def _load_weak_signals(data_dir: Path) -> Dict[str, Dict[str, Any]]:
     return _build_index(assets, "symbol")
 
 
-def _cap_and_renormalize_weights(signals, max_gross=1.0, max_single=0.25):
-
-    cleaned = []
-
-    for s in (signals or []):
-
-        if not isinstance(s, dict):
-
-            continue
-
-        w = float(s.get("weight") or 0.0)
-
-        if w <= 0:
-
-            continue
-
-        s["weight"] = min(w, max_single)
-
-        cleaned.append(s)
-
-    if not cleaned:
-
-        return []
-
-    total = sum(float(x.get("weight") or 0.0) for x in cleaned)
-
-    if total > max_gross and total > 0:
-
-        scale = max_gross / total
-
-        for x in cleaned:
-
-            x["weight"] = min(float(x.get("weight") or 0.0) * scale, max_single)
-
-    return cleaned
 
 def _compute_size_multiplier(
     risk_item: Dict[str, Any],
@@ -602,41 +322,6 @@ def _compute_size_multiplier(
     }
 
 
-def _cap_and_renormalize_weights(signals, max_gross=1.0, max_single=0.25):
-
-    cleaned = []
-
-    for s in (signals or []):
-
-        if not isinstance(s, dict):
-
-            continue
-
-        w = float(s.get("weight") or 0.0)
-
-        if w <= 0:
-
-            continue
-
-        s["weight"] = min(w, max_single)
-
-        cleaned.append(s)
-
-    if not cleaned:
-
-        return []
-
-    total = sum(float(x.get("weight") or 0.0) for x in cleaned)
-
-    if total > max_gross and total > 0:
-
-        scale = max_gross / total
-
-        for x in cleaned:
-
-            x["weight"] = min(float(x.get("weight") or 0.0) * scale, max_single)
-
-    return cleaned
 def build_sized_signals() -> list[dict[str, Any]]:
     """
     Construit la liste des signaux dimensionnés (sized_signals.json) à partir de :
@@ -852,41 +537,6 @@ def build_sized_signals() -> list[dict[str, Any]]:
     return sized
 
 
-def _cap_and_renormalize_weights(signals, max_gross=1.0, max_single=0.25):
-
-    cleaned = []
-
-    for s in (signals or []):
-
-        if not isinstance(s, dict):
-
-            continue
-
-        w = float(s.get("weight") or 0.0)
-
-        if w <= 0:
-
-            continue
-
-        s["weight"] = min(w, max_single)
-
-        cleaned.append(s)
-
-    if not cleaned:
-
-        return []
-
-    total = sum(float(x.get("weight") or 0.0) for x in cleaned)
-
-    if total > max_gross and total > 0:
-
-        scale = max_gross / total
-
-        for x in cleaned:
-
-            x["weight"] = min(float(x.get("weight") or 0.0) * scale, max_single)
-
-    return cleaned
 
 def main() -> None:
     """Point d'entrée CLI."""
