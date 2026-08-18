@@ -68,16 +68,42 @@ def main() -> None:
     matched_top20 = sorted([s for s in unique_order_symbols if s in top20_symbols])
     missing_from_top20 = sorted([s for s in unique_order_symbols if s not in top20_symbols])
 
-    tradable_meta = [
+    # ========================================================
+    # RC2 Meta Validation Strategic Semantics V3
+    #
+    # "Tradable" alone means that an execution venue exists.
+    # It does NOT mean that the asset is strategically eligible.
+    #
+    # The validation universe must therefore match the actual
+    # Meta Ranking execution-governance contract.
+    # ========================================================
+
+    strategic_allowed_verdicts = {
+        "GOOD_CANDIDATE",
+        "WATCH_TRADABLE",
+    }
+
+    strategic_meta = [
         x for x in meta_items
         if isinstance(x, dict)
-        and x.get("tradable") is True
-        and "extreme_pump" not in (x.get("risk_flags") or [])
+        and x.get("execution_eligible") is True
+        and str(x.get("verdict") or "") in strategic_allowed_verdicts
     ]
 
-    top_tradable = tradable_meta[:5]
-    top_tradable_symbols = {norm_symbol(x.get("symbol")) for x in top_tradable}
-    matched_top_tradable = sorted([s for s in top_tradable_symbols if s in unique_order_symbols])
+    top_tradable = strategic_meta[:5]
+
+    top_tradable_symbols = {
+        norm_symbol(x.get("symbol"))
+        for x in top_tradable
+    }
+
+    matched_top_tradable = sorted(
+        [
+            s
+            for s in top_tradable_symbols
+            if s in unique_order_symbols
+        ]
+    )
 
     ignored_top_tradable = [
         {
@@ -90,12 +116,12 @@ def main() -> None:
         if norm_symbol(x.get("symbol")) not in unique_order_symbols
     ]
 
+    # High conviction must be a subset of the strategic
+    # execution universe. A high numerical rank cannot override
+    # execution ineligibility or a blocking Meta Ranking verdict.
     high_conviction = [
-        x for x in meta_items
-        if isinstance(x, dict)
-        and x.get("tradable") is True
-        and float(x.get("meta_rank") or 0.0) >= 55
-        and "extreme_pump" not in (x.get("risk_flags") or [])
+        x for x in strategic_meta
+        if float(x.get("meta_rank") or 0.0) >= 55
     ]
 
     missing_high_conviction = [
@@ -158,7 +184,8 @@ def main() -> None:
         "status": status,
         "generated_at": utc_now(),
         "engine": "meta_validation_engine_v2",
-        "mode": "observation_only",
+        "semantics_version": "v3_execution_governance",
+        "mode": "execution_governance_validation",
         "decision_alignment_score": round(decision_alignment, 2),
         "opportunity_coverage_score": round(opportunity_coverage, 2),
         "alignment_score": round(decision_alignment, 2),
@@ -173,6 +200,19 @@ def main() -> None:
             "opportunity_coverage_score": round(opportunity_coverage, 2),
         },
         "execution_symbols": unique_order_symbols,
+
+        "strategic_execution_universe": [
+            norm_symbol(x.get("symbol"))
+            for x in strategic_meta
+            if isinstance(x, dict)
+        ],
+        "strategic_execution_universe_count": len(
+            strategic_meta
+        ),
+        "strategic_allowed_verdicts": sorted(
+            strategic_allowed_verdicts
+        ),
+
         "matched_top10": matched_top10,
         "matched_top20": matched_top20,
         "missing_from_top20": missing_from_top20,
@@ -182,10 +222,11 @@ def main() -> None:
         "ignored_top_tradable": ignored_top_tradable,
         "missing_high_conviction": missing_high_conviction,
         "notes": [
-            "V2 separates decision quality from opportunity breadth.",
-            "Decision alignment checks whether executed orders are coherent with Meta Ranking.",
-            "Opportunity coverage measures how many top tradable opportunities were selected.",
-            "Observation-only validation. Does not block execution.",
+            "V3 separates venue availability from strategic execution eligibility.",
+            "Decision alignment checks whether planned orders are coherent with Meta Ranking.",
+            "Opportunity coverage measures coverage of Meta Ranking strategic execution-eligible opportunities.",
+            "Strategic universe requires execution_eligible plus GOOD_CANDIDATE or WATCH_TRADABLE verdict.",
+            "Validation is execution-governance aware but remains non-mutating.",
         ],
     }
 

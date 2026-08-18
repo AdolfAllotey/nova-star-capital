@@ -57,6 +57,35 @@ def main() -> None:
             "tradable": bool(item.get("tradable")),
             "observation_only": bool(item.get("observation_only")),
             "pair": item.get("pair"),
+
+            # RC2 Strategic Semantics V2:
+            # Preserve both observation-layer intelligence and the
+            # execution-venue reality used for investment decisions.
+            "observed_pair": item.get("observed_pair"),
+            "observed_chg_24h": item.get("observed_chg_24h"),
+            "observed_source": item.get("observed_source"),
+
+            "execution_confirmed": bool(
+                item.get("execution_confirmed", False)
+            ),
+            "execution_pair": item.get("execution_pair"),
+            "execution_chg_24h": item.get("execution_chg_24h"),
+            "execution_price": item.get("execution_price"),
+            "execution_source": item.get("execution_source"),
+            "execution_sources": item.get("execution_sources") or [],
+
+            "cross_source_direction_conflict": bool(
+                item.get(
+                    "cross_source_direction_conflict",
+                    False,
+                )
+            ),
+            "cross_source_conflict_details": (
+                item.get(
+                    "cross_source_conflict_details"
+                )
+                or {}
+            ),
         })
 
     for item in persistence.get("top_persistent", []) if isinstance(persistence.get("top_persistent"), list) else []:
@@ -90,13 +119,70 @@ def main() -> None:
         persistence_score = float(r.get("persistence_score") or 0.0)
         social_score = float(r.get("social_score") or 0.0)
 
-        chg_24h = float(r.get("chg_24h") or 0.0)
+        # ------------------------------------------------------------
+        # RC2 META RANKING STRATEGIC SEMANTICS V2
+        #
+        # Observation data helps discovery.
+        # Execution-venue data governs executable momentum.
+        #
+        # If an NSC execution venue confirms the asset, its 24h move
+        # becomes the decision momentum source of truth.
+        # Otherwise we retain the observed move for intelligence only.
+        # ------------------------------------------------------------
+        observed_chg_24h = float(
+            r.get("observed_chg_24h")
+            if r.get("observed_chg_24h") is not None
+            else (r.get("chg_24h") or 0.0)
+        )
+
+        execution_confirmed = bool(
+            r.get("execution_confirmed", False)
+        )
+
+        execution_chg_raw = r.get(
+            "execution_chg_24h"
+        )
+
+        try:
+            execution_chg_24h = (
+                float(execution_chg_raw)
+                if execution_chg_raw is not None
+                else None
+            )
+        except Exception:
+            execution_chg_24h = None
+
+        direction_conflict = bool(
+            r.get(
+                "cross_source_direction_conflict",
+                False,
+            )
+        )
+
+        if (
+            execution_confirmed
+            and execution_chg_24h is not None
+        ):
+            decision_chg_24h = execution_chg_24h
+            momentum_source = "execution_venue"
+        else:
+            decision_chg_24h = observed_chg_24h
+            momentum_source = "observation_only"
+
+        # Backward-compatible alias:
+        # `chg_24h` in Meta Ranking now represents the decision-layer
+        # momentum used by the ranking, while observed_chg_24h remains
+        # explicitly available for discovery explainability.
+        chg_24h = decision_chg_24h
+
         if chg_24h <= 0:
             momentum_score = 0.0
         elif chg_24h > 60:
             momentum_score = 45.0
         else:
-            momentum_score = clamp((chg_24h / 60.0) * 100.0)
+            momentum_score = clamp(
+                (chg_24h / 60.0) * 100.0
+            )
 
         sources_count = int(r.get("sources_count") or 0)
         source_score = clamp(sources_count * 25.0)
@@ -116,28 +202,74 @@ def main() -> None:
         )
 
         risk_flags = []
+
         if chg_24h > 60:
             risk_flags.append("extreme_pump")
+
+        if not execution_confirmed:
+            risk_flags.append(
+                "not_confirmed_execution_venue"
+            )
+
         if not r.get("tradable"):
-            risk_flags.append("not_confirmed_tradable")
+            risk_flags.append(
+                "not_confirmed_tradable"
+            )
+
         if r.get("observation_only"):
-            risk_flags.append("observation_only")
+            risk_flags.append(
+                "observation_only"
+            )
+
+        # A positive observation on one source and a negative move on
+        # the actual execution venue is not an executable long signal.
+        if direction_conflict:
+            risk_flags.append(
+                "cross_source_direction_conflict"
+            )
+
+        execution_eligible = (
+            execution_confirmed
+            and r.get("tradable") is True
+            and not r.get("observation_only")
+            and not direction_conflict
+            and "extreme_pump" not in risk_flags
+        )
 
         recommended = (
             meta_rank >= 70
-            and r.get("tradable") is True
+            and execution_eligible
             and chg_24h >= 15
             and chg_24h <= 60
         )
 
-        if recommended:
-            verdict = "GOOD_CANDIDATE"
-        elif r.get("tradable") is True and not risk_flags and chg_24h >= 15:
-            verdict = "WATCH_TRADABLE"
+        if direction_conflict:
+            verdict = (
+                "AVOID_DIRECTION_CONFLICT"
+            )
         elif "extreme_pump" in risk_flags:
-            verdict = "AVOID_EXTREME_PUMP"
+            verdict = (
+                "AVOID_EXTREME_PUMP"
+            )
+        elif recommended:
+            verdict = (
+                "GOOD_CANDIDATE"
+            )
+        elif (
+            execution_eligible
+            and chg_24h >= 15
+        ):
+            verdict = (
+                "WATCH_TRADABLE"
+            )
+        elif not execution_confirmed:
+            verdict = (
+                "WATCH_ONLY_NOT_EXECUTABLE"
+            )
         elif not r.get("tradable"):
-            verdict = "WATCH_ONLY_NOT_TRADABLE"
+            verdict = (
+                "WATCH_ONLY_NOT_TRADABLE"
+            )
         else:
             verdict = "LOW_PRIORITY"
 
@@ -152,17 +284,48 @@ def main() -> None:
             positive_drivers.append("strong_social_signal")
         if 15 <= chg_24h <= 60:
             positive_drivers.append("healthy_24h_momentum")
-        if r.get("tradable") is True:
-            positive_drivers.append("tradable_confirmed")
+        if execution_confirmed:
+            positive_drivers.append(
+                "execution_venue_confirmed"
+            )
+
+        if (
+            execution_eligible
+            and r.get("tradable") is True
+        ):
+            positive_drivers.append(
+                "tradable_confirmed"
+            )
 
         if chg_24h > 60:
-            negative_drivers.append("24h_move_above_safety_band")
+            negative_drivers.append(
+                "24h_move_above_safety_band"
+            )
+
+        if not execution_confirmed:
+            negative_drivers.append(
+                "execution_venue_not_confirmed"
+            )
+
         if not r.get("tradable"):
-            negative_drivers.append("not_tradable_on_confirmed_execution_venues")
+            negative_drivers.append(
+                "not_tradable_on_confirmed_execution_venues"
+            )
+
         if r.get("observation_only"):
-            negative_drivers.append("observation_only_source")
+            negative_drivers.append(
+                "observation_only_source"
+            )
+
+        if direction_conflict:
+            negative_drivers.append(
+                "cross_source_direction_conflict"
+            )
+
         if meta_rank < 50:
-            negative_drivers.append("meta_rank_below_decision_threshold")
+            negative_drivers.append(
+                "meta_rank_below_decision_threshold"
+            )
 
         explainability = {
             "breakdown": {
@@ -177,7 +340,9 @@ def main() -> None:
             "verdict": verdict,
             "summary": (
                 f"{symbol}: {verdict} | meta_rank={meta_rank:.2f} | "
-                f"tradable={bool(r.get('tradable'))} | chg24h={chg_24h:.2f}%"
+                f"execution_eligible={execution_eligible} | "
+                f"decision_chg24h={chg_24h:.2f}% | "
+                f"momentum_source={momentum_source}"
             ),
         }
 
@@ -185,6 +350,17 @@ def main() -> None:
         out.update({
             "meta_rank": round(meta_rank, 2),
             "momentum_score": round(momentum_score, 2),
+
+            "decision_chg_24h": round(
+                decision_chg_24h,
+                4,
+            ),
+            "momentum_source": momentum_source,
+
+            "execution_eligible": bool(
+                execution_eligible
+            ),
+
             "source_score": round(source_score, 2),
             "risk_flags": risk_flags,
             "recommended": recommended,
@@ -204,7 +380,8 @@ def main() -> None:
         "status": "ok",
         "generated_at": utc_now(),
         "engine": "meta_ranking_engine_v1",
-        "mode": "observation_only",
+        "semantics_version": "v2_execution_aware",
+        "mode": "execution_governance",
         "weights": {
             "discovery_score": 0.30,
             "persistence_score": 0.25,
