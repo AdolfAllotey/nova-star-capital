@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from collections import Counter
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List
 
@@ -413,6 +414,257 @@ def _load_momentum_scores(data_dir: Path) -> List[Dict[str, Any]]:
     return score_list
 
 
+
+# ============================================================
+# RC2 META RANKING EXECUTION ELIGIBILITY GATE V1
+#
+# Meta Ranking is part of the institutional decision chain,
+# not a reporting-only artifact.
+#
+# Execution eligibility:
+#   GOOD_CANDIDATE  -> eligible
+#   WATCH_TRADABLE  -> eligible
+#
+# Fail closed when:
+#   - ranking is missing;
+#   - verdict is not execution-eligible;
+#   - tradability is not confirmed;
+#   - observation_only is true;
+#   - Meta Ranking carries risk flags.
+#
+# Meta Validation remains downstream and verifies alignment
+# after the decision.
+# ============================================================
+
+META_EXECUTION_ALLOWED_VERDICTS = {
+    "GOOD_CANDIDATE",
+    "WATCH_TRADABLE",
+}
+
+
+def _normalize_meta_symbol(value) -> str:
+    symbol = str(value or "").strip().upper()
+
+    if symbol.endswith("USDT"):
+        symbol = symbol[:-4]
+
+    return symbol
+
+
+def _load_meta_ranking_map(
+    data_dir: Path,
+) -> Dict[str, Dict[str, Any]]:
+    path = (
+        data_dir
+        / "discovery"
+        / "meta_rankings.json"
+    )
+
+    raw = load_json_file(
+        path,
+        default={},
+    ) or {}
+
+    if not isinstance(raw, dict):
+        return {}
+
+    items = raw.get("items", [])
+
+    if not isinstance(items, list):
+        return {}
+
+    out: Dict[str, Dict[str, Any]] = {}
+
+    for row in items:
+        if not isinstance(row, dict):
+            continue
+
+        symbol = _normalize_meta_symbol(
+            row.get("symbol")
+            or row.get("pair")
+        )
+
+        if not symbol:
+            continue
+
+        out[symbol] = row
+
+    return out
+
+
+def _meta_execution_eligibility(
+    ranking: Dict[str, Any] | None,
+):
+    """
+    Pure strategic eligibility contract.
+
+    Returns:
+        allowed: bool
+        reason: str
+        context: dict
+    """
+    if not isinstance(ranking, dict):
+        return (
+            False,
+            "missing_meta_ranking",
+            {},
+        )
+
+    verdict = str(
+        ranking.get("verdict") or ""
+    ).strip().upper()
+
+    tradable = (
+        ranking.get("tradable") is True
+    )
+
+    observation_only = bool(
+        ranking.get("observation_only", False)
+    )
+
+    risk_flags = ranking.get("risk_flags") or []
+
+    if not isinstance(risk_flags, list):
+        risk_flags = [risk_flags]
+
+    risk_flags = [
+        str(x)
+        for x in risk_flags
+        if str(x).strip()
+    ]
+
+    context = {
+        "meta_rank": ranking.get("meta_rank"),
+        "verdict": verdict or None,
+        "recommended": ranking.get(
+            "recommended"
+        ),
+        "tradable": tradable,
+        "observation_only": observation_only,
+        "risk_flags": risk_flags,
+    }
+
+    if not tradable:
+        return (
+            False,
+            "meta_not_tradable",
+            context,
+        )
+
+    if observation_only:
+        return (
+            False,
+            "meta_observation_only",
+            context,
+        )
+
+    if risk_flags:
+        return (
+            False,
+            "meta_risk_flags",
+            context,
+        )
+
+    if verdict not in (
+        META_EXECUTION_ALLOWED_VERDICTS
+    ):
+        return (
+            False,
+            "meta_verdict_not_eligible",
+            context,
+        )
+
+    return (
+        True,
+        "meta_execution_eligible",
+        context,
+    )
+
+
+def _apply_meta_execution_gate(
+    candidates: List[Dict[str, Any]],
+    data_dir: Path,
+) -> List[Dict[str, Any]]:
+    rankings = _load_meta_ranking_map(
+        data_dir
+    )
+
+    eligible: List[Dict[str, Any]] = []
+
+    blocked = Counter()
+
+    for signal in candidates:
+        if not isinstance(signal, dict):
+            continue
+
+        token = _normalize_meta_symbol(
+            signal.get("symbol")
+            or signal.get("token")
+            or signal.get("asset")
+        )
+
+        ranking = rankings.get(token)
+
+        (
+            allowed,
+            reason,
+            context,
+        ) = _meta_execution_eligibility(
+            ranking
+        )
+
+        if not allowed:
+            blocked[reason] += 1
+
+            logger.info(
+                "[signal_voting] "
+                "meta execution gate blocked "
+                "symbol=%s reason=%s context=%s",
+                signal.get("symbol"),
+                reason,
+                context,
+            )
+
+            continue
+
+        enriched = dict(signal)
+
+        enriched[
+            "meta_execution_gate"
+        ] = {
+            "status": "eligible",
+            "reason": reason,
+            **context,
+        }
+
+        # Preserve institutional Meta Ranking values explicitly
+        # through sizing and execution for auditability.
+        enriched[
+            "meta_rank"
+        ] = context.get("meta_rank")
+
+        enriched[
+            "meta_verdict"
+        ] = context.get("verdict")
+
+        enriched[
+            "meta_recommended"
+        ] = context.get("recommended")
+
+        eligible.append(enriched)
+
+    logger.info(
+        "[signal_voting] meta execution gate "
+        "input=%d eligible=%d blocked=%d "
+        "blocked_reasons=%s",
+        len(candidates),
+        len(eligible),
+        len(candidates) - len(eligible),
+        dict(blocked),
+    )
+
+    return eligible
+
 def compute_signals(
     data_dir: Path,
     min_meta: float = MIN_META_DEFAULT,
@@ -478,6 +730,17 @@ def compute_signals(
 
     if injected:
         logger.info("[signal_voting] market_momentum injected=%d", injected)
+
+    # ------------------------------------------------------------
+    # RC2 institutional strategic eligibility.
+    #
+    # Meta Ranking must govern execution eligibility BEFORE
+    # ranking/truncation, sizing and execution.
+    # ------------------------------------------------------------
+    candidates = _apply_meta_execution_gate(
+        candidates,
+        data_dir,
+    )
 
     # Tri par meta_score décroissant
     candidates.sort(key=lambda s: s.get("meta_score", 0.0), reverse=True)
