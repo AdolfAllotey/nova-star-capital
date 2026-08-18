@@ -232,7 +232,7 @@ def _is_final_safe_plan(plan: dict) -> tuple[bool, str]:
             return False, "hard_block_true"
     except Exception:
         pass
-    
+
     # writer gate (robuste): accepte plan["writer"] OU governance["writer"]
     _w_plan = (plan or {}).get("writer")
     _w_gov = None
@@ -1211,6 +1211,21 @@ def update_positions(
                 "entry_price": entry_price,
                 "risk_flag": pos.get("risk_flag"),
                 "meta_score": pos.get("meta_score"),
+
+                # RC2 Meta Decision Lineage V1.
+                "meta_score_pro": pos.get("meta_score_pro"),
+                "meta_rank": pos.get("meta_rank"),
+                "meta_verdict": pos.get("meta_verdict"),
+                "meta_recommended": pos.get("meta_recommended"),
+                "meta_execution_gate": pos.get("meta_execution_gate"),
+                "execution_eligible": pos.get("execution_eligible"),
+                "execution_confirmed": pos.get("execution_confirmed"),
+                "decision_chg_24h": pos.get("decision_chg_24h"),
+                "momentum_source": pos.get("momentum_source"),
+                "execution_pair": pos.get("execution_pair"),
+                "execution_source": pos.get("execution_source"),
+                "cross_source_direction_conflict": pos.get("cross_source_direction_conflict"),
+                "meta_risk_flags": list(pos.get("meta_risk_flags") or []),
                 "execution_mode": pos.get("execution_mode"),
             })
             logger.info("[position_manager] STOP LOSS %s: size=%.6f price=%.6f pnl=%.4f",
@@ -1237,6 +1252,21 @@ def update_positions(
                 "entry_price": entry_price,
                 "risk_flag": pos.get("risk_flag"),
                 "meta_score": pos.get("meta_score"),
+
+                # RC2 Meta Decision Lineage V1.
+                "meta_score_pro": pos.get("meta_score_pro"),
+                "meta_rank": pos.get("meta_rank"),
+                "meta_verdict": pos.get("meta_verdict"),
+                "meta_recommended": pos.get("meta_recommended"),
+                "meta_execution_gate": pos.get("meta_execution_gate"),
+                "execution_eligible": pos.get("execution_eligible"),
+                "execution_confirmed": pos.get("execution_confirmed"),
+                "decision_chg_24h": pos.get("decision_chg_24h"),
+                "momentum_source": pos.get("momentum_source"),
+                "execution_pair": pos.get("execution_pair"),
+                "execution_source": pos.get("execution_source"),
+                "cross_source_direction_conflict": pos.get("cross_source_direction_conflict"),
+                "meta_risk_flags": list(pos.get("meta_risk_flags") or []),
                 "execution_mode": pos.get("execution_mode"),
             })
             logger.info("[position_manager] TP1 %s: size=%.6f price=%.6f pnl=%.4f",
@@ -1268,6 +1298,21 @@ def update_positions(
                 "entry_price": entry_price,
                 "risk_flag": pos.get("risk_flag"),
                 "meta_score": pos.get("meta_score"),
+
+                # RC2 Meta Decision Lineage V1.
+                "meta_score_pro": pos.get("meta_score_pro"),
+                "meta_rank": pos.get("meta_rank"),
+                "meta_verdict": pos.get("meta_verdict"),
+                "meta_recommended": pos.get("meta_recommended"),
+                "meta_execution_gate": pos.get("meta_execution_gate"),
+                "execution_eligible": pos.get("execution_eligible"),
+                "execution_confirmed": pos.get("execution_confirmed"),
+                "decision_chg_24h": pos.get("decision_chg_24h"),
+                "momentum_source": pos.get("momentum_source"),
+                "execution_pair": pos.get("execution_pair"),
+                "execution_source": pos.get("execution_source"),
+                "cross_source_direction_conflict": pos.get("cross_source_direction_conflict"),
+                "meta_risk_flags": list(pos.get("meta_risk_flags") or []),
                 "execution_mode": pos.get("execution_mode"),
             })
             logger.info("[position_manager] TP2 %s: size=%.6f price=%.6f pnl=%.4f",
@@ -1318,6 +1363,21 @@ def update_positions(
                     "entry_price": entry_price,
                     "risk_flag": pos.get("risk_flag"),
                     "meta_score": pos.get("meta_score"),
+
+                    # RC2 Meta Decision Lineage V1.
+                    "meta_score_pro": pos.get("meta_score_pro"),
+                    "meta_rank": pos.get("meta_rank"),
+                    "meta_verdict": pos.get("meta_verdict"),
+                    "meta_recommended": pos.get("meta_recommended"),
+                    "meta_execution_gate": pos.get("meta_execution_gate"),
+                    "execution_eligible": pos.get("execution_eligible"),
+                    "execution_confirmed": pos.get("execution_confirmed"),
+                    "decision_chg_24h": pos.get("decision_chg_24h"),
+                    "momentum_source": pos.get("momentum_source"),
+                    "execution_pair": pos.get("execution_pair"),
+                    "execution_source": pos.get("execution_source"),
+                    "cross_source_direction_conflict": pos.get("cross_source_direction_conflict"),
+                    "meta_risk_flags": list(pos.get("meta_risk_flags") or []),
                     "execution_mode": pos.get("execution_mode"),
                 })
                 logger.info("[position_manager] Trailing HIT %s: size=%.6f price=%.6f pnl=%.4f",
@@ -1393,6 +1453,21 @@ def update_positions(
                                 "entry_price": pos.get("entry_price"),
                                 "risk_flag": pos.get("risk_flag"),
                                 "meta_score": pos.get("meta_score"),
+
+                                # RC2 Meta Decision Lineage V1.
+                                "meta_score_pro": pos.get("meta_score_pro"),
+                                "meta_rank": pos.get("meta_rank"),
+                                "meta_verdict": pos.get("meta_verdict"),
+                                "meta_recommended": pos.get("meta_recommended"),
+                                "meta_execution_gate": pos.get("meta_execution_gate"),
+                                "execution_eligible": pos.get("execution_eligible"),
+                                "execution_confirmed": pos.get("execution_confirmed"),
+                                "decision_chg_24h": pos.get("decision_chg_24h"),
+                                "momentum_source": pos.get("momentum_source"),
+                                "execution_pair": pos.get("execution_pair"),
+                                "execution_source": pos.get("execution_source"),
+                                "cross_source_direction_conflict": pos.get("cross_source_direction_conflict"),
+                                "meta_risk_flags": list(pos.get("meta_risk_flags") or []),
                                 "execution_mode": pos.get("execution_mode"),
                                 "stale_plan_miss_count": miss_count,
                                 "grace_cycles": grace_cycles,
@@ -1760,6 +1835,21 @@ def update_positions(
             "source": (sig.get("source") or src or "unknown"),
             "strategy": sig.get("strategy"),
             "meta_score": sig.get("meta_score"),
+
+            # RC2 Meta Decision Lineage V1.
+            "meta_score_pro": sig.get("meta_score_pro"),
+            "meta_rank": sig.get("meta_rank"),
+            "meta_verdict": sig.get("meta_verdict"),
+            "meta_recommended": sig.get("meta_recommended"),
+            "meta_execution_gate": sig.get("meta_execution_gate"),
+            "execution_eligible": sig.get("execution_eligible"),
+            "execution_confirmed": sig.get("execution_confirmed"),
+            "decision_chg_24h": sig.get("decision_chg_24h"),
+            "momentum_source": sig.get("momentum_source"),
+            "execution_pair": sig.get("execution_pair"),
+            "execution_source": sig.get("execution_source"),
+            "cross_source_direction_conflict": sig.get("cross_source_direction_conflict"),
+            "meta_risk_flags": list(sig.get("meta_risk_flags") or []),
             "notional_eur": notional_eur,
             "tp1_done": False,
             "tp2_done": False,
@@ -2004,13 +2094,13 @@ def main() -> None:
         _prev  = _load_pm_state(data_dir)
         if not isinstance(_prev, dict):
             _prev = {}
-    
+
         _current_run = str(plan.get('run_id'))
         _prev_last   = _prev.get('last_processed_run_id')
-    
+
         # Build next state by preserving previous fields/counters
         _next = dict(_prev)
-    
+
         if _force and _dry and _prev_last is not None:
             pass  # auto-fix empty if
             # DRY_RUN replay: keep last_processed_run_id unchanged
@@ -2020,10 +2110,10 @@ def main() -> None:
             _next['forced_reprocess_last_run_id_seen'] = _current_run
         else:
             _next['last_processed_run_id'] = _current_run
-    
+
         _next['last_processed_generated_at'] = plan.get('generated_at')
         _next['saved_at'] = datetime.now(timezone.utc).isoformat()
-    
+
         # NSC_FIX_DISABLE_STALE_HARD_BLOCK_SKIP_WRITES_V2
         try:
             _hb_now, _hb_reasons_now = _is_hard_block(data_dir, plan)
