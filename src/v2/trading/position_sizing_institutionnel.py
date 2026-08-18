@@ -756,6 +756,43 @@ def build_sized_signals() -> list[dict[str, Any]]:
             "source": sig.get("source"),
             "momentum_regime": sig.get("momentum_regime"),
             "reason": sig.get("reason"),
+
+            # RC2 Meta Decision Lineage Contract V1.
+            # These fields are decision metadata and must
+            # survive sizing unchanged.
+            "meta_rank": sig.get("meta_rank"),
+            "meta_verdict": sig.get("meta_verdict"),
+            "meta_recommended": sig.get(
+                "meta_recommended"
+            ),
+            "meta_execution_gate": sig.get(
+                "meta_execution_gate"
+            ),
+            "execution_eligible": sig.get(
+                "execution_eligible"
+            ),
+            "execution_confirmed": sig.get(
+                "execution_confirmed"
+            ),
+            "decision_chg_24h": sig.get(
+                "decision_chg_24h"
+            ),
+            "momentum_source": sig.get(
+                "momentum_source"
+            ),
+            "execution_pair": sig.get(
+                "execution_pair"
+            ),
+            "execution_source": sig.get(
+                "execution_source"
+            ),
+            "cross_source_direction_conflict": sig.get(
+                "cross_source_direction_conflict"
+            ),
+            "meta_risk_flags": list(
+                sig.get("meta_risk_flags") or []
+            ),
+
             "final_score": sig.get("final_score"),
             "score": sig.get("score"),
             "risk_score": risk_item.get("risk_score"),

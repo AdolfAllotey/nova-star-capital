@@ -542,6 +542,34 @@ def _meta_execution_eligibility(
         "tradable": tradable,
         "observation_only": observation_only,
         "risk_flags": risk_flags,
+
+        # RC2 Meta Decision Lineage Contract V1
+        # Preserve the complete strategic decision context
+        # produced by Meta Ranking V2.
+        "execution_eligible": bool(
+            ranking.get("execution_eligible", False)
+        ),
+        "execution_confirmed": bool(
+            ranking.get("execution_confirmed", False)
+        ),
+        "decision_chg_24h": ranking.get(
+            "decision_chg_24h"
+        ),
+        "momentum_source": ranking.get(
+            "momentum_source"
+        ),
+        "execution_pair": ranking.get(
+            "execution_pair"
+        ),
+        "execution_source": ranking.get(
+            "execution_source"
+        ),
+        "cross_source_direction_conflict": bool(
+            ranking.get(
+                "cross_source_direction_conflict",
+                False,
+            )
+        ),
     }
 
     if not tradable:
@@ -650,6 +678,47 @@ def _apply_meta_execution_gate(
         enriched[
             "meta_recommended"
         ] = context.get("recommended")
+
+        # RC2 Meta Decision Lineage Contract V1.
+        # Keep Meta Ranking execution semantics explicit
+        # outside the nested gate for downstream engines.
+        enriched[
+            "execution_eligible"
+        ] = context.get("execution_eligible")
+
+        enriched[
+            "execution_confirmed"
+        ] = context.get("execution_confirmed")
+
+        enriched[
+            "decision_chg_24h"
+        ] = context.get("decision_chg_24h")
+
+        enriched[
+            "momentum_source"
+        ] = context.get("momentum_source")
+
+        enriched[
+            "execution_pair"
+        ] = context.get("execution_pair")
+
+        enriched[
+            "execution_source"
+        ] = context.get("execution_source")
+
+        enriched[
+            "cross_source_direction_conflict"
+        ] = context.get(
+            "cross_source_direction_conflict"
+        )
+
+        # Deliberately distinct from Risk Engine Pro
+        # risk_flag / risk_score fields.
+        enriched[
+            "meta_risk_flags"
+        ] = list(
+            context.get("risk_flags") or []
+        )
 
         eligible.append(enriched)
 
