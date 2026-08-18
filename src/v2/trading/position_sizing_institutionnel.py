@@ -897,7 +897,71 @@ def main() -> None:
     trading_dir = data_dir / "trading"
     trading_dir.mkdir(parents=True, exist_ok=True)
 
-    sized = _cap_and_renormalize_weights(build_sized_signals())
+    sized = _cap_and_renormalize_weights(
+        build_sized_signals()
+    )
+
+    # ---------------------------------------------------------------
+    # RC2 Effective Exposure Semantics V1
+    #
+    # final_weight:
+    #   strategic pre-cap sizing decision.
+    #
+    # weight:
+    #   effective post concentration/gross-cap weight.
+    #
+    # Economic notional MUST follow the effective post-cap weight.
+    # This preserves final_weight for auditability while ensuring
+    # that portfolio concentration caps control actual exposure.
+    # ---------------------------------------------------------------
+    for item in sized:
+        if not isinstance(item, dict):
+            continue
+
+        try:
+            effective_weight = float(
+                item.get("weight") or 0.0
+            )
+        except Exception:
+            effective_weight = 0.0
+
+        try:
+            item_capital = float(
+                item.get("capital_per_trade_eur")
+                or capital_per_trade
+                or 0.0
+            )
+        except Exception:
+            item_capital = 0.0
+
+        effective_notional = (
+            item_capital * effective_weight
+            if item_capital > 0
+            and effective_weight > 0
+            else None
+        )
+
+        item["effective_weight"] = (
+            effective_weight
+        )
+
+        item[
+            "notional_semantics"
+        ] = "post_cap_effective_weight"
+
+        if effective_notional is not None:
+            effective_notional = round(
+                effective_notional,
+                2,
+            )
+
+            item[
+                "target_notional_eur"
+            ] = effective_notional
+
+            item[
+                "notional_eur"
+            ] = effective_notional
 
 
     # --- Option A: attach meta_score_pro from analysis/signal_candidates.json ---
