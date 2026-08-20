@@ -64,6 +64,13 @@ def normalize_items(items):
             "chg_7d":    it.get("chg_7d"),
             "source":    it.get("source"),
             "pair":      it.get("pair"),
+            "market_status": it.get("market_status"),
+            "spot_trading_allowed": it.get(
+                "spot_trading_allowed"
+            ),
+            "ticker_close_time": it.get(
+                "ticker_close_time"
+            ),
         })
     return out
 
@@ -93,13 +100,56 @@ def fetch_from_coingecko():
     return items[:TOP_N]
 
 # --------- Fallback: Binance (USDT) ---------
+def fetch_binance_exchange_status():
+    """
+    Canonical Binance execution-market state.
+
+    A ticker response alone does NOT prove that a symbol is currently
+    tradable. Delisted / suspended pairs can remain visible through
+    ticker/24hr with historical price-change values.
+
+    Only STATUS=TRADING pairs are eligible for NSC market movers.
+    """
+    url = "https://api.binance.com/api/v3/exchangeInfo"
+    js = http_json(url)
+
+    out = {}
+    for row in js.get("symbols", []) if isinstance(js, dict) else []:
+        if not isinstance(row, dict):
+            continue
+
+        symbol = str(row.get("symbol") or "").upper().strip()
+        if not symbol:
+            continue
+
+        out[symbol] = {
+            "status": str(row.get("status") or "").upper(),
+            "isSpotTradingAllowed": bool(
+                row.get("isSpotTradingAllowed", False)
+            ),
+        }
+
+    return out
+
+
 def fetch_from_binance():
     url = "https://api.binance.com/api/v3/ticker/24hr"
     js = http_json(url)
+
+    market_status = fetch_binance_exchange_status()
+
     items = []
     for t in js:
-        s = t.get("symbol","")
+        s = str(t.get("symbol") or "").upper().strip()
         if not s.endswith("USDT"):
+            continue
+
+        market = market_status.get(s) or {}
+
+        if market.get("status") != "TRADING":
+            continue
+
+        if market.get("isSpotTradingAllowed") is not True:
             continue
         # priceChangePercent est une string
         try:
@@ -118,6 +168,11 @@ def fetch_from_binance():
             "chg_7d": None,     # non dispo
             "source": "binance",
             "pair": s,
+            "market_status": market.get("status"),
+            "spot_trading_allowed": market.get(
+                "isSpotTradingAllowed"
+            ),
+            "ticker_close_time": t.get("closeTime"),
         })
     # Top N par |24h|
     items.sort(key=lambda x: abs(x["chg_24h"] or 0), reverse=True)

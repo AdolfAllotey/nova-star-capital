@@ -108,6 +108,13 @@ def load_correlation_universe_ids() -> list[str]:
         return []
 
 SELECTED_TOKENS_FILE = DATA_ROOT / "selected_tokens.json"
+DYNAMIC_SELECTED_TOKENS_FILE = DATA_ROOT / "trading" / "selected_tokens.dynamic.json"
+
+# RC2 Market Momentum Entry Quality Foundation V1.
+# 15m candles over seven days:
+# 4 candles/hour * 24h * 7d = 672.
+MARKET_MOMENTUM_OHLCV_INTERVAL = "15m"
+MARKET_MOMENTUM_OHLCV_LIMIT = 672
 
 # Liste de base (Option 3)
 BASE_TOKENS = [
@@ -186,22 +193,76 @@ def load_selected_tokens() -> List[str]:
     return normalized
 
 
+def load_dynamic_market_movers() -> List[str]:
+    """
+    Load current market_momentum tokens selected by token_selector_v2_2.
+
+    This enriches the OHLCV quality universe without removing the existing
+    legacy selected-token universe during RC2.
+    """
+    if not DYNAMIC_SELECTED_TOKENS_FILE.exists():
+        return []
+
+    try:
+        raw = json.loads(
+            DYNAMIC_SELECTED_TOKENS_FILE.read_text(encoding="utf-8")
+        )
+    except Exception as exc:
+        logger.warning(
+            "[price_fetcher] dynamic selected tokens unreadable: %s",
+            exc,
+        )
+        return []
+
+    items = raw.get("items", []) if isinstance(raw, dict) else []
+    if not isinstance(items, list):
+        return []
+
+    out: List[str] = []
+
+    for row in items:
+        if not isinstance(row, dict):
+            continue
+
+        if not bool(row.get("market_momentum")):
+            continue
+
+        token = str(row.get("token") or "").strip().upper()
+        pair = str(
+            row.get("pair")
+            or (f"{token}USDT" if token else "")
+        ).strip().upper()
+
+        if pair and pair.endswith("USDT"):
+            out.append(pair)
+
+    return sorted(set(out))
+
+
 def merge_token_lists() -> List[str]:
     """
-    PREPROD MASTER RULE:
-    Crypto trading OHLCV universe = dynamic selected altcoins only.
-    Long-term majors must not be injected into the trading signal universe here.
+    RC2 trading OHLCV universe.
+
+    Preserve the existing selected-token universe and enrich it with current
+    dynamic market movers so that entry-quality scoring can evaluate the
+    actual assets proposed by discovery.
     """
     selected = load_selected_tokens()
-    merged = sorted(set(selected))
+    dynamic_movers = load_dynamic_market_movers()
+
+    merged = sorted(set(selected + dynamic_movers))
+
     logger.info(
-        "[price_fetcher] Liste finale de tokens (dynamic-only trading universe) : %s",
+        "[price_fetcher] OHLCV universe selected=%s dynamic_movers=%s merged=%s",
+        selected,
+        dynamic_movers,
         merged,
     )
+
     return merged
 
 
-def fetch_binance_klines(symbol: str, interval: str = "1d", limit: int = 365) -> List[List[Any]]:
+def fetch_binance_klines(symbol: str, interval: str = MARKET_MOMENTUM_OHLCV_INTERVAL, limit: int = MARKET_MOMENTUM_OHLCV_LIMIT) -> List[List[Any]]:
     """
     Récupère les klines Binance pour un symbole donné.
     Retour brut : liste de listes.
@@ -228,7 +289,7 @@ def fetch_binance_klines(symbol: str, interval: str = "1d", limit: int = 365) ->
         return []
 
 
-def fetch_mexc_klines(symbol: str, interval: str = "1d", limit: int = 365) -> List[List[Any]]:
+def fetch_mexc_klines(symbol: str, interval: str = MARKET_MOMENTUM_OHLCV_INTERVAL, limit: int = MARKET_MOMENTUM_OHLCV_LIMIT) -> List[List[Any]]:
     """
     Récupère les klines MEXC pour un symbole donné.
     Retour brut : liste de listes.
@@ -302,6 +363,64 @@ def klines_to_candles(
     return candles
 
 
+def _latest_candle_age_seconds(
+    candles: List[Dict[str, Any]],
+) -> Optional[float]:
+    """
+    Age of the latest standardized candle.
+
+    Dynamic market-momentum OHLCV uses 15m bars. A stale last candle
+    means the market data cannot be used for current entry-quality
+    scoring, even if the provider returned HTTP 200.
+    """
+    if not candles:
+        return None
+
+    latest_ts = None
+
+    for candle in candles:
+        if not isinstance(candle, dict):
+            continue
+
+        raw = (
+            candle.get("ts")
+            if candle.get("ts") is not None
+            else candle.get("timestamp")
+        )
+
+        if raw is None:
+            continue
+
+        try:
+            value = float(raw)
+        except Exception:
+            continue
+
+        # Binance/MEXC timestamps are normally milliseconds.
+        if value > 10_000_000_000:
+            value /= 1000.0
+
+        if latest_ts is None or value > latest_ts:
+            latest_ts = value
+
+    if latest_ts is None:
+        return None
+
+    return max(
+        0.0,
+        datetime.now(timezone.utc).timestamp()
+        - latest_ts,
+    )
+
+
+MARKET_MOMENTUM_MAX_OHLCV_AGE_SECONDS = int(
+    os.getenv(
+        "NSC_MARKET_MOMENTUM_MAX_OHLCV_AGE_SECONDS",
+        str(45 * 60),
+    )
+)
+
+
 def build_asset_entry(symbol: str) -> Optional[Dict[str, Any]]:
     """
     Construit une entrée 'asset' pour un symbole donné, en fusionnant Binance + MEXC.
@@ -335,6 +454,25 @@ def build_asset_entry(symbol: str) -> Optional[Dict[str, Any]]:
         )
         return None
 
+    latest_age_seconds = _latest_candle_age_seconds(
+        candles
+    )
+
+    if (
+        latest_age_seconds is None
+        or latest_age_seconds
+        > MARKET_MOMENTUM_MAX_OHLCV_AGE_SECONDS
+    ):
+        logger.warning(
+            "[price_fetcher] STALE OHLCV rejected for %s "
+            "source=%s age_seconds=%s max=%s",
+            symbol,
+            source_used,
+            latest_age_seconds,
+            MARKET_MOMENTUM_MAX_OHLCV_AGE_SECONDS,
+        )
+        return None
+
     logger.info(
         "[price_fetcher] Asset %s construit (%d bougies, source=%s)",
         symbol,
@@ -346,6 +484,11 @@ def build_asset_entry(symbol: str) -> Optional[Dict[str, Any]]:
         "symbol": symbol,
         "env": NSC_ENV,
         "source": source_used,
+        "ohlcv_age_seconds": round(
+            latest_age_seconds,
+            3,
+        ),
+        "ohlcv_fresh": True,
         "candles": candles,
     }
 

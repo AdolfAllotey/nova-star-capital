@@ -78,10 +78,19 @@ def normalize_item(item: Dict[str, Any], default_source: str, exchange_map: Dict
 
     ex = exchange_info(symbol, exchange_map)
 
-    # Fallback PREPROD:
-    # If the item comes directly from Binance with a concrete USDT pair,
-    # it is tradable even if token_exchange_map is not yet complete.
-    if not ex.get("tradable") and item.get("source") == "binance" and item.get("pair"):
+    # RC2 Market Integrity Gate V1:
+    # A Binance pair is eligible for execution fallback only when the
+    # upstream market source explicitly certified STATUS=TRADING.
+    #
+    # `source=binance + pair` alone is not evidence of tradability:
+    # Binance ticker/24hr can expose suspended / BREAK markets.
+    if (
+        not ex.get("tradable")
+        and item.get("source") == "binance"
+        and item.get("pair")
+        and str(item.get("market_status") or "").upper() == "TRADING"
+        and item.get("spot_trading_allowed") is True
+    ):
         ex = {
             "tradable": True,
             "preferred_exchange": "binance",
@@ -102,6 +111,13 @@ def normalize_item(item: Dict[str, Any], default_source: str, exchange_map: Dict
         "chg_7d": item.get("chg_7d"),
         "source": item.get("source") or default_source,
         "pair": pair,
+        "market_status": item.get("market_status"),
+        "spot_trading_allowed": item.get(
+            "spot_trading_allowed"
+        ),
+        "ticker_close_time": item.get(
+            "ticker_close_time"
+        ),
         "observation_only": bool(item.get("observation_only", False)),
         "tradable": bool(ex.get("tradable")),
         "preferred_exchange": ex.get("preferred_exchange"),

@@ -172,19 +172,27 @@ def _compute_basic_momentum(candles: List[Dict[str, Any]]) -> Dict[str, float]:
             "distance_ma20": 0.0,
             "near_7d_high": 0.0,
         }
-    # Tri : si les timestamps sont absents (None), on garde l'ordre d'entrée.
-    def _ts(c: Dict[str, Any]) -> Any:
-        return c.get("timestamp")
+    # RC2 Market Momentum Entry Quality Foundation V1.
+    # Standard price_fetcher candles expose `ts`; older formats may expose
+    # `timestamp`. Sort on either representation.
+    def _bar_ts(c: Dict[str, Any]) -> Any:
+        return c.get("timestamp") if c.get("timestamp") is not None else c.get("ts")
 
     try:
-        ts_vals = [c.get("timestamp") for c in candles if isinstance(c, dict)]
+        ts_vals = [
+            _bar_ts(c)
+            for c in candles
+            if isinstance(c, dict)
+        ]
         has_real_ts = any(t is not None for t in ts_vals)
 
         if has_real_ts:
-            # fallback stable : (is_none, timestamp) évite les comparaisons None/None
             candles_sorted = sorted(
                 candles,
-                key=lambda c: (c.get("timestamp") is None, c.get("timestamp")),
+                key=lambda c: (
+                    _bar_ts(c) is None,
+                    _bar_ts(c) if _bar_ts(c) is not None else 0,
+                ),
             )
         else:
             candles_sorted = list(candles)
@@ -205,21 +213,68 @@ def _compute_basic_momentum(candles: List[Dict[str, Any]]) -> Dict[str, float]:
     last = closes[-1]
     n = len(closes)
 
-    # Variation "15m" et "60m" approximatives (on prend quelques pas en arrière)
-    idx_15 = max(0, n - 4)
-    idx_60 = max(0, n - 12)
+    # Input contract = 15-minute bars.
+    #
+    # One bar back = 15m.
+    # Four bars back = 60m.
+    idx_15 = max(0, n - 2)
+    idx_60 = max(0, n - 5)
 
-    ret_15m = (last - closes[idx_15]) / closes[idx_15] if closes[idx_15] > 0 else 0.0
-    ret_60m = (last - closes[idx_60]) / closes[idx_60] if closes[idx_60] > 0 else 0.0
+    ret_15m = (
+        (last - closes[idx_15]) / closes[idx_15]
+        if closes[idx_15] > 0
+        else 0.0
+    )
+    ret_60m = (
+        (last - closes[idx_60]) / closes[idx_60]
+        if closes[idx_60] > 0
+        else 0.0
+    )
 
-    # MA20
+    # MA20 = twenty 15m periods = five-hour local trend.
     window_ma = closes[-20:] if n >= 20 else closes
     ma20 = sum(window_ma) / len(window_ma) if window_ma else last
-    distance_ma20 = (last - ma20) / ma20 if ma20 > 0 else 0.0
+    distance_ma20 = (
+        (last - ma20) / ma20
+        if ma20 > 0
+        else 0.0
+    )
 
-    # Plus-haut 7j (ou tout l'historique dispo)
-    high_7d = max(closes)
-    near_7d_high = (last / high_7d) if high_7d > 0 else 0.0
+    # True seven-day structure on 15m bars.
+    seven_day_bars = 7 * 24 * 4
+    structure_window = (
+        closes[-seven_day_bars:]
+        if n >= seven_day_bars
+        else closes
+    )
+    high_7d = max(structure_window)
+    near_7d_high = (
+        last / high_7d
+        if high_7d > 0
+        else 0.0
+    )
+
+    # Volume confirmation.
+    volumes = [
+        float(c.get("volume", c.get("v", 0.0)) or 0.0)
+        for c in candles_sorted
+    ]
+
+    current_volume = volumes[-1] if volumes else 0.0
+    prior_volumes = volumes[-21:-1] if len(volumes) >= 21 else volumes[:-1]
+    valid_prior_volumes = [v for v in prior_volumes if v > 0]
+
+    avg_volume = (
+        sum(valid_prior_volumes) / len(valid_prior_volumes)
+        if valid_prior_volumes
+        else 0.0
+    )
+
+    vol_ratio = (
+        current_volume / avg_volume
+        if current_volume > 0 and avg_volume > 0
+        else 1.0
+    )
 
     # Normalisation rudimentaire vers 0-100
     def _clip(x: float, lo: float, hi: float) -> float:
@@ -245,6 +300,7 @@ def _compute_basic_momentum(candles: List[Dict[str, Any]]) -> Dict[str, float]:
         "ret_60m": float(ret_60m),
         "distance_ma20": float(distance_ma20),
         "near_7d_high": float(near_7d_high),
+        "vol_ratio": float(vol_ratio),
     }
 
 
@@ -289,12 +345,12 @@ def _nsc_build_meta_score_v2(
     early_pump_score = _nsc_safe_float(early_pump_score, 0.0)
     volume_spike = _nsc_safe_float(volume_spike, vol_ratio)
 
-    momentum_15 = _nsc_norm_0_100(ret_15m, -5.0, 10.0)
-    momentum_60 = _nsc_norm_0_100(ret_60m, -10.0, 20.0)
+    momentum_15 = _nsc_norm_0_100(ret_15m, -0.05, 0.10)
+    momentum_60 = _nsc_norm_0_100(ret_60m, -0.10, 0.20)
     momentum = 0.45 * momentum_15 + 0.55 * momentum_60
 
     volume = _nsc_norm_0_100(vol_ratio, 0.5, 3.0)
-    structure = _nsc_norm_0_100(distance_ma20, -10.0, 15.0)
+    structure = _nsc_norm_0_100(distance_ma20, -0.10, 0.15)
     sentiment = _nsc_norm_0_100(sentiment_score, -1.0, 1.0)
 
     base = (
@@ -560,6 +616,7 @@ def compute_momentum_scores(data_dir: Path | None = None) -> Dict[str, Any]:
             "ret_60m": m["ret_60m"],
             "distance_ma20": m["distance_ma20"],
             "near_7d_high": m["near_7d_high"],
+            "vol_ratio": m.get("vol_ratio"),
             "risk_mode": risk_mode,
             "correlation_gate_active": correlation_gate_active,
             "early_pump_score": early_pump,
@@ -586,6 +643,7 @@ def compute_momentum_scores(data_dir: Path | None = None) -> Dict[str, Any]:
                     "meta_score": meta_score,
                     "legacy_meta_score": legacy_meta_score,
                     "momentum_score": m["momentum_score"],
+                    "vol_ratio": m.get("vol_ratio"),
                     "early_pump_score": early_pump,
                     "momentum_regime": score_entry["momentum_regime"],
                 }
