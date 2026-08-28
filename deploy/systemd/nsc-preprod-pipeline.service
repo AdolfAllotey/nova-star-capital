@@ -1,0 +1,26 @@
+[Unit]
+Description=NSC PREPROD Pipeline (simulated-only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/nsc/app
+
+EnvironmentFile=/etc/nsc/preprod.env
+
+Environment=PYTHONPATH=/opt/nsc/app
+Environment=NSC_EXECUTION_MODE=SIMULATED_ONLY
+Environment=NSC_ACTION_POLICY=SIMULATED_AND_PAPER
+
+ExecStart=/opt/nsc/.venv/bin/python /opt/nsc/app/src/v2/run_pipeline_wrapped.py
+
+StandardOutput=journal
+StandardError=journal
+
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+
+[Install]
+WantedBy=multi-user.target
