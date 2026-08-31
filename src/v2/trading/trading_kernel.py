@@ -751,6 +751,7 @@ def run_once(max_new_positions: Optional[int] = None) -> None:
 
     # Imports locaux pour éviter les cycles d'import
     from src.v2.analysis.momentum_scoring import main as momentum_main
+    from src.v2.analysis.market_momentum_shadow import run_shadow as market_momentum_shadow_run
     from src.v2.analysis.signal_voting import main as signal_voting_main
     from src.v2.analysis.capital_allocator import main as capital_allocator_main
     from src.v2.analysis.governance_engine_pro import main as governance_engine_main
@@ -807,6 +808,17 @@ def run_once(max_new_positions: Optional[int] = None) -> None:
     except Exception:
         logger.exception("[trading_kernel] Erreur lors de momentum_scoring.main()")
         return
+
+    # Observation prospective H1/H2 — strictement passive.
+    # Une défaillance du Shadow ne doit jamais interrompre le pipeline principal.
+    logger.info("[trading_kernel] Shadow H1/H2 : market_momentum_shadow")
+    try:
+        market_momentum_shadow_run()
+    except Exception:
+        logger.exception(
+            "[trading_kernel] Erreur market_momentum_shadow "
+            "(non-bloquante, pipeline principal poursuivi)"
+        )
 
     # Étape 2 : signal voting
     logger.info("[trading_kernel] Étape 2/4 : signal_voting")
