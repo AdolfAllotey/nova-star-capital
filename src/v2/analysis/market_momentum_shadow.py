@@ -11,6 +11,7 @@ from src.v2.utils.file_utils import get_data_dir, save_json_file
 ENGINE = "market_momentum_shadow_v1"
 EPISODE_SILENCE_SECONDS = 4 * 60 * 60
 MOMENTUM_MAX_AGE_SECONDS = 45 * 60
+MOVER_MAX_AGE_SECONDS = 45 * 60
 
 H1_MIN_CHG_24H = 20.0
 H1_MIN_VOL_RATIO = 0.8
@@ -122,6 +123,17 @@ def run_shadow(
     momentum_generated_at = _parse_dt(momentum_generated_raw)
     momentum_source_timestamp = _parse_dt(momentum_source_raw)
 
+    movers_fresh = False
+    movers_age_seconds = None
+
+    if movers_updated_at is not None:
+        movers_age_seconds = (
+            generated_dt - movers_updated_at
+        ).total_seconds()
+        movers_fresh = (
+            0.0 <= movers_age_seconds <= MOVER_MAX_AGE_SECONDS
+        )
+
     momentum_fresh = False
     momentum_age_seconds = None
 
@@ -143,6 +155,11 @@ def run_shadow(
     new_episodes = []
 
     for mover in gainers:
+        # A stale, invalid, or future mover snapshot must never create or
+        # advance a prospective episode.
+        if not movers_fresh:
+            break
+
         if not isinstance(mover, dict):
             continue
 
@@ -269,6 +286,9 @@ def run_shadow(
         "selected_tokens_file": str(selected_path),
         "momentum_file": str(momentum_path),
         "movers_updated_at": movers_updated_at_raw,
+        "movers_age_seconds": movers_age_seconds,
+        "movers_fresh": movers_fresh,
+        "mover_max_age_seconds": MOVER_MAX_AGE_SECONDS,
         "momentum_source_timestamp": momentum_source_raw,
         "momentum_fresh": momentum_fresh,
         "momentum_max_age_seconds": MOMENTUM_MAX_AGE_SECONDS,
