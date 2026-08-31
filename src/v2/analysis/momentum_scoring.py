@@ -151,7 +151,7 @@ def _load_early_pump_scores(data_dir: Path) -> Tuple[Dict[str, float], Dict[str,
 # Scoring momentum (simplifié mais cohérent)
 # ---------------------------------------------------------------------------
 
-def _compute_basic_momentum(candles: List[Dict[str, Any]]) -> Dict[str, float]:
+def _compute_basic_momentum(candles: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Calcule un score de momentum simplifié 0-100 à partir de l'historique OHLCV.
 
@@ -171,6 +171,8 @@ def _compute_basic_momentum(candles: List[Dict[str, Any]]) -> Dict[str, float]:
             "ret_60m": 0.0,
             "distance_ma20": 0.0,
             "near_7d_high": 0.0,
+            "vol_ratio": None,
+            "vol_ratio_state": "UNKNOWN",
         }
     # RC2 Market Momentum Entry Quality Foundation V1.
     # Standard price_fetcher candles expose `ts`; older formats may expose
@@ -208,6 +210,8 @@ def _compute_basic_momentum(candles: List[Dict[str, Any]]) -> Dict[str, float]:
             "ret_60m": 0.0,
             "distance_ma20": 0.0,
             "near_7d_high": 0.0,
+            "vol_ratio": None,
+            "vol_ratio_state": "UNKNOWN",
         }
 
     last = closes[-1]
@@ -270,11 +274,12 @@ def _compute_basic_momentum(candles: List[Dict[str, Any]]) -> Dict[str, float]:
         else 0.0
     )
 
-    vol_ratio = (
-        current_volume / avg_volume
-        if current_volume > 0 and avg_volume > 0
-        else 1.0
-    )
+    if current_volume > 0 and avg_volume > 0:
+        vol_ratio = current_volume / avg_volume
+        vol_ratio_state = "AVAILABLE"
+    else:
+        vol_ratio = None
+        vol_ratio_state = "UNKNOWN"
 
     # Normalisation rudimentaire vers 0-100
     def _clip(x: float, lo: float, hi: float) -> float:
@@ -300,7 +305,8 @@ def _compute_basic_momentum(candles: List[Dict[str, Any]]) -> Dict[str, float]:
         "ret_60m": float(ret_60m),
         "distance_ma20": float(distance_ma20),
         "near_7d_high": float(near_7d_high),
-        "vol_ratio": float(vol_ratio),
+        "vol_ratio": float(vol_ratio) if vol_ratio is not None else None,
+        "vol_ratio_state": vol_ratio_state,
     }
 
 
@@ -541,14 +547,21 @@ def compute_momentum_scores(data_dir: Path | None = None) -> Dict[str, Any]:
         early_pump = early_pump_scores.get(symbol)
         early_pump = float(early_pump) if early_pump is not None else 0.0
 
+        canonical_vol_ratio = m.get("vol_ratio")
+        scoring_vol_ratio = (
+            canonical_vol_ratio
+            if isinstance(canonical_vol_ratio, (int, float))
+            else 1.0
+        )
+
         v4 = _nsc_build_meta_score_v2(
             ret_15m=m.get("ret_15m", 0.0),
             ret_60m=m.get("ret_60m", 0.0),
-            vol_ratio=m.get("vol_ratio", 1.0),
+            vol_ratio=scoring_vol_ratio,
             distance_ma20=m.get("distance_ma20", 0.0),
             sentiment_score=sentiment_score,
             early_pump_score=early_pump,
-            volume_spike=m.get("vol_ratio", 1.0),
+            volume_spike=scoring_vol_ratio,
             risk_mode=risk_mode,
             correlation_gate_active=correlation_gate_active,
         )
@@ -617,6 +630,7 @@ def compute_momentum_scores(data_dir: Path | None = None) -> Dict[str, Any]:
             "distance_ma20": m["distance_ma20"],
             "near_7d_high": m["near_7d_high"],
             "vol_ratio": m.get("vol_ratio"),
+            "vol_ratio_state": m.get("vol_ratio_state", "UNKNOWN"),
             "risk_mode": risk_mode,
             "correlation_gate_active": correlation_gate_active,
             "early_pump_score": early_pump,
@@ -644,6 +658,7 @@ def compute_momentum_scores(data_dir: Path | None = None) -> Dict[str, Any]:
                     "legacy_meta_score": legacy_meta_score,
                     "momentum_score": m["momentum_score"],
                     "vol_ratio": m.get("vol_ratio"),
+                    "vol_ratio_state": m.get("vol_ratio_state", "UNKNOWN"),
                     "early_pump_score": early_pump,
                     "momentum_regime": score_entry["momentum_regime"],
                 }
