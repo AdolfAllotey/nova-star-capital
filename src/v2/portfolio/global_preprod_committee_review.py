@@ -10,6 +10,7 @@ BASE.mkdir(parents=True, exist_ok=True)
 LONG_RUN = BASE / "global_preprod_long_run_daily_report.json"
 WEEKLY = BASE / "global_preprod_weekly_review.json"
 OUT = BASE / "global_preprod_committee_review.json"
+RC2_CLOCK = Path("/opt/nsc/data/preprod/releases/RC2/rc2_clock_state.json")
 
 
 def load_json(path: Path):
@@ -58,6 +59,18 @@ if started_at is None:
     started_at = now
 
 end_at = started_at + timedelta(days=target_days)
+
+# RC2 calendar authority: the canonical clock owns the compensated
+# calendar end date. The long-run report continues to own effective
+# observation progress (current_day / target_duration_days).
+if str(session.get("release") or "").upper() == "RC2":
+    rc2_clock = load_json(RC2_CLOCK)
+    canonical_end_at = parse_ts(
+        rc2_clock.get("planned_end_timestamp_utc")
+    )
+    if canonical_end_at is None:
+        raise RuntimeError("RC2_CANONICAL_CLOCK_END_UNAVAILABLE")
+    end_at = canonical_end_at
 
 health_score = int(weekly_summary.get("global_health_score", 100))
 blocking = int(kpis.get("orchestration_blocking_checks", 0))
