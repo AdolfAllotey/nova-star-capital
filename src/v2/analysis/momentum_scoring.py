@@ -3,6 +3,7 @@ from src.v2.utils.ohlcv_utils import ohlcv_v2_to_legacy_rows
 
 import logging
 import math
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -481,6 +482,15 @@ def compute_momentum_scores(data_dir: Path | None = None) -> Dict[str, Any]:
     if data_dir is None:
         data_dir = DATA_DIR
 
+    data_dir = Path(data_dir).resolve()
+    source_file = data_dir / "market" / "ohlcv_combined.json"
+    source_raw = load_json_file(source_file, default={}) or {}
+    source_timestamp = (
+        source_raw.get("timestamp")
+        if isinstance(source_raw, dict)
+        else None
+    )
+
     logger.info("[momentum_scoring] DATA_DIR sélectionné: %s", data_dir)
 
     ohlcv_by_symbol = _load_ohlcv(data_dir)
@@ -490,6 +500,10 @@ def compute_momentum_scores(data_dir: Path | None = None) -> Dict[str, Any]:
             OHLCV_FILE,
         )
         result = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "engine": "momentum_scoring",
+            "source_file": str(source_file),
+            "source_timestamp": source_timestamp,
             "stats": {
                 "nb_assets": 0,
                 "nb_candidates": 0,
@@ -680,6 +694,10 @@ def compute_momentum_scores(data_dir: Path | None = None) -> Dict[str, Any]:
         if isinstance(row, dict) and row.get("symbol"):
             score_map[str(row["symbol"]).lower().strip()] = row
     result = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "engine": "momentum_scoring",
+        "source_file": str(source_file),
+        "source_timestamp": source_timestamp,
         "stats": stats,
         "scores": score_map,
     }
