@@ -719,40 +719,35 @@ def run_once(max_new_positions: Optional[int] = None) -> None:
     _apply_orchestrator_risk_limits()
     _apply_effective_nsc_intensity_limits()
 
-    # Orchestrator gate (source de vérité runtime)
-    ok, orch_available = _check_orchestrator_gate()
-    if not ok:
-        return
+    # RC2_NO_TRADE_ANALYSIS_EXECUTION_SPLIT_V1
+    #
+    # Orchestrator / Signal Quality are EXECUTION gates.
+    # They must not freeze the analytical pipeline in PREPROD.
+    #
+    # Analysis continues through:
+    #   momentum -> voting -> risk -> allocation -> governance -> strategy
+    #
+    # If execution is not eligible, the kernel writes a fresh blocked
+    # execution contract and exits BEFORE sizing / execution / positions.
+    _orchestrator_execution_ok, orch_available = _check_orchestrator_gate()
+    _signal_quality_execution_ok = _check_signal_quality_gate()
 
-    # Signal Quality gate (fallback uniquement si orchestrator indisponible)
-    if not orch_available:
-        if not _check_signal_quality_gate():
-            logger.warning("[trading_kernel] Boucle annulée par Signal Quality Engine (score<threshold ou hard_block).")
-            # NSC_EXECUTION_LEDGER_BLOCKED_SQ_FIX_V1
-            try:
-                # import os (moved to module-level; avoid UnboundLocalError)
-                _env_val = str(os.environ.get('NSC_ENV') or os.environ.get('ENV') or 'UNKNOWN')
-                _dry_val = str(os.environ.get('NSC_DRY_RUN', '0')).strip().lower() in ('1','true','yes')
-                append_execution_decision({
-                    'run_id': run_id,
-                    'decision': 'BLOCKED',
-                    'blocked_by': 'signal_quality_gate',
-                    'reason': (reason if 'reason' in locals() else 'signal_quality_gate'),
-                    'env': _env_val,
-                    'dry_run': _dry_val,
-                })
-            except Exception:
-                pass
-            return
+    _execution_gate_ok = bool(
+        _orchestrator_execution_ok
+        and _signal_quality_execution_ok
+    )
 
-    # Imports locaux  ok, orch_available = _check_orchestrator_gate()
-    if not ok:
-        return
+    if not _orchestrator_execution_ok:
+        logger.warning(
+            "[trading_kernel] Orchestrator execution gate CLOSED; "
+            "continuing analysis-only pipeline."
+        )
 
-    # Signal Quality gate (sécurité supplémentaire / fallback)
-    if not _check_signal_quality_gate():
-        logger.warning("[trading_kernel] Boucle annulée par Signal Quality Engine (score<threshold ou hard_block).")
-        return
+    if not _signal_quality_execution_ok:
+        logger.warning(
+            "[trading_kernel] Signal Quality execution gate CLOSED; "
+            "continuing analysis-only pipeline."
+        )
 
     # Imports locaux pour éviter les cycles d'import
     from src.v2.analysis.momentum_scoring import main as momentum_main
@@ -881,6 +876,167 @@ def run_once(max_new_positions: Optional[int] = None) -> None:
         subprocess.run([sys.executable, "-m", "src.v2.analysis.strategy_selector"], check=False)
     except Exception:
         logger.exception("[trading_kernel] strategy performance/selector failed")
+
+    # RC2_NO_TRADE_EXECUTION_BOUNDARY_V1
+    # Hard boundary between analytical observation and execution pipeline.
+    if not _execution_gate_ok:
+        try:
+            _gate_ts = datetime.now(timezone.utc).isoformat()
+
+            _orch_state = _load_json(
+                ORCHESTRATOR_STATE_FILE,
+                default={},
+            ) or {}
+
+            _sq_state = _load_json(
+                SIGNAL_QUALITY_FILE,
+                default={},
+            ) or {}
+
+            _gate_reasons = []
+
+            if not _orchestrator_execution_ok:
+                _orch_reasons = (
+                    _orch_state.get("reasons", [])
+                    if isinstance(_orch_state, dict)
+                    else []
+                )
+                if isinstance(_orch_reasons, list) and _orch_reasons:
+                    _gate_reasons.extend(
+                        f"orchestrator:{r}"
+                        for r in _orch_reasons
+                    )
+                else:
+                    _gate_reasons.append(
+                        "orchestrator:execution_not_eligible"
+                    )
+
+            if not _signal_quality_execution_ok:
+                _gate_reasons.append(
+                    "signal_quality:execution_not_eligible"
+                )
+
+            _blocked_plan = {
+                "writer": "trading_kernel",
+                "source": "trading_kernel",
+                "status": "blocked",
+                "note": "analysis_complete_execution_blocked",
+                "run_id": str(run_id),
+                "generated_at": _gate_ts,
+                "updated_at": _gate_ts,
+                "orders": [],
+                "reasons": _gate_reasons,
+                "execution_allowed": False,
+                "analysis_completed": True,
+                "execution_stages_skipped": [
+                    "position_sizing",
+                    "execution_engine_pro",
+                    "position_manager",
+                ],
+                "orchestrator_gate": {
+                    "available": bool(orch_available),
+                    "execution_eligible": bool(
+                        _orchestrator_execution_ok
+                    ),
+                    "can_trade": (
+                        _orch_state.get("can_trade")
+                        if isinstance(_orch_state, dict)
+                        else None
+                    ),
+                    "mode": (
+                        _orch_state.get("mode")
+                        if isinstance(_orch_state, dict)
+                        else None
+                    ),
+                    "risk_on_off": (
+                        _orch_state.get("risk_on_off")
+                        if isinstance(_orch_state, dict)
+                        else None
+                    ),
+                    "risk_mode": (
+                        _orch_state.get("risk_mode")
+                        if isinstance(_orch_state, dict)
+                        else None
+                    ),
+                },
+                "signal_quality_gate": {
+                    "execution_eligible": bool(
+                        _signal_quality_execution_ok
+                    ),
+                    "flag": (
+                        _sq_state.get("flag")
+                        if isinstance(_sq_state, dict)
+                        else None
+                    ),
+                    "score": (
+                        _sq_state.get("score")
+                        if isinstance(_sq_state, dict)
+                        else None
+                    ),
+                    "hard_block": (
+                        _sq_state.get("hard_block")
+                        if isinstance(_sq_state, dict)
+                        else None
+                    ),
+                },
+                "governance": {
+                    "source": "trading_kernel",
+                    "writer": "trading_kernel",
+                    "run_id": str(run_id),
+                    "generated_at": _gate_ts,
+                    "hard_block": False,
+                    "execution_allowed": False,
+                    "reasons": _gate_reasons,
+                },
+            }
+
+            _safe_write_stub_execution_plan(
+                TRADING_DIR / "execution_plan.json",
+                _blocked_plan,
+                logger=logger,
+            )
+
+            _blocked_sim_plan = dict(_blocked_plan)
+            _blocked_sim_plan["execution_mode"] = "SIMULATED_ONLY"
+            _blocked_sim_plan["note"] = (
+                "analysis_complete_simulated_execution_blocked"
+            )
+
+            _safe_write_stub_execution_plan(
+                TRADING_DIR / "execution_plan_simulated.json",
+                _blocked_sim_plan,
+                logger=logger,
+            )
+
+            try:
+                append_execution_decision({
+                    "run_id": str(run_id),
+                    "decision": "BLOCKED",
+                    "blocked_by": "execution_eligibility_gate",
+                    "reason": ";".join(_gate_reasons),
+                    "env": str(_env),
+                    "dry_run": bool(_dry),
+                })
+            except Exception:
+                logger.exception(
+                    "[trading_kernel] failed to append blocked "
+                    "execution decision"
+                )
+
+            logger.warning(
+                "[trading_kernel] Analysis complete; execution "
+                "pipeline BLOCKED reasons=%s",
+                _gate_reasons,
+            )
+
+        except Exception:
+            logger.exception(
+                "[trading_kernel] failed to publish blocked "
+                "execution contract"
+            )
+            raise
+
+        return
 
     logger.info("[trading_kernel] Étape 3.6/4 : position_sizing")
     try:
