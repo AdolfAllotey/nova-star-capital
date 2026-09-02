@@ -47,6 +47,48 @@ def main() -> None:
     meta_items = meta.get("items", []) if isinstance(meta.get("items"), list) else []
     orders = plan.get("orders", []) if isinstance(plan.get("orders"), list) else []
 
+    # ========================================================
+    # RC2 Meta Validation Temporal Lineage V4
+    #
+    # Strategic comparison is valid only when the execution
+    # plan explicitly proves that it consumed the exact Meta
+    # Ranking snapshot currently being validated.
+    # ========================================================
+
+    meta_snapshot_generated_at = str(
+        meta.get("generated_at") or ""
+    ).strip() or None
+
+    plan_meta_snapshot_generated_at = str(
+        plan.get("meta_snapshot_generated_at") or ""
+    ).strip() or None
+
+    plan_meta_snapshot_lineage_status = str(
+        plan.get("meta_snapshot_lineage_status") or ""
+    ).strip() or None
+
+    if (
+        plan_meta_snapshot_lineage_status == "consistent"
+        and meta_snapshot_generated_at
+        and plan_meta_snapshot_generated_at
+        and meta_snapshot_generated_at
+        == plan_meta_snapshot_generated_at
+    ):
+        validation_state = "comparable"
+        temporally_comparable = True
+    elif (
+        plan_meta_snapshot_lineage_status == "consistent"
+        and meta_snapshot_generated_at
+        and plan_meta_snapshot_generated_at
+        and meta_snapshot_generated_at
+        != plan_meta_snapshot_generated_at
+    ):
+        validation_state = "awaiting_execution_refresh"
+        temporally_comparable = False
+    else:
+        validation_state = "lineage_unavailable"
+        temporally_comparable = False
+
     top10 = meta_items[:10]
     top20 = meta_items[:20]
 
@@ -156,42 +198,76 @@ def main() -> None:
     else:
         opportunity_coverage = 100.0
 
-    strategy_drift = bool(missing_from_top20 or missing_high_conviction)
+    raw_strategy_drift = bool(
+        missing_from_top20
+        or missing_high_conviction
+    )
 
-    if strategy_drift:
-        pipeline_health = "drift"
-        execution_quality = "weak"
-    elif decision_alignment >= 90:
-        pipeline_health = "healthy"
-        execution_quality = "excellent"
-    elif decision_alignment >= 70:
-        pipeline_health = "watch"
-        execution_quality = "good"
-    else:
-        pipeline_health = "warning"
-        execution_quality = "medium"
+    if not temporally_comparable:
+        # Never classify a temporal mismatch as strategic drift.
+        strategy_drift = False
+        decision_alignment = 0.0
+        opportunity_coverage = 0.0
+        execution_quality = "not_evaluated"
 
-    if decision_alignment >= 85:
-        status = "aligned"
-    elif decision_alignment >= 65:
-        status = "mostly_aligned"
-    elif decision_alignment >= 45:
-        status = "partial_alignment"
+        if validation_state == "awaiting_execution_refresh":
+            pipeline_health = "pending"
+            status = "awaiting_execution_refresh"
+        else:
+            pipeline_health = "warning"
+            status = "lineage_unavailable"
+
     else:
-        status = "strategy_drift"
+        strategy_drift = raw_strategy_drift
+
+        if strategy_drift:
+            pipeline_health = "drift"
+            execution_quality = "weak"
+        elif decision_alignment >= 90:
+            pipeline_health = "healthy"
+            execution_quality = "excellent"
+        elif decision_alignment >= 70:
+            pipeline_health = "watch"
+            execution_quality = "good"
+        else:
+            pipeline_health = "warning"
+            execution_quality = "medium"
+
+        if strategy_drift:
+            status = "strategy_drift"
+        elif decision_alignment >= 85:
+            status = "aligned"
+        elif decision_alignment >= 65:
+            status = "mostly_aligned"
+        elif decision_alignment >= 45:
+            status = "partial_alignment"
+        else:
+            status = "strategy_drift"
 
     payload = {
         "status": status,
         "generated_at": utc_now(),
         "engine": "meta_validation_engine_v2",
-        "semantics_version": "v3_execution_governance",
+        "semantics_version": "v4_temporal_lineage",
         "mode": "execution_governance_validation",
+        "validation_state": validation_state,
+        "temporally_comparable": temporally_comparable,
+        "meta_snapshot_generated_at": (
+            meta_snapshot_generated_at
+        ),
+        "plan_meta_snapshot_generated_at": (
+            plan_meta_snapshot_generated_at
+        ),
+        "plan_meta_snapshot_lineage_status": (
+            plan_meta_snapshot_lineage_status
+        ),
         "decision_alignment_score": round(decision_alignment, 2),
         "opportunity_coverage_score": round(opportunity_coverage, 2),
         "alignment_score": round(decision_alignment, 2),
         "execution_quality": execution_quality,
         "pipeline_health": pipeline_health,
         "strategy_drift": strategy_drift,
+        "raw_strategy_drift": raw_strategy_drift,
         "coverage": {
             "execution_orders": orders_count,
             "matched_top10": len(matched_top10),
@@ -222,11 +298,12 @@ def main() -> None:
         "ignored_top_tradable": ignored_top_tradable,
         "missing_high_conviction": missing_high_conviction,
         "notes": [
-            "V3 separates venue availability from strategic execution eligibility.",
-            "Decision alignment checks whether planned orders are coherent with Meta Ranking.",
-            "Opportunity coverage measures coverage of Meta Ranking strategic execution-eligible opportunities.",
+            "V4 validates strategy only when Meta Ranking and execution plan share the exact snapshot lineage.",
+            "Temporal mismatch is awaiting_execution_refresh and cannot be classified as strategy drift.",
+            "Missing or mixed execution lineage is explicit and cannot produce a healthy validation.",
+            "Decision alignment checks whether planned orders are coherent with the consumed Meta Ranking snapshot.",
             "Strategic universe requires execution_eligible plus GOOD_CANDIDATE or WATCH_TRADABLE verdict.",
-            "Validation is execution-governance aware but remains non-mutating.",
+            "Validation remains non-mutating.",
         ],
     }
 

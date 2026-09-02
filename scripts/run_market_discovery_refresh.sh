@@ -191,12 +191,14 @@ run_nonblocking \
   "persistence_opportunities" \
   "src.v2.discovery.persistence_opportunities"
 
-echo
-echo "===== META RANKING ====="
-
-run_nonblocking \
-  "meta_ranking" \
-  "src.v2.discovery.meta_ranking_engine"
+# ============================================================
+# RC2 Meta Temporal Validation Order V4
+#
+# Validate the currently published Meta Ranking before replacing
+# it with a new snapshot. The execution plan therefore had the
+# opportunity to consume the exact snapshot being validated.
+# Snapshot lineage remains the authoritative comparability gate.
+# ============================================================
 
 echo
 echo "===== META VALIDATION ====="
@@ -213,18 +215,25 @@ run_nonblocking \
   "src.v2.discovery.meta_validation_history"
 
 echo
-echo "===== TRADABLE OPPORTUNITIES ====="
-
-run_nonblocking \
-  "tradable_opportunities" \
-  "src.v2.discovery.tradable_opportunities"
-
-echo
 echo "===== META HEALTH MONITOR ====="
 
 run_nonblocking \
   "meta_health_monitor" \
   "src.v2.discovery.meta_health_monitor"
+
+echo
+echo "===== META RANKING ====="
+
+run_nonblocking \
+  "meta_ranking" \
+  "src.v2.discovery.meta_ranking_engine"
+
+echo
+echo "===== TRADABLE OPPORTUNITIES ====="
+
+run_nonblocking \
+  "tradable_opportunities" \
+  "src.v2.discovery.tradable_opportunities"
 
 RUN_FINISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 

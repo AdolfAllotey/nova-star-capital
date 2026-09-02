@@ -48,12 +48,19 @@ def main() -> None:
     row = {
         "ts": now,
         "engine": validation.get("engine"),
+        "semantics_version": validation.get("semantics_version"),
+        "validation_state": validation.get("validation_state"),
+        "temporally_comparable": validation.get("temporally_comparable"),
+        "meta_snapshot_generated_at": validation.get("meta_snapshot_generated_at"),
+        "plan_meta_snapshot_generated_at": validation.get("plan_meta_snapshot_generated_at"),
+        "plan_meta_snapshot_lineage_status": validation.get("plan_meta_snapshot_lineage_status"),
         "status": validation.get("status"),
         "pipeline_health": validation.get("pipeline_health"),
         "decision_alignment_score": validation.get("decision_alignment_score"),
         "opportunity_coverage_score": validation.get("opportunity_coverage_score"),
         "execution_quality": validation.get("execution_quality"),
         "strategy_drift": validation.get("strategy_drift"),
+        "raw_strategy_drift": validation.get("raw_strategy_drift"),
         "execution_symbols": validation.get("execution_symbols", []),
         "matched_top_tradable": validation.get("matched_top_tradable", []),
         "missing_high_conviction_count": len(validation.get("missing_high_conviction", []) or []),
@@ -63,24 +70,71 @@ def main() -> None:
     history.append(row)
     history = history[-500:]
 
-    alignments = [x.get("decision_alignment_score") for x in history if isinstance(x, dict)]
-    coverages = [x.get("opportunity_coverage_score") for x in history if isinstance(x, dict)]
-    drifts = [x for x in history if isinstance(x, dict) and x.get("strategy_drift") is True]
-    healthy = [x for x in history if isinstance(x, dict) and x.get("pipeline_health") == "healthy"]
+    active_semantics_version = "v4_temporal_lineage"
+
+    current_semantics = [
+        x for x in history
+        if isinstance(x, dict)
+        and x.get("semantics_version") == active_semantics_version
+    ]
+
+    comparable = [
+        x for x in current_semantics
+        if x.get("temporally_comparable") is True
+    ]
+
+    pending = [
+        x for x in current_semantics
+        if x.get("validation_state") == "awaiting_execution_refresh"
+    ]
+
+    lineage_unavailable = [
+        x for x in current_semantics
+        if x.get("validation_state") == "lineage_unavailable"
+    ]
+
+    alignments = [
+        x.get("decision_alignment_score")
+        for x in comparable
+    ]
+
+    coverages = [
+        x.get("opportunity_coverage_score")
+        for x in comparable
+    ]
+
+    drifts = [
+        x for x in comparable
+        if x.get("strategy_drift") is True
+    ]
+
+    healthy = [
+        x for x in comparable
+        if x.get("pipeline_health") == "healthy"
+    ]
 
     recent = history[-20:]
+    comparable_count = len(comparable)
 
     summary = {
         "status": "ok",
         "generated_at": now,
-        "engine": "meta_validation_history_v1",
+        "engine": "meta_validation_history_v2",
+        "active_semantics_version": active_semantics_version,
         "history_count": len(history),
         "recent_count": len(recent),
+        "current_semantics_count": len(current_semantics),
+        "comparable_count": comparable_count,
+        "pending_count": len(pending),
+        "lineage_unavailable_count": len(lineage_unavailable),
         "avg_decision_alignment": avg(alignments),
         "avg_opportunity_coverage": avg(coverages),
         "drift_count": len(drifts),
         "healthy_count": len(healthy),
-        "healthy_ratio": round((len(healthy) / len(history)) * 100.0, 2) if history else 0.0,
+        "healthy_ratio": (
+            round((len(healthy) / comparable_count) * 100.0, 2)
+            if comparable_count else 0.0
+        ),
         "latest": row,
         "recent": recent,
     }
