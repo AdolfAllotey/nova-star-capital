@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -356,6 +357,25 @@ def main() -> int:
             }
             continue
 
+        provider_pause_seconds = max(
+            args.pause_seconds,
+            0.0,
+        )
+
+        if normalized_provider_name in {
+            "massive",
+            "polygon",
+        }:
+            provider_pause_seconds = max(
+                float(
+                    os.getenv(
+                        "MASSIVE_PAUSE_SECONDS",
+                        "13.0",
+                    )
+                ),
+                0.0,
+            )
+
         payload = build_provider_payload(
             provider_name=normalized_provider_name,
             provider=provider,
@@ -368,10 +388,7 @@ def main() -> int:
                 args.minimum_history_rows,
                 1,
             ),
-            pause_seconds=max(
-                args.pause_seconds,
-                0.0,
-            ),
+            pause_seconds=provider_pause_seconds,
         )
 
         output_path = (
