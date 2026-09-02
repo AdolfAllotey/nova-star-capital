@@ -65,18 +65,56 @@ target = load(
     {}
 )
 
-launch = load(
-    DATA / "releases/RC2/RC2_LAUNCH.json",
+clock = load(
+    DATA / "releases/RC2/rc2_clock_state.json",
     {}
 )
 
 bricks = state.get("bricks", {}) if isinstance(state, dict) else {}
 
+start_raw = clock.get("official_start_timestamp_utc")
+start_dt = None
+
+if start_raw:
+    try:
+        start_dt = datetime.fromisoformat(
+            str(start_raw).replace("Z", "+00:00")
+        )
+        if start_dt.tzinfo is None:
+            start_dt = start_dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        start_dt = None
+
+planned_days = int(clock.get("planned_duration_days") or 30)
+
+if clock.get("rc2_30_day_clock_started") is not True or start_dt is None:
+    raise RuntimeError("RC2_CANONICAL_CLOCK_UNAVAILABLE")
+
+now_utc = datetime.now(timezone.utc)
+
+elapsed_days = max(
+    0,
+    int((now_utc - start_dt).total_seconds() // 86400)
+)
+current_day = min(planned_days, elapsed_days)
+
+end_raw = clock.get("planned_end_timestamp_utc")
+try:
+    end_dt = datetime.fromisoformat(
+        str(end_raw).replace("Z", "+00:00")
+    )
+    if end_dt.tzinfo is None:
+        end_dt = end_dt.replace(tzinfo=timezone.utc)
+except Exception:
+    raise RuntimeError("RC2_CANONICAL_CLOCK_END_UNAVAILABLE")
+
+rc2_status = "RUNNING" if now_utc < end_dt else "COMPLETED"
+
 print()
 print("===== 2. RC2 CLOCK / STRATEGIC CONTEXT =====")
-print("RC2_STATUS=", launch.get("status"))
-print("RC2_PHASE=", launch.get("phase"))
-print("RC2_LAUNCH_UTC=", launch.get("launch_timestamp_utc"))
+print("RC2_STATUS=", rc2_status)
+print("RC2_PHASE=", f"J{current_day}/{planned_days}")
+print("RC2_LAUNCH_UTC=", start_dt.isoformat())
 print("PORTFOLIO_REGIME=", state.get("portfolio_regime"))
 print("CAPITAL_OBSERVED_EUR=", state.get("capital_observed_eur"))
 print("CAPITAL_ENGAGED_EUR=", state.get("capital_engaged_eur"))
