@@ -1127,6 +1127,27 @@ def main() -> int:
     except Exception:
         logger.exception("[execution_engine_pro][PREPROD] failed to promote valid simulated orders into main plan")
 
+    # RC2 Meta Snapshot Lineage Contract V4.
+    # A single execution run must be attributable to exactly one
+    # Meta Ranking generation. Derive lineage from the sized
+    # signals consumed by this engine, not filesystem mtimes.
+    _meta_snapshots = sorted({
+        str(it.get("meta_snapshot_generated_at")).strip()
+        for it in sized
+        if isinstance(it, dict)
+        and it.get("meta_snapshot_generated_at")
+    })
+
+    if len(_meta_snapshots) == 1:
+        _meta_snapshot_generated_at = _meta_snapshots[0]
+        _meta_snapshot_lineage_status = "consistent"
+    elif len(_meta_snapshots) > 1:
+        _meta_snapshot_generated_at = None
+        _meta_snapshot_lineage_status = "mixed"
+    else:
+        _meta_snapshot_generated_at = None
+        _meta_snapshot_lineage_status = "unavailable"
+
     # Build plan_obj
     logger.info("[execution_engine_pro][DEBUG] build plan_obj hard_block=%s env=%s orders_out=%d", hard_block, env_upper, len(orders_out) if isinstance(orders_out, list) else 0)
 
@@ -1137,6 +1158,9 @@ def main() -> int:
     "run_id": str(int(datetime.now(timezone.utc).timestamp() * 1000)),
     "env": env,
     "generated_at": now_iso,
+    "meta_snapshot_generated_at": _meta_snapshot_generated_at,
+    "meta_snapshot_lineage_status": _meta_snapshot_lineage_status,
+    "meta_snapshot_count": len(_meta_snapshots),
     "governance": gov,
     "orders": [] if hard_block else orders_out,
     "reasons": gov.get("reasons") or [],
@@ -1289,6 +1313,9 @@ def main() -> int:
                 'execution_mode': 'SIMULATED_ONLY',
                 'env': env,
                 'generated_at': now_iso,
+                'meta_snapshot_generated_at': _meta_snapshot_generated_at,
+                'meta_snapshot_lineage_status': _meta_snapshot_lineage_status,
+                'meta_snapshot_count': len(_meta_snapshots),
                 'governance': gov,
                 'orders': _sim_orders,
 

@@ -453,7 +453,7 @@ def _normalize_meta_symbol(value) -> str:
 
 def _load_meta_ranking_map(
     data_dir: Path,
-) -> Dict[str, Dict[str, Any]]:
+) -> tuple[Dict[str, Dict[str, Any]], str | None]:
     path = (
         data_dir
         / "discovery"
@@ -466,12 +466,18 @@ def _load_meta_ranking_map(
     ) or {}
 
     if not isinstance(raw, dict):
-        return {}
+        return {}, None
+
+    meta_snapshot_generated_at = raw.get("generated_at")
+    if meta_snapshot_generated_at is not None:
+        meta_snapshot_generated_at = str(
+            meta_snapshot_generated_at
+        ).strip() or None
 
     items = raw.get("items", [])
 
     if not isinstance(items, list):
-        return {}
+        return {}, meta_snapshot_generated_at
 
     out: Dict[str, Dict[str, Any]] = {}
 
@@ -489,7 +495,7 @@ def _load_meta_ranking_map(
 
         out[symbol] = row
 
-    return out
+    return out, meta_snapshot_generated_at
 
 
 def _meta_execution_eligibility(
@@ -613,7 +619,10 @@ def _apply_meta_execution_gate(
     candidates: List[Dict[str, Any]],
     data_dir: Path,
 ) -> List[Dict[str, Any]]:
-    rankings = _load_meta_ranking_map(
+    (
+        rankings,
+        meta_snapshot_generated_at,
+    ) = _load_meta_ranking_map(
         data_dir
     )
 
@@ -662,8 +671,18 @@ def _apply_meta_execution_gate(
         ] = {
             "status": "eligible",
             "reason": reason,
+            "meta_snapshot_generated_at": (
+                meta_snapshot_generated_at
+            ),
             **context,
         }
+
+        # RC2 Meta Snapshot Lineage Contract V4.
+        # Preserve the exact Meta Ranking generation consumed
+        # by this strategic eligibility decision.
+        enriched[
+            "meta_snapshot_generated_at"
+        ] = meta_snapshot_generated_at
 
         # Preserve institutional Meta Ranking values explicitly
         # through sizing and execution for auditability.

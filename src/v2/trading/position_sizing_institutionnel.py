@@ -453,6 +453,9 @@ def build_sized_signals() -> list[dict[str, Any]]:
             "meta_execution_gate": sig.get(
                 "meta_execution_gate"
             ),
+            "meta_snapshot_generated_at": sig.get(
+                "meta_snapshot_generated_at"
+            ),
             "execution_eligible": sig.get(
                 "execution_eligible"
             ),
