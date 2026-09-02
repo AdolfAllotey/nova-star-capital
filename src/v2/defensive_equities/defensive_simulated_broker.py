@@ -3,12 +3,15 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from src.v2.market.preprod_price_contract import load_fresh_prices
+from src.v2.defensive_equities.common import load_defensive_universe
 import os
 
 ROOT = Path(os.getenv("NSC_DATA_DIR", "/opt/nsc/data/preprod"))
 
 SIGNAL_PATH = ROOT / "defensive/defensive_signal.json"
 PRICES_PATH = ROOT / "defensive/prices.json"
+MAX_PRICE_AGE_SECONDS = 6 * 60 * 60
 FILLS_PATH = ROOT / "defensive/execution/simulated_fills.jsonl"
 POSITIONS_PATH = ROOT / "defensive/state/positions.json"
 EXPOSURE_PATH = ROOT / "defensive/state/exposure_snapshot.json"
@@ -82,7 +85,12 @@ def build_exposure_snapshot(positions: dict, prices: dict):
 
 def main():
     signal = load_json(SIGNAL_PATH, default={}) or {}
-    prices = load_json(PRICES_PATH, default={}) or {}
+    prices = load_fresh_prices(
+        sleeve="defensive",
+        prices_path=PRICES_PATH,
+        expected_symbols=load_defensive_universe(),
+        max_age_seconds=MAX_PRICE_AGE_SECONDS,
+    ).prices
     portfolio_state = load_json(PORTFOLIO_STATE_PATH, default={}) or {}
     positions = load_positions()
     portfolio_regime = str(portfolio_state.get("portfolio_regime", "unknown")).lower()

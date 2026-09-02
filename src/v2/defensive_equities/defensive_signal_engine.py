@@ -19,8 +19,9 @@ from pathlib import Path
 try:
     from .common import DATA_DIR, LOG_DIR
 except ImportError:
-    from common import DATA_DIR, LOG_DIR
+    from common import DATA_DIR, LOG_DIR, load_defensive_universe
 from typing import Any, Dict, List, Optional
+from src.v2.market.preprod_price_contract import load_fresh_prices
 
 BRICK_NAME = "defensive_equities"
 DEFAULT_ENV = os.getenv("NSC_ENV", "PREPROD")
@@ -29,6 +30,7 @@ DEFAULT_ENV = os.getenv("NSC_ENV", "PREPROD")
 DEFENSIVE_ALLOCATIONS_PATH = DATA_DIR / "defensive_allocations.json"
 DEFENSIVE_SIGNAL_PATH = DATA_DIR / "defensive_signal.json"
 PRICES_PATH = DATA_DIR / "prices.json"
+MAX_PRICE_AGE_SECONDS = 6 * 60 * 60
 LOG_PATH = LOG_DIR / "defensive_equities.log"
 
 
@@ -118,19 +120,13 @@ def load_defensive_allocation() -> Dict[str, Any]:
 
 
 def load_prices() -> Dict[str, float]:
-    raw = load_json_file(PRICES_PATH, default={}) or {}
-    if not isinstance(raw, dict):
-        return {}
-
-    prices: Dict[str, float] = {}
-    for k, v in raw.items():
-        try:
-            px = float(v)
-            if px > 0:
-                prices[str(k).strip().upper()] = px
-        except Exception:
-            continue
-    return prices
+    snapshot = load_fresh_prices(
+        sleeve="defensive",
+        prices_path=PRICES_PATH,
+        expected_symbols=load_defensive_universe(),
+        max_age_seconds=MAX_PRICE_AGE_SECONDS,
+    )
+    return snapshot.prices
 
 
 def filter_and_normalize_priced_assets(assets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

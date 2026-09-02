@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from src.v2.market.preprod_price_contract import load_fresh_prices
 
 SIGNAL_PATH = Path("/opt/nsc/app/data/bonds/bond_signal.json")
 PRICES_PATH = Path("/opt/nsc/data/preprod/bonds/prices.json")
+EXPECTED_PRICE_SYMBOLS = ("SHY", "IEF", "TLT", "LQD")
+MAX_PRICE_AGE_SECONDS = 6 * 60 * 60
 FILLS_PATH = Path("/opt/nsc/app/data/bonds/execution/simulated_fills.jsonl")
 POSITIONS_PATH = Path("/opt/nsc/app/data/bonds/state/positions.json")
 EXPOSURE_PATH = Path("/opt/nsc/app/data/bonds/state/exposure_snapshot.json")
@@ -79,7 +82,12 @@ def build_exposure_snapshot(positions: dict, prices: dict):
 
 def main():
     signal = load_json(SIGNAL_PATH, default={}) or {}
-    prices = load_json(PRICES_PATH, default={}) or {}
+    prices = load_fresh_prices(
+        sleeve="bonds" if "bonds" in str(PRICES_PATH) else "metals",
+        prices_path=PRICES_PATH,
+        expected_symbols=EXPECTED_PRICE_SYMBOLS,
+        max_age_seconds=MAX_PRICE_AGE_SECONDS,
+    ).prices
     portfolio_state = load_json(PORTFOLIO_STATE_PATH, default={}) or {}
     positions = load_positions()
     portfolio_regime = str(portfolio_state.get("portfolio_regime", "unknown")).lower()

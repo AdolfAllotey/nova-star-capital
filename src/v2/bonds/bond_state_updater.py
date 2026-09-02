@@ -3,10 +3,13 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from src.v2.market.preprod_price_contract import load_fresh_prices
 
 SIGNAL_PATH = Path("/opt/nsc/data/preprod/bonds/bond_signal.json")
 STATE_PATH = Path("/opt/nsc/data/preprod/portfolio/state/portfolio_state.json")
 PRICES_PATH = Path("/opt/nsc/data/preprod/bonds/prices.json")
+EXPECTED_PRICE_SYMBOLS = ("SHY", "IEF", "TLT", "LQD")
+MAX_PRICE_AGE_SECONDS = 6 * 60 * 60
 OUT_PATH = Path("/opt/nsc/data/preprod/bonds/bond_state.json")
 
 
@@ -31,7 +34,12 @@ def now_iso():
 def main():
     signal = load_json(SIGNAL_PATH, {}) or {}
     portfolio_state = load_json(STATE_PATH, {}) or {}
-    prices = load_json(PRICES_PATH, {}) or {}
+    prices = load_fresh_prices(
+        sleeve="bonds" if "bonds" in str(PRICES_PATH) else "metals",
+        prices_path=PRICES_PATH,
+        expected_symbols=EXPECTED_PRICE_SYMBOLS,
+        max_age_seconds=MAX_PRICE_AGE_SECONDS,
+    ).prices
 
     bonds = (portfolio_state.get("bricks", {}) or {}).get("bonds", {}) or {}
     target_amount = float(bonds.get("target_amount_eur", 0.0) or 0.0)

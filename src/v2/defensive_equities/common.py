@@ -104,7 +104,20 @@ def load_defensive_universe(
 
     data = load_json_file(DEFENSIVE_UNIVERSE_PATH, default={}, logger=logger)
 
-    tickers = data.get("tickers") if isinstance(data, dict) else None
+    tickers = None
+
+    if isinstance(data, dict):
+        assets = data.get("assets")
+
+        if isinstance(assets, list) and assets:
+            tickers = [
+                asset.get("ticker")
+                for asset in assets
+                if isinstance(asset, dict)
+            ]
+        elif isinstance(data.get("tickers"), list):
+            # Backward compatibility with the historical schema.
+            tickers = data.get("tickers")
 
     if not isinstance(tickers, list) or not tickers:
         if logger:
