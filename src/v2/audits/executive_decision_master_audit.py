@@ -155,7 +155,10 @@ def main() -> int:
     if (
         action_policy == "SIMULATED_ONLY"
         and execution_posture
-        != "SIMULATED_ONLY"
+        not in {
+            "SIMULATED_ONLY",
+            "BLOCKED",
+        }
     ):
         failed_checks.append(
             "simulated_only_posture_not_propagated"
