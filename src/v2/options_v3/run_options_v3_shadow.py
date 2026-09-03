@@ -14,7 +14,14 @@ from pathlib import Path
 from datetime import datetime, timezone
 from options_portfolio_engine_v3 import allocate_portfolio
 from options_position_manager_v3 import update_positions
-from providers.yfinance_option_chain_provider_v3 import fetch_normalized_option_chain
+from providers.yfinance_option_chain_provider_v3 import (
+    OptionChainProviderError,
+    fetch_normalized_option_chain,
+)
+from options_iv_history_v3 import (
+    IVObservationError,
+    observe_and_update_iv_history,
+)
 from options_contract_selector_v3 import ContractSelectionError, select_contract_structure_v3
 
 OUT = Path("/opt/nsc/data/preprod/options_v3")
@@ -626,17 +633,33 @@ IV_PERCENTILE_STATUS_UNAVAILABLE = "UNAVAILABLE_INSUFFICIENT_HISTORY"
 IV_PROVENANCE_STATUS = "NO_CERTIFIED_HISTORICAL_PROVENANCE"
 
 
-def choose_strategy(signal):
+def choose_strategy(signal, volatility_context=None):
     """
-    Choose only strategies that are demonstrable with certified RC2 inputs.
+    Choose strategy using certified Options V3 volatility provenance.
 
-    IV Rank and IV Percentile are unavailable until sufficient comparable
-    provider-backed history exists. Strategies whose selection depends on
-    IV Rank therefore fail closed instead of silently treating missing data
-    as zero or inheriting legacy V1/V2 sandbox values.
+    Mature provider-backed IV Rank may refine strategy selection.
+    Before maturity, the runtime remains operational through defined-risk
+    strategies instead of inventing IV Rank or rejecting valid direction.
     """
     direction = signal.get("direction", "neutral")
     signal_type = signal.get("signal_type", "")
+
+    vol = (
+        volatility_context
+        if isinstance(volatility_context, dict)
+        else {}
+    )
+
+    iv_rank = vol.get("iv_rank")
+    iv_rank_status = vol.get(
+        "iv_rank_status",
+        "WARMING_UP",
+    )
+
+    mature_iv = (
+        iv_rank_status == "AVAILABLE"
+        and isinstance(iv_rank, (int, float))
+    )
 
     if direction == "bearish":
         return (
@@ -648,28 +671,60 @@ def choose_strategy(signal):
         )
 
     if direction in ["bullish", "strong_bullish"]:
+        if mature_iv and float(iv_rank) < 50:
+            strategy = "long_call"
+            reason = "selected_from_available_iv_rank"
+        elif mature_iv:
+            strategy = "bull_call_spread"
+            reason = "selected_from_available_iv_rank"
+        else:
+            strategy = "bull_call_spread"
+            reason = "defined_risk_fallback_iv_warming_up"
+
         return (
-            None,
+            strategy,
             "alpha",
-            "unknown",
-            "REJECTED",
-            "iv_rank_unavailable_for_strategy_selection",
+            (
+                "available"
+                if mature_iv
+                else "warming_up"
+            ),
+            "SELECTED",
+            reason,
         )
 
     if direction == "neutral_to_bullish":
+        if mature_iv and float(iv_rank) >= 50:
+            strategy = "cash_secured_put"
+            reason = "selected_from_available_iv_rank"
+        elif mature_iv:
+            strategy = "bull_put_spread"
+            reason = "selected_from_available_iv_rank"
+        else:
+            strategy = "bull_put_spread"
+            reason = "defined_risk_fallback_iv_warming_up"
+
         return (
-            None,
+            strategy,
             "entry_yield",
-            "unknown",
-            "REJECTED",
-            "iv_rank_unavailable_for_strategy_selection",
+            (
+                "available"
+                if mature_iv
+                else "warming_up"
+            ),
+            "SELECTED",
+            reason,
         )
 
     if signal_type == "existing_equity_overlay":
         return (
             "covered_call",
             "yield",
-            "unknown",
+            (
+                "available"
+                if mature_iv
+                else "warming_up"
+            ),
             "SELECTED",
             None,
         )
@@ -677,7 +732,11 @@ def choose_strategy(signal):
     return (
         "neutral_spread",
         "neutral",
-        "unknown",
+        (
+            "available"
+            if mature_iv
+            else "warming_up"
+        ),
         "SELECTED",
         None,
     )
@@ -695,8 +754,14 @@ def estimate_risk(strategy, spot):
         return round(max(spot * 0.5, 100), 2)
     return round(max(spot * 1.0, 300), 2)
 
-def build_candidate(signal):
+def build_candidate(signal, volatility_context=None):
     ticker = signal.get("ticker")
+
+    vol = (
+        volatility_context
+        if isinstance(volatility_context, dict)
+        else {}
+    )
 
     (
         strategy,
@@ -704,7 +769,10 @@ def build_candidate(signal):
         vol_regime,
         strategy_selection_status,
         strategy_selection_reason,
-    ) = choose_strategy(signal)
+    ) = choose_strategy(
+        signal,
+        vol,
+    )
 
     confidence = float(
         signal.get("confidence") or 0.5
@@ -745,15 +813,26 @@ def build_candidate(signal):
         "estimated_risk_eur": risk,
         "vol_regime": vol_regime,
 
-        # RC2 volatility provenance contract.
-        "iv_rank": None,
-        "iv_rank_status": IV_RANK_STATUS_UNAVAILABLE,
-        "iv_percentile": None,
-        "iv_percentile_status": (
-            IV_PERCENTILE_STATUS_UNAVAILABLE
+        # Certified Options V3 volatility provenance.
+        "iv_rank": vol.get("iv_rank"),
+        "iv_rank_status": vol.get(
+            "iv_rank_status",
+            IV_RANK_STATUS_UNAVAILABLE,
         ),
-        "iv_provenance_status": (
-            IV_PROVENANCE_STATUS
+        "iv_percentile": vol.get(
+            "iv_percentile"
+        ),
+        "iv_percentile_status": vol.get(
+            "iv_percentile_status",
+            IV_PERCENTILE_STATUS_UNAVAILABLE,
+        ),
+        "iv_provenance_status": vol.get(
+            "iv_provenance_status",
+            IV_PROVENANCE_STATUS,
+        ),
+        "iv_observation_count": vol.get(
+            "observation_count",
+            0,
         ),
 
         "strategy_selection_status": (
@@ -774,11 +853,23 @@ def build_candidate(signal):
             f"vol_regime={vol_regime}",
             (
                 "iv_rank="
-                "UNAVAILABLE_INSUFFICIENT_HISTORY"
+                f"{vol.get('iv_rank')}"
+            ),
+            (
+                "iv_rank_status="
+                f"{vol.get('iv_rank_status', IV_RANK_STATUS_UNAVAILABLE)}"
             ),
             (
                 "iv_percentile="
-                "UNAVAILABLE_INSUFFICIENT_HISTORY"
+                f"{vol.get('iv_percentile')}"
+            ),
+            (
+                "iv_percentile_status="
+                f"{vol.get('iv_percentile_status', IV_PERCENTILE_STATUS_UNAVAILABLE)}"
+            ),
+            (
+                "iv_provenance_status="
+                f"{vol.get('iv_provenance_status', IV_PROVENANCE_STATUS)}"
             ),
             (
                 "strategy_selection_status="
@@ -858,9 +949,58 @@ def main():
 
     all_signals = offensive_signals + overlay_signals
 
+    volatility_context_by_ticker = {}
+
+    for ticker in sorted({
+        str(signal.get("ticker") or "").strip().upper()
+        for signal in all_signals
+        if isinstance(signal, dict)
+        and str(signal.get("ticker") or "").strip()
+    }):
+        try:
+            volatility_context_by_ticker[
+                ticker
+            ] = observe_and_update_iv_history(
+                ticker,
+                history_path=(
+                    OUT / "iv_history_v3.json"
+                ),
+                cache_dir=(
+                    OPTIONS_V3_OPTION_CHAIN_CACHE_DIR
+                ),
+            )
+
+        except (
+            IVObservationError,
+            OptionChainProviderError,
+        ) as exc:
+            volatility_context_by_ticker[
+                ticker
+            ] = {
+                "iv_rank": None,
+                "iv_percentile": None,
+                "iv_rank_status": "UNAVAILABLE",
+                "iv_percentile_status": "UNAVAILABLE",
+                "iv_provenance_status": (
+                    "PROVIDER_OBSERVATION_FAILED"
+                ),
+                "observation_count": 0,
+                "observation_error": (
+                    f"{type(exc).__name__}:{exc}"
+                ),
+            }
+
     candidates_raw = [
-        build_candidate(s)
-        for s in all_signals
+        build_candidate(
+            signal,
+            volatility_context_by_ticker.get(
+                str(
+                    signal.get("ticker") or ""
+                ).strip().upper(),
+                {},
+            ),
+        )
+        for signal in all_signals
     ]
 
     candidates_validated = []
