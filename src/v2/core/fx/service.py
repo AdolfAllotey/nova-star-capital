@@ -8,7 +8,9 @@ from .cache import FXCache
 from .models import FXConversion, FXRate
 from .provider import FXProviderError, YahooFXProvider
 from .validator import (
+    FXValidationError,
     normalize_currency,
+    validate_market_freshness,
     validate_rate,
 )
 
@@ -46,6 +48,20 @@ class FXService:
             )
         )
 
+        self.fresh_market_seconds = float(
+            os.getenv(
+                "NSC_FX_FRESH_MARKET_SEC",
+                str(self.fresh_cache_seconds),
+            )
+        )
+
+        self.fallback_market_seconds = float(
+            os.getenv(
+                "NSC_FX_FALLBACK_MARKET_SEC",
+                str(self.fallback_cache_seconds),
+            )
+        )
+
     def _identity_rate(
         self,
         currency: str,
@@ -72,6 +88,9 @@ class FXService:
                 base,
                 quote,
                 self.fresh_cache_seconds,
+                max_market_age_seconds=(
+                    self.fresh_market_seconds
+                ),
             )
 
             if fresh is not None:
@@ -84,10 +103,21 @@ class FXService:
                 base,
                 quote,
             )
+
+            direct = validate_market_freshness(
+                direct,
+                max_market_age_seconds=(
+                    self.fresh_market_seconds
+                ),
+            )
+
             self.cache.put(direct)
             return direct
 
-        except FXProviderError as exc:
+        except (
+            FXProviderError,
+            FXValidationError,
+        ) as exc:
             direct_error = exc
 
         try:
@@ -112,6 +142,13 @@ class FXService:
                 )
             )
 
+            converted = validate_market_freshness(
+                converted,
+                max_market_age_seconds=(
+                    self.fresh_market_seconds
+                ),
+            )
+
             self.cache.put(converted)
             return converted
 
@@ -120,6 +157,9 @@ class FXService:
                 base,
                 quote,
                 self.fallback_cache_seconds,
+                max_market_age_seconds=(
+                    self.fallback_market_seconds
+                ),
             )
 
             if fallback is not None:

@@ -8,7 +8,11 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .models import FXRate
-from .validator import parse_iso_timestamp, validate_rate
+from .validator import (
+    parse_iso_timestamp,
+    validate_market_freshness,
+    validate_rate,
+)
 
 
 DEFAULT_CACHE_PATH = Path(
@@ -110,6 +114,7 @@ class FXCache:
         base: str,
         quote: str,
         max_age_seconds: float,
+        max_market_age_seconds: Optional[float] = None,
     ) -> Optional[FXRate]:
         document = self._load_document()
 
@@ -154,7 +159,18 @@ class FXCache:
                 inverted=bool(raw.get("inverted", False)),
             )
 
-            return validate_rate(cached_rate)
+            validated = validate_rate(cached_rate)
+
+            if max_market_age_seconds is not None:
+                validated = validate_market_freshness(
+                    validated,
+                    max_market_age_seconds=(
+                        max_market_age_seconds
+                    ),
+                    now=utc_now(),
+                )
+
+            return validated
 
         except Exception:
             return None

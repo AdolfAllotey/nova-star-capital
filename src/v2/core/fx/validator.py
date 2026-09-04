@@ -47,6 +47,75 @@ def parse_iso_timestamp(value: str) -> Optional[datetime]:
         return None
 
 
+def market_age_seconds(
+    rate: FXRate,
+    *,
+    now: Optional[datetime] = None,
+) -> float:
+    market_ts = parse_iso_timestamp(
+        rate.market_timestamp
+    )
+
+    if market_ts is None:
+        raise FXValidationError(
+            f"Invalid market timestamp for {rate.pair}"
+        )
+
+    reference = (
+        now.astimezone(timezone.utc)
+        if now is not None
+        else datetime.now(timezone.utc)
+    )
+
+    age = (
+        reference - market_ts
+    ).total_seconds()
+
+    if age < -300.0:
+        raise FXValidationError(
+            f"Future FX market timestamp for "
+            f"{rate.pair}: age_seconds={age}"
+        )
+
+    return max(0.0, age)
+
+
+def validate_market_freshness(
+    rate: FXRate,
+    *,
+    max_market_age_seconds: float,
+    now: Optional[datetime] = None,
+) -> FXRate:
+    validated = validate_rate(rate)
+
+    try:
+        maximum = float(max_market_age_seconds)
+    except Exception as exc:
+        raise FXValidationError(
+            "Invalid FX market freshness limit"
+        ) from exc
+
+    if not math.isfinite(maximum) or maximum < 0:
+        raise FXValidationError(
+            "Invalid FX market freshness limit"
+        )
+
+    age = market_age_seconds(
+        validated,
+        now=now,
+    )
+
+    if age > maximum:
+        raise FXValidationError(
+            f"Stale FX market observation for "
+            f"{validated.pair}: "
+            f"market_age_seconds={age:.3f}, "
+            f"max_market_age_seconds={maximum:.3f}"
+        )
+
+    return validated
+
+
 def validate_rate(rate: FXRate) -> FXRate:
     normalize_currency(rate.base_currency)
     normalize_currency(rate.quote_currency)
