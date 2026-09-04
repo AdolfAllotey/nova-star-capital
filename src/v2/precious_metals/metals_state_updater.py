@@ -56,7 +56,12 @@ def main():
                 continue
 
             amount_eur = round(target_amount * w, 2)
+            if amount_eur <= 0:
+                continue
+
             qty = round(amount_eur / px, 8)
+            if qty <= 0:
+                continue
 
             previous_positions = load_json(OUT_PATH, {}) or {}
             previous_rows = previous_positions.get("positions", []) if isinstance(previous_positions, dict) else []

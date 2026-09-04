@@ -44,16 +44,31 @@ def get_real_brick_state(brick: str, deployable_capital_eur: float):
     }
 
     if brick in state_paths:
-        state = load_json(state_paths[brick], default={}) or {}
-        exposure = float(state.get("current_exposure_eur", 0.0) or 0.0)
-        if exposure > 0 and deployable_capital_eur > 0:
-            return {
-                "current_exposure_eur": round(exposure, 2),
-                "current_weight_estimate": round(exposure / deployable_capital_eur, 6),
-                "state_origin": "brick_state",
-                "positions_count": len(state.get("positions") or []),
-                "state_source": str(state_paths[brick]),
-            }
+        state = load_json(state_paths[brick], default=None)
+        if (
+            isinstance(state, dict)
+            and "current_exposure_eur" in state
+            and state.get("current_exposure_eur") is not None
+        ):
+            try:
+                exposure = float(state["current_exposure_eur"])
+            except (TypeError, ValueError):
+                exposure = None
+
+            if (
+                exposure is not None
+                and exposure >= 0
+                and deployable_capital_eur > 0
+            ):
+                return {
+                    "current_exposure_eur": round(exposure, 2),
+                    "current_weight_estimate": round(
+                        exposure / deployable_capital_eur, 6
+                    ),
+                    "state_origin": "brick_state",
+                    "positions_count": len(state.get("positions") or []),
+                    "state_source": str(state_paths[brick]),
+                }
 
     if brick == "equities_offensive":
         path = DATA_DIR / "equities_offensive" / "state" / "exposure_snapshot.json"
