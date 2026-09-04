@@ -453,12 +453,33 @@ def run_portfolio_state_builder():
 
     if isinstance(lt_data, dict) and lt_value > 0:
 
+        lt_unrealized_pnl = float(
+            lt_data.get("unrealized_pnl_eur")
+            or lt_data.get("pnl_eur")
+            or lt_totals.get("unrealized_pnl_eur")
+            or lt_totals.get("pnl_eur")
+            or 0.0
+        )
+
+        lt_positions = lt_data.get("positions", [])
+        lt_positions_count = (
+            len(lt_positions)
+            if isinstance(lt_positions, (list, dict))
+            else 0
+        )
+
         bricks["long_term"] = {
             "status": "active",
             "target_weight_snapshot": 0.0,
-            "current_weight_estimate": 0.0,
+            "current_weight_estimate": round(
+                lt_value / deployable_capital_eur,
+                6
+            ) if deployable_capital_eur > 0 else 0.0,
             "current_exposure_eur": round(lt_value, 6),
+            "unrealized_pnl_eur": round(lt_unrealized_pnl, 6),
+            "positions_count": lt_positions_count,
             "state_origin": "lt_passive_snapshot",
+            "state_source": str(LT_PATH),
             "regime": "long_term_hold",
             "confidence": 1.0,
             "portfolio_role": "patrimonial_core",
