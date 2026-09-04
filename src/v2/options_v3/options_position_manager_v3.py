@@ -11,6 +11,7 @@ import json
 import hashlib
 from pathlib import Path
 from datetime import datetime, timezone
+from math import isfinite
 
 BASE = Path("/opt/nsc/data/preprod/options_v3")
 
@@ -310,11 +311,132 @@ def _append_closed_unique_v3(
     return result
 
 
-def update_positions():
-    portfolio = load(
-        "options_v3_portfolio_selected.json",
-        [],
+def calculate_open_risk_v3(
+    positions: list,
+) -> float:
+    if not isinstance(positions, list):
+        raise RuntimeError(
+            "options_v3_open_risk: positions must be a list"
+        )
+
+    total = 0.0
+
+    for position in positions:
+        if not isinstance(position, dict):
+            continue
+
+        if str(
+            position.get("status") or "OPEN"
+        ).upper() != "OPEN":
+            continue
+
+        raw_risk = position.get("entry_risk_eur")
+
+        try:
+            risk = float(raw_risk)
+        except (TypeError, ValueError):
+            raise RuntimeError(
+                "options_v3_open_risk: "
+                "entry_risk_eur must be numeric"
+            )
+
+        if not isfinite(risk) or risk < 0.0:
+            raise RuntimeError(
+                "options_v3_open_risk: "
+                "entry_risk_eur must be finite and non-negative"
+            )
+
+        total += risk
+
+    return round(total, 6)
+
+
+def _evaluate_position_lifecycle_v3(
+    stored_position: dict,
+    selected_context: dict | None = None,
+) -> tuple[dict | None, dict | None]:
+    pos = dict(stored_position)
+
+    lifecycle_input = dict(pos)
+
+    if selected_context is not None:
+        lifecycle_input.update(selected_context)
+
+        # Immutable opening identity/state always belongs
+        # to the canonical inventory.
+        lifecycle_input["position_id"] = pos["position_id"]
+        lifecycle_input["structure_id"] = pos["structure_id"]
+        lifecycle_input["opened_at"] = pos["opened_at"]
+        lifecycle_input["entry_risk_eur"] = pos.get(
+            "entry_risk_eur",
+            0,
+        )
+
+    # RC2 valuation contract:
+    # no synthetic PnL is permitted.
+    lifecycle_input["pnl_eur"] = None
+    lifecycle_input["pnl_pct"] = None
+    lifecycle_input["pnl_status"] = (
+        PNL_STATUS_UNAVAILABLE
     )
+    lifecycle_input["pnl_provenance_status"] = (
+        PNL_PROVENANCE_STATUS
+    )
+
+    evaluated = evaluate_position_capabilities_v3(
+        lifecycle_input
+    )
+
+    pos.update(evaluated)
+
+    # Preserve immutable inventory identity/opening state.
+    pos["position_id"] = stored_position["position_id"]
+    pos["structure_id"] = stored_position["structure_id"]
+    pos["opened_at"] = stored_position["opened_at"]
+    pos["entry_risk_eur"] = stored_position.get(
+        "entry_risk_eur",
+        0,
+    )
+
+    # Capability enrichment must never reintroduce
+    # synthetic valuation.
+    pos["pnl_eur"] = None
+    pos["pnl_pct"] = None
+    pos["pnl_status"] = PNL_STATUS_UNAVAILABLE
+    pos["pnl_provenance_status"] = (
+        PNL_PROVENANCE_STATUS
+    )
+
+    opened_at = datetime.fromisoformat(
+        pos["opened_at"]
+    )
+    days = (now() - opened_at).days
+    pos["days_in_trade"] = days
+
+    if (
+        pos.get("capability_lifecycle_action")
+        == "SIMULATED_CLOSE_REVIEW"
+    ):
+        pos["status"] = "CLOSED"
+        pos["close_reason"] = (
+            pos.get("capability_rejection_reason")
+            or "OPTIONS_CAPABILITY_SAFETY_CLOSE"
+        )
+        pos["closed_at"] = now().isoformat()
+        return None, pos
+
+    if days >= MAX_DAYS:
+        pos["status"] = "CLOSED"
+        pos["close_reason"] = "MAX_HOLD_DAYS"
+        pos["closed_at"] = now().isoformat()
+        return None, pos
+
+    pos["status"] = "OPEN"
+
+    return pos, None
+
+
+def reconcile_existing_positions_v3():
     existing_raw = load(
         "options_v3_positions.json",
         [],
@@ -324,10 +446,71 @@ def update_positions():
         [],
     )
 
+    if not isinstance(existing_raw, list):
+        raise RuntimeError(
+            "options_v3_positions must be a list"
+        )
+
+    if not isinstance(previously_closed, list):
+        raise RuntimeError(
+            "options_v3_positions_closed must be a list"
+        )
+
+    existing = [
+        _prepare_existing_position_v3(p)
+        for p in existing_raw
+        if isinstance(p, dict)
+    ]
+
+    open_positions = []
+    newly_closed = []
+
+    for stored_position in existing:
+        opened, closed = (
+            _evaluate_position_lifecycle_v3(
+                stored_position
+            )
+        )
+
+        if opened is not None:
+            open_positions.append(opened)
+
+        if closed is not None:
+            newly_closed.append(closed)
+
+    closed_all = _append_closed_unique_v3(
+        previously_closed,
+        newly_closed,
+    )
+
+    save(
+        "options_v3_positions.json",
+        open_positions,
+    )
+    save(
+        "options_v3_positions_closed.json",
+        closed_all,
+    )
+
+    return open_positions, closed_all
+
+
+def open_selected_positions_v3(
+    portfolio: list,
+):
     if not isinstance(portfolio, list):
         raise RuntimeError(
             "options_v3_portfolio_selected must be a list"
         )
+
+    existing_raw = load(
+        "options_v3_positions.json",
+        [],
+    )
+    previously_closed = load(
+        "options_v3_positions_closed.json",
+        [],
+    )
 
     if not isinstance(existing_raw, list):
         raise RuntimeError(
@@ -356,111 +539,43 @@ def update_positions():
         if not isinstance(selected, dict):
             continue
 
-        structure_id = build_structure_id_v3(selected)
+        structure_id = build_structure_id_v3(
+            selected
+        )
 
         if structure_id in selected_map:
-            # Same exact contract structure in one allocation run:
-            # one canonical opening only.
+            # Same exact contract structure in one
+            # allocation run: one canonical opening only.
             continue
 
         selected_map[structure_id] = selected
 
-    # Start from the persistent inventory. Current-run selection is only
-    # a source of NEW openings or fresh capability context; it is never
-    # the source of truth for whether an existing position still exists.
-    inventory = list(existing)
-
-    for structure_id, selected in selected_map.items():
-        if structure_id not in existing_map:
-            pos = _build_new_position_v3(selected)
-            inventory.append(pos)
-            existing_map[structure_id] = pos
-
-    open_positions = []
+    open_positions = list(existing)
     newly_closed = []
 
-    for stored_position in inventory:
-        pos = dict(stored_position)
-
-        selected = selected_map.get(
-            pos["structure_id"]
-        )
-
-        lifecycle_input = dict(pos)
-
-        if selected is not None:
-            # Fresh context may enrich lifecycle evaluation, but immutable
-            # opening identity/state remains owned by the inventory.
-            lifecycle_input.update(selected)
-            lifecycle_input["position_id"] = pos["position_id"]
-            lifecycle_input["structure_id"] = pos["structure_id"]
-            lifecycle_input["opened_at"] = pos["opened_at"]
-            lifecycle_input["entry_risk_eur"] = pos.get(
-                "entry_risk_eur",
-                0,
-            )
-
-        # RC2 valuation contract:
-        # no synthetic PnL is permitted.
-        lifecycle_input["pnl_eur"] = None
-        lifecycle_input["pnl_pct"] = None
-        lifecycle_input["pnl_status"] = PNL_STATUS_UNAVAILABLE
-        lifecycle_input[
-            "pnl_provenance_status"
-        ] = PNL_PROVENANCE_STATUS
-
-        evaluated = evaluate_position_capabilities_v3(
-            lifecycle_input
-        )
-
-        pos.update(evaluated)
-
-        # Preserve immutable inventory identity/opening state.
-        pos["position_id"] = stored_position["position_id"]
-        pos["structure_id"] = stored_position["structure_id"]
-        pos["opened_at"] = stored_position["opened_at"]
-        pos["entry_risk_eur"] = stored_position.get(
-            "entry_risk_eur",
-            0,
-        )
-
-        # Capability enrichment must never reintroduce synthetic
-        # valuation.
-        pos["pnl_eur"] = None
-        pos["pnl_pct"] = None
-        pos["pnl_status"] = PNL_STATUS_UNAVAILABLE
-        pos[
-            "pnl_provenance_status"
-        ] = PNL_PROVENANCE_STATUS
-
-        opened_at = datetime.fromisoformat(
-            pos["opened_at"]
-        )
-        days = (now() - opened_at).days
-        pos["days_in_trade"] = days
-
-        if (
-            pos.get("capability_lifecycle_action")
-            == "SIMULATED_CLOSE_REVIEW"
-        ):
-            pos["status"] = "CLOSED"
-            pos["close_reason"] = (
-                pos.get("capability_rejection_reason")
-                or "OPTIONS_CAPABILITY_SAFETY_CLOSE"
-            )
-            pos["closed_at"] = now().isoformat()
-            newly_closed.append(pos)
+    for structure_id, selected in selected_map.items():
+        if structure_id in existing_map:
+            # Persistent existing position has already
+            # completed lifecycle evaluation this cycle.
             continue
 
-        if days >= MAX_DAYS:
-            pos["status"] = "CLOSED"
-            pos["close_reason"] = "MAX_HOLD_DAYS"
-            pos["closed_at"] = now().isoformat()
-            newly_closed.append(pos)
-            continue
+        new_position = _build_new_position_v3(
+            selected
+        )
 
-        pos["status"] = "OPEN"
-        open_positions.append(pos)
+        opened, closed = (
+            _evaluate_position_lifecycle_v3(
+                new_position,
+                selected_context=selected,
+            )
+        )
+
+        if opened is not None:
+            open_positions.append(opened)
+            existing_map[structure_id] = opened
+
+        if closed is not None:
+            newly_closed.append(closed)
 
     closed_all = _append_closed_unique_v3(
         previously_closed,
@@ -477,6 +592,29 @@ def update_positions():
     )
 
     return open_positions, closed_all
+
+
+def update_positions(
+    portfolio_override=None,
+):
+    # Backward-compatible one-shot wrapper.
+    #
+    # Existing inventory is reconciled exactly once.
+    # New selected structures are then opened without
+    # reevaluating surviving existing positions.
+    reconcile_existing_positions_v3()
+
+    if portfolio_override is None:
+        portfolio = load(
+            "options_v3_portfolio_selected.json",
+            [],
+        )
+    else:
+        portfolio = portfolio_override
+
+    return open_selected_positions_v3(
+        portfolio
+    )
 
 if __name__ == "__main__":
     print("===== OPTIONS V3 POSITION MANAGER =====")

@@ -54,52 +54,132 @@ def deduplicate_by_ticker(candidates: List[Dict[str, Any]]) -> List[Dict[str, An
 def allocate_portfolio(
     candidates: List[Dict[str, Any]],
     capital_eur: float = 10000.0,
-    max_total_options_exposure_pct: float = 0.50,
-    max_trade_risk_pct: float = 0.20,
+    max_total_options_exposure_pct: float = 0.5,
+    max_trade_risk_pct: float = 0.2,
+    existing_used_risk_eur: float = 0.0,
 ) -> Dict[str, Any]:
-    max_total_risk = capital_eur * max_total_options_exposure_pct
-    max_trade_risk = capital_eur * max_trade_risk_pct
+    max_total_risk = (
+        capital_eur
+        * max_total_options_exposure_pct
+    )
+    max_trade_risk = (
+        capital_eur
+        * max_trade_risk_pct
+    )
+
+    try:
+        existing_used_risk = float(
+            existing_used_risk_eur
+        )
+    except (TypeError, ValueError):
+        raise ValueError(
+            "existing_used_risk_eur must be numeric"
+        )
+
+    if existing_used_risk < 0.0:
+        raise ValueError(
+            "existing_used_risk_eur must be non-negative"
+        )
 
     selected = []
     rejected = []
-    used_risk = 0.0
+
+    used_risk = existing_used_risk
+    new_allocated_risk = 0.0
 
     deduped = deduplicate_by_ticker(candidates)
 
     for c in deduped:
-        risk = float(c.get("estimated_risk_eur") or 0)
+        risk = float(
+            c.get("estimated_risk_eur") or 0
+        )
 
         if risk <= 0:
-            rejected.append({**c, "portfolio_reject_reason": "missing_risk"})
+            rejected.append(
+                {
+                    **c,
+                    "portfolio_reject_reason":
+                        "missing_risk",
+                }
+            )
             continue
 
         if risk > max_trade_risk:
-            rejected.append({**c, "portfolio_reject_reason": "trade_risk_above_cap"})
+            rejected.append(
+                {
+                    **c,
+                    "portfolio_reject_reason":
+                        "trade_risk_above_cap",
+                }
+            )
             continue
 
         if used_risk + risk > max_total_risk:
-            rejected.append({**c, "portfolio_reject_reason": "total_options_risk_cap"})
+            rejected.append(
+                {
+                    **c,
+                    "portfolio_reject_reason":
+                        "total_options_risk_cap",
+                }
+            )
             continue
 
         allocation_weight = risk / capital_eur
 
-        selected.append({
-            **c,
-            "allocated_risk_eur": round(risk, 2),
-            "target_weight": round(allocation_weight, 4),
-            "portfolio_status": "SELECTED",
-        })
+        selected.append(
+            {
+                **c,
+                "allocated_risk_eur":
+                    round(risk, 2),
+                "target_weight":
+                    round(allocation_weight, 4),
+                "portfolio_status":
+                    "SELECTED",
+            }
+        )
 
         used_risk += risk
+        new_allocated_risk += risk
+
+    available_before_new = max(
+        0.0,
+        max_total_risk - existing_used_risk,
+    )
+
+    available_after_new = max(
+        0.0,
+        max_total_risk - used_risk,
+    )
 
     return {
         "capital_eur": capital_eur,
-        "max_total_options_exposure_pct": max_total_options_exposure_pct,
-        "max_trade_risk_pct": max_trade_risk_pct,
-        "max_total_risk_eur": round(max_total_risk, 2),
-        "max_trade_risk_eur": round(max_trade_risk, 2),
-        "used_risk_eur": round(used_risk, 2),
-        "used_risk_pct": round(used_risk / capital_eur, 4) if capital_eur else 0,
+        "max_total_options_exposure_pct":
+            max_total_options_exposure_pct,
+        "max_trade_risk_pct":
+            max_trade_risk_pct,
+        "max_total_risk_eur":
+            round(max_total_risk, 2),
+        "max_trade_risk_eur":
+            round(max_trade_risk, 2),
+        "existing_used_risk_eur":
+            round(existing_used_risk, 2),
+        "available_risk_eur_before_new":
+            round(available_before_new, 2),
+        "new_allocated_risk_eur":
+            round(new_allocated_risk, 2),
+        "used_risk_eur":
+            round(used_risk, 2),
+        "available_risk_eur_after_new":
+            round(available_after_new, 2),
+        "used_risk_pct":
+            round(
+                used_risk / capital_eur,
+                4,
+            )
+            if capital_eur
+            else 0,
+        "risk_cap_breached_at_start":
+            existing_used_risk > max_total_risk,
         "selected_count": len(selected),
         "rejected_count": len(rejected),
         "selected": selected,

@@ -13,7 +13,11 @@ import json
 from pathlib import Path
 from datetime import datetime, timezone
 from options_portfolio_engine_v3 import allocate_portfolio
-from options_position_manager_v3 import update_positions
+from options_position_manager_v3 import (
+    calculate_open_risk_v3,
+    open_selected_positions_v3,
+    reconcile_existing_positions_v3,
+)
 from providers.yfinance_option_chain_provider_v3 import (
     OptionChainProviderError,
     fetch_normalized_option_chain,
@@ -1037,6 +1041,23 @@ def main():
         options_capital_eur * 0.20
     )
 
+    # Existing inventory is lifecycle-evaluated before
+    # any new sizing/allocation. Current candidate selection
+    # must never define whether an already-open position exists.
+    pre_allocation_open_positions, _ = (
+        reconcile_existing_positions_v3()
+    )
+
+    existing_used_risk_eur = calculate_open_risk_v3(
+        pre_allocation_open_positions
+    )
+
+    options_available_risk_eur = max(
+        0.0,
+        options_max_total_risk_eur
+        - existing_used_risk_eur,
+    )
+
     for c in candidates_raw:
         contract_selection_error = None
 
@@ -1072,7 +1093,7 @@ def main():
                     c,
                     risk_context={
                         "internal_available_risk_eur":
-                            options_max_total_risk_eur,
+                            options_available_risk_eur,
                         "internal_max_trade_risk_eur":
                             options_max_trade_risk_eur,
                     },
@@ -1155,6 +1176,7 @@ def main():
         capital_eur=options_capital_eur,
         max_total_options_exposure_pct=0.50,
         max_trade_risk_pct=0.20,
+        existing_used_risk_eur=existing_used_risk_eur,
     )
 
 
@@ -1241,7 +1263,46 @@ def main():
     save("options_v3_portfolio_selected.json", portfolio.get("selected", []))
     save("options_v3_portfolio_rejected.json", portfolio.get("rejected", []))
 
-    open_positions, closed_positions = update_positions()
+    open_positions, closed_positions = (
+        open_selected_positions_v3(
+            portfolio.get("selected", [])
+        )
+    )
+
+    # Reconcile risk to the actual surviving OPEN inventory.
+    # This is the canonical post-lifecycle risk state.
+    final_open_risk_eur = calculate_open_risk_v3(
+        open_positions
+    )
+
+    portfolio["planned_used_risk_eur"] = (
+        portfolio.get("used_risk_eur", 0)
+    )
+    portfolio["final_open_risk_eur"] = round(
+        final_open_risk_eur,
+        2,
+    )
+    portfolio["used_risk_eur"] = round(
+        final_open_risk_eur,
+        2,
+    )
+    portfolio["used_risk_pct"] = round(
+        final_open_risk_eur / options_capital_eur,
+        4,
+    )
+    portfolio["available_risk_eur_after_new"] = round(
+        max(
+            0.0,
+            options_max_total_risk_eur
+            - final_open_risk_eur,
+        ),
+        2,
+    )
+    portfolio["risk_reconciliation_status"] = (
+        "RECONCILED_TO_OPEN_INVENTORY"
+    )
+
+    save("options_v3_portfolio.json", portfolio)
 
 
     save("options_v3_candidates_validated.json", candidates_validated)
@@ -1254,6 +1315,45 @@ def main():
         "open": len(open_positions_file),
         "closed": len(closed_positions_file),
     }
+
+    dashboard["portfolio"].update(
+        {
+            "existing_used_risk_eur":
+                portfolio.get(
+                    "existing_used_risk_eur",
+                    0,
+                ),
+            "new_allocated_risk_eur":
+                portfolio.get(
+                    "new_allocated_risk_eur",
+                    0,
+                ),
+            "planned_used_risk_eur":
+                portfolio.get(
+                    "planned_used_risk_eur",
+                    0,
+                ),
+            "used_risk_eur":
+                portfolio.get(
+                    "used_risk_eur",
+                    0,
+                ),
+            "used_risk_pct":
+                portfolio.get(
+                    "used_risk_pct",
+                    0,
+                ),
+            "available_risk_eur_after_new":
+                portfolio.get(
+                    "available_risk_eur_after_new",
+                    0,
+                ),
+            "risk_reconciliation_status":
+                portfolio.get(
+                    "risk_reconciliation_status"
+                ),
+        }
+    )
 
     save("options_v3_dashboard.json", dashboard)
 
