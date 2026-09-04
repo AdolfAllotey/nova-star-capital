@@ -665,6 +665,271 @@ def build_cache_payload(
     }
 
 
+
+def _normalize_position_quote_v3(
+    row: dict[str, Any],
+    *,
+    ticker: str,
+    expiration: str,
+    option_type: str,
+    provider_timestamp: str,
+) -> dict[str, Any]:
+    """
+    Normalize a quote for an already-held option contract.
+
+    This path is intentionally different from new-entry normalization:
+    - zero bid is permitted;
+    - no liquidity gate is applied;
+    - exact contract identity is preserved;
+    - only finite, internally coherent market quotes are accepted.
+    """
+    normalized_type = str(option_type).upper().strip()
+
+    if normalized_type not in {"CALL", "PUT"}:
+        raise OptionChainValidationError(
+            "position_quote: unsupported option_type"
+        )
+
+    contract_symbol = str(
+        row.get("contractSymbol") or ""
+    ).strip()
+
+    if not contract_symbol:
+        raise OptionChainValidationError(
+            "position_quote: contract_symbol required"
+        )
+
+    bid = finite_float(
+        row.get("bid"),
+        field="position_quote.bid",
+        allow_zero=True,
+    )
+
+    ask = finite_float(
+        row.get("ask"),
+        field="position_quote.ask",
+        allow_zero=True,
+    )
+
+    if ask < bid:
+        raise OptionChainValidationError(
+            "position_quote: ask lower than bid"
+        )
+
+    if ask <= 0.0 and bid <= 0.0:
+        raise OptionChainValidationError(
+            "position_quote: no positive executable quote"
+        )
+
+    strike = finite_float(
+        row.get("strike"),
+        field="position_quote.strike",
+        allow_zero=False,
+    )
+
+    contract_size = str(
+        row.get("contractSize") or ""
+    ).upper()
+
+    if contract_size != "REGULAR":
+        raise OptionChainValidationError(
+            "position_quote.contract_size: "
+            "only REGULAR contracts are accepted"
+        )
+
+    currency = str(
+        row.get("currency") or ""
+    ).upper()
+
+    if currency != "USD":
+        raise OptionChainValidationError(
+            "position_quote.currency: "
+            "only USD contracts are accepted"
+        )
+
+    return {
+        "ticker": str(ticker).upper().strip(),
+        "provider": PROVIDER_NAME,
+        "provider_version": PROVIDER_VERSION,
+        "provider_timestamp": provider_timestamp,
+        "expiration": str(expiration),
+        "option_type": normalized_type,
+        "contract_symbol": contract_symbol,
+        "strike": round(strike, 8),
+        "bid": round(bid, 8),
+        "ask": round(ask, 8),
+        "last_price": optional_finite_float(
+            row.get("lastPrice")
+        ),
+        "last_trade_date": (
+            str(row.get("lastTradeDate"))
+            if row.get("lastTradeDate") is not None
+            else None
+        ),
+        "contract_size": contract_size,
+        "currency": currency,
+        "valuation_use": "EXISTING_POSITION",
+        "read_only_market_data": True,
+        "real_execution_allowed": False,
+    }
+
+
+def fetch_position_contract_quotes_v3(
+    ticker: str,
+    *,
+    expiration: str,
+    contract_symbols: list[str],
+    ticker_factory: Callable[[str], Any] = yf.Ticker,
+    valuation_datetime: datetime | None = None,
+) -> dict[str, Any]:
+    """
+    Retrieve exact quotes for contracts already held.
+
+    No target-DTE selection and no new-entry liquidity gate are used.
+    Every requested contract must be found and valid, otherwise the
+    valuation request fails closed.
+    """
+    ticker_symbol = str(ticker).upper().strip()
+
+    if not ticker_symbol:
+        raise OptionChainValidationError(
+            "position_quote: ticker required"
+        )
+
+    expiry = parse_expiration(expiration)
+
+    if not isinstance(contract_symbols, list):
+        raise OptionChainValidationError(
+            "position_quote: contract_symbols must be a list"
+        )
+
+    requested = []
+
+    for raw_symbol in contract_symbols:
+        symbol = str(raw_symbol or "").strip()
+
+        if not symbol:
+            raise OptionChainValidationError(
+                "position_quote: empty contract symbol"
+            )
+
+        if symbol in requested:
+            raise OptionChainValidationError(
+                "position_quote: duplicate contract symbol"
+            )
+
+        requested.append(symbol)
+
+    if not requested:
+        raise OptionChainValidationError(
+            "position_quote: contract symbols required"
+        )
+
+    current = valuation_datetime or utc_now()
+
+    if current.tzinfo is None:
+        current = current.replace(
+            tzinfo=timezone.utc
+        )
+
+    if expiry < current.date():
+        raise OptionChainValidationError(
+            "position_quote: expired contract"
+        )
+
+    provider_timestamp = iso_utc(current)
+
+    ticker_object = ticker_factory(
+        ticker_symbol
+    )
+
+    try:
+        expirations = {
+            str(item)
+            for item in (ticker_object.options or [])
+        }
+    except Exception as exc:
+        raise OptionChainUnavailableError(
+            f"position_quote: expiration retrieval failed: {exc}"
+        ) from exc
+
+    expiry_text = expiry.isoformat()
+
+    if expiry_text not in expirations:
+        raise OptionChainUnavailableError(
+            "position_quote: exact expiration unavailable"
+        )
+
+    try:
+        chain = ticker_object.option_chain(
+            expiry_text
+        )
+    except Exception as exc:
+        raise OptionChainUnavailableError(
+            f"position_quote: option chain retrieval failed: {exc}"
+        ) from exc
+
+    found: dict[str, dict[str, Any]] = {}
+
+    for option_type, frame in (
+        ("CALL", chain.calls),
+        ("PUT", chain.puts),
+    ):
+        for row in dataframe_rows(frame):
+            symbol = str(
+                row.get("contractSymbol") or ""
+            ).strip()
+
+            if symbol not in requested:
+                continue
+
+            if symbol in found:
+                raise OptionChainValidationError(
+                    "position_quote: duplicate provider contract"
+                )
+
+            found[symbol] = _normalize_position_quote_v3(
+                row,
+                ticker=ticker_symbol,
+                expiration=expiry_text,
+                option_type=option_type,
+                provider_timestamp=provider_timestamp,
+            )
+
+    missing = [
+        symbol
+        for symbol in requested
+        if symbol not in found
+    ]
+
+    if missing:
+        raise OptionChainUnavailableError(
+            "position_quote: requested contract unavailable: "
+            + ",".join(sorted(missing))
+        )
+
+    quotes = [
+        found[symbol]
+        for symbol in requested
+    ]
+
+    return {
+        "metadata": {
+            "provider": PROVIDER_NAME,
+            "provider_version": PROVIDER_VERSION,
+            "ticker": ticker_symbol,
+            "expiration": expiry_text,
+            "retrieval_timestamp": provider_timestamp,
+            "requested_contract_count": len(requested),
+            "returned_contract_count": len(quotes),
+            "lookup_policy": "EXACT_HELD_CONTRACTS",
+            "liquidity_gate_applied": False,
+            "read_only_market_data": True,
+            "real_execution_allowed": False,
+        },
+        "contracts": quotes,
+    }
+
 def fetch_normalized_option_chain(
     ticker: str,
     *,
