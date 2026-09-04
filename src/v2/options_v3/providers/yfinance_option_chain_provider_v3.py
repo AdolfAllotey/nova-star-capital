@@ -37,6 +37,10 @@ class OptionChainUnavailableError(OptionChainProviderError):
     """Raised when no usable provider response or fresh cache exists."""
 
 
+class OptionChainNoEligibleContractError(OptionChainProviderError):
+    """Raised when usable chain data has no eligible liquid contract."""
+
+
 class OptionChainValidationError(OptionChainProviderError):
     """Raised when provider data does not satisfy the contract."""
 
@@ -835,7 +839,7 @@ def fetch_normalized_option_chain(
                 })
 
     if not normalized_contracts:
-        raise OptionChainUnavailableError(
+        raise OptionChainNoEligibleContractError(
             "no contract passed validation and liquidity gates"
         )
 
@@ -879,6 +883,7 @@ def fetch_normalized_option_chain(
 __all__ = [
     "OptionChainProviderError",
     "OptionChainUnavailableError",
+    "OptionChainNoEligibleContractError",
     "OptionChainValidationError",
     "atomic_write_json",
     "build_cache_payload",
