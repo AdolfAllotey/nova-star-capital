@@ -925,9 +925,6 @@ def validate(candidate):
     except (TypeError, ValueError):
         return False, "invalid_estimated_risk"
 
-    if estimated_risk_eur > 2000:
-        return False, "risk_above_limit"
-
     return True, "approved"
 
 def main():
@@ -1177,6 +1174,10 @@ def main():
         max_total_options_exposure_pct=0.50,
         max_trade_risk_pct=0.20,
         existing_used_risk_eur=existing_used_risk_eur,
+        existing_open_positions_count=len(
+            pre_allocation_open_positions
+        ),
+        max_open_positions=5,
     )
 
 

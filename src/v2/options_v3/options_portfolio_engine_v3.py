@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from math import isfinite
 from typing import List, Dict, Any
 
 ROLE_PRIORITY = {
@@ -57,6 +58,8 @@ def allocate_portfolio(
     max_total_options_exposure_pct: float = 0.5,
     max_trade_risk_pct: float = 0.2,
     existing_used_risk_eur: float = 0.0,
+    existing_open_positions_count: int = 0,
+    max_open_positions: int = 5,
 ) -> Dict[str, Any]:
     max_total_risk = (
         capital_eur
@@ -76,9 +79,54 @@ def allocate_portfolio(
             "existing_used_risk_eur must be numeric"
         )
 
-    if existing_used_risk < 0.0:
+    if (
+        not isfinite(existing_used_risk)
+        or existing_used_risk < 0.0
+    ):
         raise ValueError(
-            "existing_used_risk_eur must be non-negative"
+            "existing_used_risk_eur must be finite and non-negative"
+        )
+
+    def _strict_non_bool_integer(value, name):
+        if isinstance(value, bool):
+            raise ValueError(
+                f"{name} must be an integer"
+            )
+
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"{name} must be an integer"
+            )
+
+        if (
+            not isfinite(numeric)
+            or not numeric.is_integer()
+        ):
+            raise ValueError(
+                f"{name} must be an integer"
+            )
+
+        return int(numeric)
+
+    existing_open_count = _strict_non_bool_integer(
+        existing_open_positions_count,
+        "existing_open_positions_count",
+    )
+    position_limit = _strict_non_bool_integer(
+        max_open_positions,
+        "max_open_positions",
+    )
+
+    if existing_open_count < 0:
+        raise ValueError(
+            "existing_open_positions_count must be non-negative"
+        )
+
+    if position_limit <= 0:
+        raise ValueError(
+            "max_open_positions must be positive"
         )
 
     selected = []
@@ -110,6 +158,19 @@ def allocate_portfolio(
                     **c,
                     "portfolio_reject_reason":
                         "trade_risk_above_cap",
+                }
+            )
+            continue
+
+        if (
+            existing_open_count + len(selected)
+            >= position_limit
+        ):
+            rejected.append(
+                {
+                    **c,
+                    "portfolio_reject_reason":
+                        "max_open_positions_reached",
                 }
             )
             continue
@@ -180,6 +241,19 @@ def allocate_portfolio(
             else 0,
         "risk_cap_breached_at_start":
             existing_used_risk > max_total_risk,
+        "existing_open_positions_count":
+            existing_open_count,
+        "max_open_positions":
+            position_limit,
+        "planned_open_positions_count":
+            existing_open_count + len(selected),
+        "position_cap_reached":
+            (
+                existing_open_count + len(selected)
+                >= position_limit
+            ),
+        "position_cap_breached_at_start":
+            existing_open_count > position_limit,
         "selected_count": len(selected),
         "rejected_count": len(rejected),
         "selected": selected,
