@@ -6,6 +6,7 @@ from options_data_adapter_v3 import (
 )
 from options_greeks_engine_v3 import calculate_option_greeks_v3
 from options_contract_sizing_v3 import calculate_contract_quantity_v3
+from src.v2.core.fx import FXService, FXServiceError
 from options_expiration_policy_v3 import select_expiration_v3
 
 #!/usr/bin/env python3
@@ -54,6 +55,9 @@ def enrich_candidate_capabilities_v3(
     candidate: dict,
     risk_context: dict,
     valuation_timestamp=None,
+    *,
+    usd_eur_fx_rate=None,
+    usd_eur_fx_provenance=None,
 ) -> dict:
     enriched = dict(candidate)
 
@@ -111,66 +115,26 @@ def enrich_candidate_capabilities_v3(
         sizing_input = adapt_sizing_input_v3(
             enriched,
             risk_context,
+            usd_eur_rate=usd_eur_fx_rate,
         )
 
         sizing_kwargs = sizing_input.to_dict()
 
         if enriched.get("strategy") == "covered_call":
-            underlying_quantity = enriched.get(
-                "underlying_equity_quantity"
+            raise OptionsDataAdapterError(
+                "covered_call: certified EUR risk model required"
             )
 
-            try:
-                underlying_quantity = int(
-                    float(underlying_quantity or 0)
-                )
-            except (TypeError, ValueError):
-                underlying_quantity = 0
+        sizing = calculate_contract_quantity_v3(
+            **sizing_kwargs
+        )
 
-            covered_contract_capacity = (
-                underlying_quantity // 100
-            )
-
-            if covered_contract_capacity <= 0:
-                raise OptionsDataAdapterError(
-                    "covered_call: insufficient underlying shares"
-                )
-
-            sizing_payload = {
-                "contract_quantity": covered_contract_capacity,
-                "estimated_risk_eur": float(
-                    enriched.get("estimated_risk_eur") or 0.0
-                ),
-                "risk_budget_eur": float(
-                    sizing_input.max_trade_risk_eur
-                ),
-                "maximum_loss_per_contract": None,
-                "contract_multiplier": (
-                    sizing_input.contract_multiplier
-                ),
-                "sizing_reason": (
-                    "covered_call_capacity_from_existing_equity"
-                ),
-                "sizing_valid": True,
-                "underlying_equity_quantity": (
-                    underlying_quantity
-                ),
-                "covered_contract_capacity": (
-                    covered_contract_capacity
-                ),
-            }
-
+        if hasattr(sizing, "to_dict"):
+            sizing_payload = sizing.to_dict()
+        elif hasattr(sizing, "__dict__"):
+            sizing_payload = dict(sizing.__dict__)
         else:
-            sizing = calculate_contract_quantity_v3(
-                **sizing_kwargs
-            )
-
-            if hasattr(sizing, "to_dict"):
-                sizing_payload = sizing.to_dict()
-            elif hasattr(sizing, "__dict__"):
-                sizing_payload = dict(sizing.__dict__)
-            else:
-                sizing_payload = dict(sizing)
+            sizing_payload = dict(sizing)
 
         quantity = int(
             sizing_payload.get(
@@ -187,6 +151,11 @@ def enrich_candidate_capabilities_v3(
 
         enriched["contract_sizing"] = sizing_payload
         enriched["contract_quantity"] = quantity
+        enriched["sizing_currency"] = "EUR"
+        enriched["contract_economics_source_currency"] = "USD"
+        enriched["sizing_fx"] = dict(
+            usd_eur_fx_provenance or {}
+        )
 
         # Preserve the pre-sizing estimate for audit/explainability, but
         # promote the post-sizing risk as the canonical downstream risk.
@@ -1055,6 +1024,21 @@ def main():
         - existing_used_risk_eur,
     )
 
+    try:
+        sizing_fx_rate = FXService().get_rate(
+            "USD",
+            "EUR",
+        )
+    except FXServiceError as exc:
+        raise RuntimeError(
+            f"options_v3_sizing_fx_unavailable:{exc}"
+        ) from exc
+
+    sizing_usd_eur_rate = float(
+        sizing_fx_rate.rate
+    )
+    sizing_fx_provenance = sizing_fx_rate.to_dict()
+
     for c in candidates_raw:
         contract_selection_error = None
 
@@ -1094,6 +1078,12 @@ def main():
                         "internal_max_trade_risk_eur":
                             options_max_trade_risk_eur,
                     },
+                    usd_eur_fx_rate=(
+                        sizing_usd_eur_rate
+                    ),
+                    usd_eur_fx_provenance=(
+                        sizing_fx_provenance
+                    ),
                 )
 
                 if (

@@ -300,6 +300,8 @@ def adapt_greeks_input_v3(
 def adapt_sizing_input_v3(
     candidate: dict[str, Any],
     risk_context: dict[str, Any],
+    *,
+    usd_eur_rate: float | None = None,
 ) -> AdaptedSizingInputV3:
     available, _ = _first_present(
         risk_context,
@@ -379,6 +381,36 @@ def adapt_sizing_input_v3(
             "maximum_loss_per_contract",
         )
 
+    # Options contract economics are provider-denominated in USD,
+    # while Portfolio risk budgets and caps are canonical EUR.
+    #
+    # Fail closed unless an explicit certified USD/EUR rate is
+    # supplied by the caller. The adapter remains deterministic:
+    # it performs no provider/cache/network access itself.
+    if usd_eur_rate is None:
+        raise OptionsDataAdapterError(
+            "sizing_fx: certified USD/EUR rate required"
+        )
+
+    fx_rate = _positive_float(
+        usd_eur_rate,
+        "usd_eur_rate",
+    )
+
+    premium_eur = (
+        _positive_float(
+            premium,
+            "premium_per_contract_usd",
+        )
+        * fx_rate
+    )
+
+    maximum_loss_eur = (
+        maximum_loss * fx_rate
+        if maximum_loss is not None
+        else None
+    )
+
     return AdaptedSizingInputV3(
         available_risk_eur=_finite_float(
             available,
@@ -390,11 +422,11 @@ def adapt_sizing_input_v3(
             "max_trade_risk_eur",
         ),
         premium_per_contract=_positive_float(
-            premium,
-            "premium_per_contract",
+            premium_eur,
+            "premium_per_contract_eur",
         ),
         contract_multiplier=multiplier,
-        maximum_loss_per_contract=maximum_loss,
+        maximum_loss_per_contract=maximum_loss_eur,
     )
 
 
