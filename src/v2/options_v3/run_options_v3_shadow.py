@@ -22,6 +22,11 @@ from options_position_manager_v3 import (
 from providers.yfinance_option_chain_provider_v3 import (
     OptionChainProviderError,
     fetch_normalized_option_chain,
+    fetch_position_contract_quotes_v3,
+)
+from options_position_valuation_v3 import (
+    OptionsPositionValuationError,
+    value_open_position_v3,
 )
 from options_iv_history_v3 import (
     IVObservationError,
@@ -896,6 +901,147 @@ def validate(candidate):
 
     return True, "approved"
 
+def build_existing_position_valuations_v3(
+    open_positions: list,
+    *,
+    usd_eur_rate: float,
+    fx_provenance: dict,
+    quote_fetcher=fetch_position_contract_quotes_v3,
+) -> tuple[dict, dict]:
+    if not isinstance(open_positions, list):
+        raise RuntimeError(
+            "options_v3_valuation_orchestration: "
+            "open_positions must be a list"
+        )
+
+    valuations = {}
+    failures = {}
+
+    for position in open_positions:
+        if not isinstance(position, dict):
+            continue
+
+        position_id = str(
+            position.get("position_id") or ""
+        ).strip()
+        ticker = str(
+            position.get("ticker") or ""
+        ).strip().upper()
+        expiration = str(
+            position.get("expiration") or ""
+        ).strip()
+
+        legs = position.get("contract_legs")
+
+        if (
+            not position_id
+            or not ticker
+            or not expiration
+            or not isinstance(legs, list)
+            or not legs
+        ):
+            key = position_id or "<unknown>"
+            failures[key] = (
+                "INVALID_CANONICAL_POSITION"
+            )
+            continue
+
+        contract_symbols = []
+
+        invalid_leg = False
+
+        for leg in legs:
+            if not isinstance(leg, dict):
+                invalid_leg = True
+                break
+
+            symbol = str(
+                leg.get("contract_symbol") or ""
+            ).strip()
+
+            if not symbol:
+                invalid_leg = True
+                break
+
+            contract_symbols.append(symbol)
+
+        if invalid_leg or not contract_symbols:
+            failures[position_id] = (
+                "INVALID_CANONICAL_CONTRACT_LEGS"
+            )
+            continue
+
+        try:
+            quote_payload = quote_fetcher(
+                ticker,
+                expiration=expiration,
+                contract_symbols=contract_symbols,
+            )
+
+            if not isinstance(quote_payload, dict):
+                raise RuntimeError(
+                    "held-contract quote payload must be dict"
+                )
+
+            quotes = quote_payload.get("contracts")
+            metadata = quote_payload.get("metadata")
+
+            if not isinstance(quotes, list) or not quotes:
+                raise RuntimeError(
+                    "held-contract quotes unavailable"
+                )
+
+            if not isinstance(metadata, dict):
+                raise RuntimeError(
+                    "held-contract quote metadata required"
+                )
+
+            valuation = value_open_position_v3(
+                position,
+                quotes,
+                usd_eur_rate=usd_eur_rate,
+                fx_provenance=fx_provenance,
+            )
+
+            valuation["market_data_provenance"] = {
+                "provider": metadata.get("provider"),
+                "provider_version": metadata.get(
+                    "provider_version"
+                ),
+                "ticker": metadata.get("ticker"),
+                "expiration": metadata.get("expiration"),
+                "retrieval_timestamp": metadata.get(
+                    "retrieval_timestamp"
+                ),
+                "requested_contract_count": metadata.get(
+                    "requested_contract_count"
+                ),
+                "returned_contract_count": metadata.get(
+                    "returned_contract_count"
+                ),
+                "lookup_policy": metadata.get(
+                    "lookup_policy"
+                ),
+                "liquidity_gate_applied": metadata.get(
+                    "liquidity_gate_applied"
+                ),
+                "market_quote_age_verified": False,
+            }
+
+            valuations[position_id] = valuation
+
+        except (
+            OptionChainProviderError,
+            OptionsPositionValuationError,
+            RuntimeError,
+        ) as exc:
+            failures[position_id] = (
+                f"{type(exc).__name__}:{exc}"
+            )
+
+    return valuations, failures
+
+
 def main():
     open_positions = []
     closed_positions = []
@@ -1007,11 +1153,56 @@ def main():
         options_capital_eur * 0.20
     )
 
+    # One certified USD/EUR snapshot is shared by existing
+    # position valuation and new-position sizing in this cycle.
+    try:
+        cycle_fx_rate = FXService().get_rate(
+            "USD",
+            "EUR",
+        )
+    except FXServiceError as exc:
+        raise RuntimeError(
+            f"options_v3_cycle_fx_unavailable:{exc}"
+        ) from exc
+
+    cycle_usd_eur_rate = float(
+        cycle_fx_rate.rate
+    )
+    cycle_fx_provenance = cycle_fx_rate.to_dict()
+
+    # Read the canonical inventory before lifecycle reconciliation
+    # so exact held-contract marks can be injected into that pass.
+    existing_inventory = load(
+        OUT / "options_v3_positions.json",
+        [],
+    )
+
+    if not isinstance(existing_inventory, list):
+        raise RuntimeError(
+            "options_v3_positions must be a list"
+        )
+
+    existing_valuations, valuation_failures = (
+        build_existing_position_valuations_v3(
+            existing_inventory,
+            usd_eur_rate=cycle_usd_eur_rate,
+            fx_provenance=cycle_fx_provenance,
+        )
+    )
+
     # Existing inventory is lifecycle-evaluated before
     # any new sizing/allocation. Current candidate selection
     # must never define whether an already-open position exists.
+    #
+    # A position without a certified current valuation remains
+    # OPEN with PnL unavailable; another position's market-data
+    # failure must not fabricate a mark or close the inventory.
     pre_allocation_open_positions, _ = (
-        reconcile_existing_positions_v3()
+        reconcile_existing_positions_v3(
+            valuations_by_position_id=(
+                existing_valuations
+            ),
+        )
     )
 
     existing_used_risk_eur = calculate_open_risk_v3(
@@ -1024,20 +1215,11 @@ def main():
         - existing_used_risk_eur,
     )
 
-    try:
-        sizing_fx_rate = FXService().get_rate(
-            "USD",
-            "EUR",
-        )
-    except FXServiceError as exc:
-        raise RuntimeError(
-            f"options_v3_sizing_fx_unavailable:{exc}"
-        ) from exc
-
-    sizing_usd_eur_rate = float(
-        sizing_fx_rate.rate
+    # The exact same certified FX snapshot is reused for sizing.
+    sizing_usd_eur_rate = cycle_usd_eur_rate
+    sizing_fx_provenance = dict(
+        cycle_fx_provenance
     )
-    sizing_fx_provenance = sizing_fx_rate.to_dict()
 
     for c in candidates_raw:
         contract_selection_error = None
@@ -1187,9 +1369,22 @@ def main():
         )
     ]
 
+    position_valuation_failure_count = len(
+        valuation_failures
+    )
+
+    position_valuation_status = (
+        "DEGRADED"
+        if position_valuation_failure_count
+        else "COMPLETE"
+    )
+
     pipeline_status = (
         "degraded"
-        if infrastructure_failure_reasons
+        if (
+            infrastructure_failure_reasons
+            or position_valuation_failure_count
+        )
         else "ok"
     )
 
@@ -1215,6 +1410,12 @@ def main():
             "infrastructure_failure_count": len(
                 infrastructure_failure_reasons
             ),
+            "position_valuation_status": (
+                position_valuation_status
+            ),
+            "position_valuation_failure_count": (
+                position_valuation_failure_count
+            ),
         },
         "kpis": {
             "signals_total": len(all_signals),
@@ -1225,6 +1426,19 @@ def main():
             "rejected_count": len([d for d in decisions if d["status"] == "REJECTED"]),
         },
         "decisions": decisions,
+        "position_valuation": {
+            "status": position_valuation_status,
+            "valued_position_count": len(
+                existing_valuations
+            ),
+            "failure_count": (
+                position_valuation_failure_count
+            ),
+            "failures": dict(
+                valuation_failures
+            ),
+            "market_quote_age_verified": False,
+        },
         "positions": {
             "open": len(load("options_v3_positions.json", [])),
             "closed": len(load("options_v3_positions_closed.json", []))
@@ -1354,6 +1568,15 @@ def main():
             "dashboard_artifact": True,
             "positions_artifact": True,
             "portfolio_artifact": True,
+            "position_valuation": (
+                position_valuation_status
+            ),
+            "position_valuation_failure_count": (
+                position_valuation_failure_count
+            ),
+            "position_valuation_failures": dict(
+                valuation_failures
+            ),
         },
         "mode": "SHADOW",
         "execution_allowed": False,

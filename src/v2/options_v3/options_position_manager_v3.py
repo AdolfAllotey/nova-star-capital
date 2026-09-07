@@ -260,6 +260,71 @@ def _prepare_existing_position_v3(position: dict) -> dict:
     return pos
 
 
+def _certified_entry_risk_provenance_v3(
+    selected: dict,
+) -> dict | None:
+    if selected.get("sizing_currency") != "EUR":
+        return None
+
+    if (
+        selected.get("contract_economics_source_currency")
+        != "USD"
+    ):
+        return None
+
+    fx = selected.get("sizing_fx")
+    if not isinstance(fx, dict) or not fx:
+        return None
+
+    if (
+        fx.get("base_currency") != "USD"
+        or fx.get("quote_currency") != "EUR"
+    ):
+        return None
+
+    try:
+        fx_rate = float(fx.get("rate"))
+        estimated = float(selected.get("estimated_risk_eur"))
+        allocated = float(selected.get("allocated_risk_eur"))
+    except (TypeError, ValueError):
+        return None
+
+    if (
+        not isfinite(fx_rate)
+        or fx_rate <= 0.0
+        or not isfinite(estimated)
+        or estimated <= 0.0
+        or not isfinite(allocated)
+        or allocated <= 0.0
+    ):
+        return None
+
+    if abs(allocated - round(estimated, 2)) > 1e-9:
+        return None
+
+    provider = str(fx.get("provider") or "").strip()
+    market_timestamp = str(
+        fx.get("market_timestamp") or ""
+    ).strip()
+    retrieved_at = str(
+        fx.get("retrieved_at") or ""
+    ).strip()
+
+    if not provider or not market_timestamp or not retrieved_at:
+        return None
+
+    return {
+        "contract_version": 1,
+        "currency": "EUR",
+        "source": "allocated_risk_eur",
+        "estimated_risk_eur": estimated,
+        "allocated_risk_eur": allocated,
+        "sizing_currency": "EUR",
+        "contract_economics_source_currency": "USD",
+        "sizing_fx": dict(fx),
+    }
+
+
 def _build_new_position_v3(selected: dict) -> dict:
     # Preserve the complete selected trade snapshot so the canonical
     # position retains contract identity, sizing and provenance.
@@ -278,6 +343,17 @@ def _build_new_position_v3(selected: dict) -> dict:
         "allocated_risk_eur",
         selected.get("estimated_risk_eur", 0),
     )
+
+    entry_risk_provenance = (
+        _certified_entry_risk_provenance_v3(selected)
+    )
+
+    if entry_risk_provenance is not None:
+        pos["entry_risk_currency"] = "EUR"
+        pos["entry_risk_source"] = "allocated_risk_eur"
+        pos["entry_risk_contract_version"] = 1
+        pos["entry_risk_provenance"] = entry_risk_provenance
+
     pos["status"] = "OPEN"
     pos["source"] = "options_v3_portfolio_selected"
 
@@ -351,9 +427,191 @@ def calculate_open_risk_v3(
     return round(total, 6)
 
 
+def _apply_certified_valuation_v3(
+    position: dict,
+    valuation: dict | None,
+) -> dict:
+    enriched = dict(position)
+
+    if valuation is None:
+        enriched["pnl_eur"] = None
+        enriched["pnl_pct"] = None
+        enriched["pnl_status"] = PNL_STATUS_UNAVAILABLE
+        enriched["pnl_provenance_status"] = (
+            PNL_PROVENANCE_STATUS
+        )
+        return enriched
+
+    if not isinstance(valuation, dict):
+        raise RuntimeError(
+            "options_v3_valuation: dict required"
+        )
+
+    if (
+        valuation.get("position_id")
+        != position.get("position_id")
+        or valuation.get("structure_id")
+        != position.get("structure_id")
+    ):
+        raise RuntimeError(
+            "options_v3_valuation: position identity mismatch"
+        )
+
+    if (
+        valuation.get("read_only_valuation") is not True
+        or valuation.get("real_execution_allowed") is not False
+        or valuation.get("valuation_currency") != "EUR"
+        or valuation.get("contract_economics_currency") != "USD"
+        or valuation.get("valuation_method")
+        != "EXECUTABLE_BID_ASK_LIQUIDATION"
+    ):
+        raise RuntimeError(
+            "options_v3_valuation: uncertified valuation contract"
+        )
+
+    fx_provenance = valuation.get("fx_provenance")
+    if not isinstance(fx_provenance, dict) or not fx_provenance:
+        raise RuntimeError(
+            "options_v3_valuation: FX provenance required"
+        )
+
+    if (
+        fx_provenance.get("base_currency") != "USD"
+        or fx_provenance.get("quote_currency") != "EUR"
+    ):
+        raise RuntimeError(
+            "options_v3_valuation: USD/EUR FX provenance required"
+        )
+
+    try:
+        valuation_fx_rate = float(
+            valuation.get("usd_eur_rate")
+        )
+        provenance_fx_rate = float(
+            fx_provenance.get("rate")
+        )
+    except (TypeError, ValueError):
+        raise RuntimeError(
+            "options_v3_valuation: valid FX rate required"
+        )
+
+    if (
+        not isfinite(valuation_fx_rate)
+        or valuation_fx_rate <= 0.0
+        or not isfinite(provenance_fx_rate)
+        or provenance_fx_rate <= 0.0
+        or abs(
+            valuation_fx_rate - provenance_fx_rate
+        ) > 1e-12
+    ):
+        raise RuntimeError(
+            "options_v3_valuation: FX rate provenance mismatch"
+        )
+
+    for field in (
+        "provider",
+        "market_timestamp",
+        "retrieved_at",
+    ):
+        if not str(
+            fx_provenance.get(field) or ""
+        ).strip():
+            raise RuntimeError(
+                "options_v3_valuation: incomplete FX provenance"
+            )
+
+    try:
+        pnl_eur = float(valuation.get("pnl_eur"))
+    except (TypeError, ValueError):
+        raise RuntimeError(
+            "options_v3_valuation: pnl_eur must be numeric"
+        )
+
+    if not isfinite(pnl_eur):
+        raise RuntimeError(
+            "options_v3_valuation: pnl_eur must be finite"
+        )
+
+    enriched.update(valuation)
+    enriched["pnl_eur"] = pnl_eur
+    enriched["pnl_status"] = "AVAILABLE_CERTIFIED_MARKET_VALUATION"
+    enriched["pnl_provenance_status"] = (
+        "CERTIFIED_OPTION_MARK_PROVENANCE"
+    )
+
+    entry_contract = position.get(
+        "entry_risk_contract_version"
+    )
+    entry_currency = position.get(
+        "entry_risk_currency"
+    )
+    entry_source = position.get(
+        "entry_risk_source"
+    )
+    entry_provenance = position.get(
+        "entry_risk_provenance"
+    )
+
+    entry_certified = (
+        entry_contract == 1
+        and entry_currency == "EUR"
+        and entry_source == "allocated_risk_eur"
+        and isinstance(entry_provenance, dict)
+        and entry_provenance.get("contract_version") == 1
+        and entry_provenance.get("currency") == "EUR"
+        and entry_provenance.get("source")
+        == "allocated_risk_eur"
+    )
+
+    if not entry_certified:
+        enriched["pnl_pct"] = None
+        enriched["pnl_pct_status"] = (
+            "ENTRY_RISK_EUR_PROVENANCE_REQUIRED"
+        )
+        return enriched
+
+    try:
+        entry_risk_eur = float(
+            position.get("entry_risk_eur")
+        )
+        provenance_entry_risk = float(
+            entry_provenance.get("allocated_risk_eur")
+        )
+    except (TypeError, ValueError):
+        enriched["pnl_pct"] = None
+        enriched["pnl_pct_status"] = (
+            "ENTRY_RISK_EUR_PROVENANCE_INVALID"
+        )
+        return enriched
+
+    if (
+        not isfinite(entry_risk_eur)
+        or entry_risk_eur <= 0.0
+        or not isfinite(provenance_entry_risk)
+        or provenance_entry_risk <= 0.0
+        or abs(entry_risk_eur - provenance_entry_risk) > 1e-9
+    ):
+        enriched["pnl_pct"] = None
+        enriched["pnl_pct_status"] = (
+            "ENTRY_RISK_EUR_PROVENANCE_INVALID"
+        )
+        return enriched
+
+    enriched["pnl_pct"] = round(
+        (pnl_eur / entry_risk_eur) * 100.0,
+        8,
+    )
+    enriched["pnl_pct_status"] = (
+        "AVAILABLE_CERTIFIED_ENTRY_RISK"
+    )
+
+    return enriched
+
+
 def _evaluate_position_lifecycle_v3(
     stored_position: dict,
     selected_context: dict | None = None,
+    valuation: dict | None = None,
 ) -> tuple[dict | None, dict | None]:
     pos = dict(stored_position)
 
@@ -372,15 +630,20 @@ def _evaluate_position_lifecycle_v3(
             0,
         )
 
-    # RC2 valuation contract:
-    # no synthetic PnL is permitted.
-    lifecycle_input["pnl_eur"] = None
-    lifecycle_input["pnl_pct"] = None
-    lifecycle_input["pnl_status"] = (
-        PNL_STATUS_UNAVAILABLE
-    )
-    lifecycle_input["pnl_provenance_status"] = (
-        PNL_PROVENANCE_STATUS
+        for field in (
+            "entry_risk_currency",
+            "entry_risk_source",
+            "entry_risk_contract_version",
+            "entry_risk_provenance",
+        ):
+            if field in pos:
+                lifecycle_input[field] = pos[field]
+            else:
+                lifecycle_input.pop(field, None)
+
+    lifecycle_input = _apply_certified_valuation_v3(
+        lifecycle_input,
+        valuation,
     )
 
     evaluated = evaluate_position_capabilities_v3(
@@ -398,14 +661,8 @@ def _evaluate_position_lifecycle_v3(
         0,
     )
 
-    # Capability enrichment must never reintroduce
-    # synthetic valuation.
-    pos["pnl_eur"] = None
-    pos["pnl_pct"] = None
-    pos["pnl_status"] = PNL_STATUS_UNAVAILABLE
-    pos["pnl_provenance_status"] = (
-        PNL_PROVENANCE_STATUS
-    )
+    # Certified valuation state survives capability enrichment.
+    # Identity/opening state above remains canonical.
 
     opened_at = datetime.fromisoformat(
         pos["opened_at"]
@@ -436,7 +693,17 @@ def _evaluate_position_lifecycle_v3(
     return pos, None
 
 
-def reconcile_existing_positions_v3():
+def reconcile_existing_positions_v3(
+    valuations_by_position_id: dict | None = None,
+):
+    if valuations_by_position_id is None:
+        valuations_by_position_id = {}
+
+    if not isinstance(valuations_by_position_id, dict):
+        raise RuntimeError(
+            "options_v3_valuation_map: dict required"
+        )
+
     existing_raw = load(
         "options_v3_positions.json",
         [],
@@ -468,7 +735,10 @@ def reconcile_existing_positions_v3():
     for stored_position in existing:
         opened, closed = (
             _evaluate_position_lifecycle_v3(
-                stored_position
+                stored_position,
+                valuation=valuations_by_position_id.get(
+                    stored_position["position_id"]
+                ),
             )
         )
 
