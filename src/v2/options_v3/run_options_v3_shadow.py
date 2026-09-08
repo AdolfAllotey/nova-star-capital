@@ -28,6 +28,10 @@ from options_position_valuation_v3 import (
     OptionsPositionValuationError,
     value_open_position_v3,
 )
+from options_cycle_ledger_v3 import (
+    append_cycle_ledger_entry_v3,
+    build_cycle_ledger_entry_v3,
+)
 from options_iv_history_v3 import (
     IVObservationError,
     observe_and_update_iv_history,
@@ -1176,10 +1180,19 @@ def main():
         OUT / "options_v3_positions.json",
         [],
     )
+    closed_inventory_before = load(
+        OUT / "options_v3_positions_closed.json",
+        [],
+    )
 
     if not isinstance(existing_inventory, list):
         raise RuntimeError(
             "options_v3_positions must be a list"
+        )
+
+    if not isinstance(closed_inventory_before, list):
+        raise RuntimeError(
+            "options_v3_positions_closed must be a list"
         )
 
     existing_valuations, valuation_failures = (
@@ -1590,6 +1603,74 @@ def main():
     }
 
     save("options_v3_status.json", status_payload)
+
+    # Append one compact longitudinal observation only after
+    # canonical position lifecycle and final risk reconciliation
+    # have completed for this cycle.
+    ledger_observed_at = now()
+
+    cycle_ledger_entry = build_cycle_ledger_entry_v3(
+        observed_at=ledger_observed_at,
+        pipeline_status=pipeline_status,
+        opportunity_status=opportunity_status,
+        infrastructure_failure_count=len(
+            infrastructure_failure_reasons
+        ),
+        signals_total=len(all_signals),
+        candidates_raw=len(candidates_raw),
+        candidates_validated=len(candidates_validated),
+        decisions_total=len(decisions),
+        approved_count=len(
+            [
+                d
+                for d in decisions
+                if d["status"] == "APPROVED"
+            ]
+        ),
+        rejected_count=len(
+            [
+                d
+                for d in decisions
+                if d["status"] == "REJECTED"
+            ]
+        ),
+        valuation_status=position_valuation_status,
+        valued_position_count=len(
+            existing_valuations
+        ),
+        valuation_failure_count=(
+            position_valuation_failure_count
+        ),
+        open_positions_before=existing_inventory,
+        closed_positions_before=closed_inventory_before,
+        open_positions_after=open_positions_file,
+        closed_positions_after=closed_positions_file,
+        existing_used_risk_eur=portfolio.get(
+            "existing_used_risk_eur",
+            0,
+        ),
+        new_allocated_risk_eur=portfolio.get(
+            "new_allocated_risk_eur",
+            0,
+        ),
+        final_open_risk_eur=portfolio.get(
+            "final_open_risk_eur",
+            portfolio.get("used_risk_eur", 0),
+        ),
+        used_risk_pct=portfolio.get(
+            "used_risk_pct",
+            0,
+        ),
+        available_risk_eur_after_new=portfolio.get(
+            "available_risk_eur_after_new",
+            0,
+        ),
+    )
+
+    append_cycle_ledger_entry_v3(
+        OUT / "options_v3_cycle_history.jsonl",
+        cycle_ledger_entry,
+    )
 
     # Backward-compatible API / monitoring files
     save("signals_raw.json", candidates_raw)
