@@ -17,6 +17,12 @@ BASE = Path("/opt/nsc/data/preprod/options_v3")
 
 MAX_DAYS = 45
 
+TAKE_PROFIT_PCT = 20.0
+STOP_LOSS_PCT = -20.0
+CERTIFIED_PNL_PCT_STATUS = (
+    "AVAILABLE_CERTIFIED_ENTRY_RISK"
+)
+
 PNL_STATUS_UNAVAILABLE = "UNAVAILABLE_NO_CERTIFIED_MARKET_VALUATION"
 PNL_PROVENANCE_STATUS = "NO_CERTIFIED_OPTION_MARK_PROVENANCE"
 
@@ -32,6 +38,25 @@ def evaluate_position_capabilities_v3(
             valuation_timestamp=valuation_timestamp,
         )
 
+        certified_pnl_pct = None
+
+        if (
+            enriched.get("pnl_pct_status")
+            == CERTIFIED_PNL_PCT_STATUS
+        ):
+            try:
+                candidate_pnl_pct = float(
+                    enriched.get("pnl_pct")
+                )
+            except (TypeError, ValueError):
+                candidate_pnl_pct = None
+
+            if (
+                candidate_pnl_pct is not None
+                and isfinite(candidate_pnl_pct)
+            ):
+                certified_pnl_pct = candidate_pnl_pct
+
         expiry_decision = evaluate_pre_expiry_close_v3(
             expiration=expiration_input.expiration,
             current_timestamp=(
@@ -40,7 +65,9 @@ def evaluate_position_capabilities_v3(
             position_status=str(
                 enriched.get("status") or "OPEN"
             ),
-            pnl_pct=enriched.get("pnl_pct"),
+            pnl_pct=certified_pnl_pct,
+            profit_take_pct=TAKE_PROFIT_PCT,
+            stop_loss_pct=STOP_LOSS_PCT,
         )
 
         assignment_input = adapt_assignment_input_v3(
@@ -90,18 +117,66 @@ def evaluate_position_capabilities_v3(
         enriched["execution_mode"] = "SIMULATED_ONLY"
         enriched["real_execution_allowed"] = False
 
-        force_close = bool(
-            expiry_payload.get("force_close")
+        expiry_close = bool(
+            expiry_payload.get(
+                "pre_expiry_close_required"
+            )
+            or expiry_payload.get("force_close")
             or expiry_payload.get("should_close")
+        )
+
+        assignment_close = bool(
+            assignment_payload.get("mandatory_close")
             or assignment_payload.get("force_close")
             or assignment_payload.get("should_close")
         )
+
+        force_close = bool(
+            expiry_close or assignment_close
+        )
+
+        capability_close_reason = None
+        capability_close_category = None
+
+        if expiry_close:
+            capability_close_reason = (
+                expiry_payload.get("close_reason")
+                or "OPTIONS_EXPIRATION_POLICY_CLOSE"
+            )
+
+            if capability_close_reason in {
+                "profit_take_threshold_reached",
+                "stop_loss_threshold_reached",
+            }:
+                capability_close_category = (
+                    "PERFORMANCE_EXIT"
+                )
+            else:
+                capability_close_category = (
+                    "EXPIRATION_EXIT"
+                )
+
+        elif assignment_close:
+            capability_close_reason = (
+                assignment_payload.get("guard_reason")
+                or "OPTIONS_ASSIGNMENT_GUARD_CLOSE"
+            )
+            capability_close_category = (
+                "ASSIGNMENT_RISK_EXIT"
+            )
 
         enriched["capability_lifecycle_action"] = (
             "SIMULATED_CLOSE_REVIEW"
             if force_close
             else "HOLD"
         )
+        enriched["capability_close_reason"] = (
+            capability_close_reason
+        )
+        enriched["capability_close_category"] = (
+            capability_close_category
+        )
+
         return enriched
 
     except OptionsDataAdapterError as exc:
@@ -109,6 +184,8 @@ def evaluate_position_capabilities_v3(
             "SIMULATED_CLOSE_REVIEW"
         )
         enriched["capability_rejection_reason"] = str(exc)
+        enriched["capability_close_reason"] = str(exc)
+        enriched["capability_close_category"] = "SAFETY_EXIT"
         enriched["execution_mode"] = "SIMULATED_ONLY"
         enriched["real_execution_allowed"] = False
         return enriched
@@ -676,8 +753,13 @@ def _evaluate_position_lifecycle_v3(
     ):
         pos["status"] = "CLOSED"
         pos["close_reason"] = (
-            pos.get("capability_rejection_reason")
+            pos.get("capability_close_reason")
+            or pos.get("capability_rejection_reason")
             or "OPTIONS_CAPABILITY_SAFETY_CLOSE"
+        )
+        pos["close_category"] = (
+            pos.get("capability_close_category")
+            or "SAFETY_EXIT"
         )
         pos["closed_at"] = now().isoformat()
         return None, pos
@@ -685,6 +767,7 @@ def _evaluate_position_lifecycle_v3(
     if days >= MAX_DAYS:
         pos["status"] = "CLOSED"
         pos["close_reason"] = "MAX_HOLD_DAYS"
+        pos["close_category"] = "TIME_EXIT"
         pos["closed_at"] = now().isoformat()
         return None, pos
 
