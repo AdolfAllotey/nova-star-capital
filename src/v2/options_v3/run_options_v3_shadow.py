@@ -5,12 +5,16 @@ from options_data_adapter_v3 import (
     adapt_sizing_input_v3,
 )
 from options_greeks_engine_v3 import calculate_option_greeks_v3
+from options_risk_free_rate_runtime_v3 import (
+    fetch_certified_risk_free_rate_network_v3,
+)
 from options_contract_sizing_v3 import calculate_contract_quantity_v3
 from src.v2.core.fx import FXService, FXServiceError
 from options_expiration_policy_v3 import select_expiration_v3
 
 #!/usr/bin/env python3
 import json
+import os
 from pathlib import Path
 from datetime import datetime, timezone
 from options_portfolio_engine_v3 import allocate_portfolio
@@ -65,6 +69,8 @@ def enrich_candidate_capabilities_v3(
     risk_context: dict,
     valuation_timestamp=None,
     *,
+    risk_free_rate,
+    risk_free_rate_provenance,
     usd_eur_fx_rate=None,
     usd_eur_fx_provenance=None,
 ) -> dict:
@@ -103,7 +109,7 @@ def enrich_candidate_capabilities_v3(
             underlying_price=greeks_input.underlying_price,
             strike_price=greeks_input.strike_price,
             time_to_expiry_years=greeks_input.time_to_expiry_years,
-            risk_free_rate=0.0,  # temporary SHADOW assumption
+            risk_free_rate=float(risk_free_rate),
             volatility=greeks_input.volatility,
             option_type=greeks_input.option_type,
         )
@@ -120,6 +126,9 @@ def enrich_candidate_capabilities_v3(
         enriched["gamma"] = greeks_payload.get("gamma")
         enriched["theta"] = greeks_payload.get("theta")
         enriched["vega"] = greeks_payload.get("vega")
+        enriched["risk_free_rate"] = dict(
+            risk_free_rate_provenance
+        )
 
         sizing_input = adapt_sizing_input_v3(
             enriched,
@@ -1157,6 +1166,74 @@ def main():
         options_capital_eur * 0.20
     )
 
+    # One certified nominal risk-free snapshot is shared by all
+    # Black-Scholes calculations in this cycle.
+    risk_free_network_authorized = (
+        os.getenv(
+            "NSC_OPTIONS_V3_FRED_NETWORK_AUTHORIZED",
+            "",
+        ).strip().lower()
+        in {"1", "true", "yes"}
+    )
+
+    if not risk_free_network_authorized:
+        raise RuntimeError(
+            "options_v3_risk_free_rate_network_not_authorized"
+        )
+
+    try:
+        cycle_risk_free_rate_raw = (
+            fetch_certified_risk_free_rate_network_v3(
+                network_authorized=True,
+            )
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "options_v3_risk_free_rate_unavailable:"
+            f"{type(exc).__name__}:{exc}"
+        ) from exc
+
+    cycle_risk_free_rate = float(
+        cycle_risk_free_rate_raw["risk_free_rate"]
+    )
+
+    # JSON-safe certified provenance for artifacts and candidate audit.
+    cycle_risk_free_rate_provenance = {
+        "provider": str(
+            cycle_risk_free_rate_raw["provider"]
+        ),
+        "series_id": str(
+            cycle_risk_free_rate_raw["series_id"]
+        ),
+        "observation_date": str(
+            cycle_risk_free_rate_raw["observation_date"]
+        ),
+        "retrieved_at": str(
+            cycle_risk_free_rate_raw["retrieved_at"]
+        ),
+        "raw_rate_percent": float(
+            cycle_risk_free_rate_raw["raw_rate_percent"]
+        ),
+        "risk_free_rate": cycle_risk_free_rate,
+        "source_unit": str(
+            cycle_risk_free_rate_raw["source_unit"]
+        ),
+        "normalized_unit": str(
+            cycle_risk_free_rate_raw["normalized_unit"]
+        ),
+        "age_days": int(
+            cycle_risk_free_rate_raw["age_days"]
+        ),
+        "max_age_days": int(
+            cycle_risk_free_rate_raw["max_age_days"]
+        ),
+        "freshness_verified": bool(
+            cycle_risk_free_rate_raw[
+                "freshness_verified"
+            ]
+        ),
+    }
+
     # One certified USD/EUR snapshot is shared by existing
     # position valuation and new-position sizing in this cycle.
     try:
@@ -1273,6 +1350,12 @@ def main():
                         "internal_max_trade_risk_eur":
                             options_max_trade_risk_eur,
                     },
+                    risk_free_rate=(
+                        cycle_risk_free_rate
+                    ),
+                    risk_free_rate_provenance=(
+                        cycle_risk_free_rate_provenance
+                    ),
                     usd_eur_fx_rate=(
                         sizing_usd_eur_rate
                     ),
@@ -1439,6 +1522,9 @@ def main():
             "rejected_count": len([d for d in decisions if d["status"] == "REJECTED"]),
         },
         "decisions": decisions,
+        "risk_free_rate": dict(
+            cycle_risk_free_rate_provenance
+        ),
         "position_valuation": {
             "status": position_valuation_status,
             "valued_position_count": len(
@@ -1591,6 +1677,9 @@ def main():
                 valuation_failures
             ),
         },
+        "risk_free_rate": dict(
+            cycle_risk_free_rate_provenance
+        ),
         "mode": "SHADOW",
         "execution_allowed": False,
         "real_money_enabled": False,
@@ -1664,6 +1753,9 @@ def main():
         available_risk_eur_after_new=portfolio.get(
             "available_risk_eur_after_new",
             0,
+        ),
+        risk_free_rate_provenance=(
+            cycle_risk_free_rate_provenance
         ),
     )
 

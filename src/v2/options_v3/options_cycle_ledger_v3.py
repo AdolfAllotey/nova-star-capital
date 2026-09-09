@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import hashlib
+import math
 from typing import Any
 
 
@@ -72,11 +73,87 @@ def build_cycle_ledger_entry_v3(
     final_open_risk_eur: float,
     used_risk_pct: float,
     available_risk_eur_after_new: float,
+    risk_free_rate_provenance: dict,
 ) -> dict[str, Any]:
     if not isinstance(observed_at, str) or not observed_at:
         raise RuntimeError(
             "options_v3_cycle_ledger: "
             "observed_at required"
+        )
+
+    if not isinstance(risk_free_rate_provenance, dict):
+        raise RuntimeError(
+            "options_v3_cycle_ledger: "
+            "risk_free_rate_provenance required"
+        )
+
+    risk_free_provider = str(
+        risk_free_rate_provenance.get("provider") or ""
+    ).strip()
+    risk_free_series_id = str(
+        risk_free_rate_provenance.get("series_id") or ""
+    ).strip()
+    risk_free_observation_date = str(
+        risk_free_rate_provenance.get(
+            "observation_date"
+        )
+        or ""
+    ).strip()
+
+    if not risk_free_provider:
+        raise RuntimeError(
+            "options_v3_cycle_ledger: "
+            "risk-free provider required"
+        )
+
+    if not risk_free_series_id:
+        raise RuntimeError(
+            "options_v3_cycle_ledger: "
+            "risk-free series_id required"
+        )
+
+    if not risk_free_observation_date:
+        raise RuntimeError(
+            "options_v3_cycle_ledger: "
+            "risk-free observation_date required"
+        )
+
+    try:
+        certified_risk_free_rate = float(
+            risk_free_rate_provenance[
+                "risk_free_rate"
+            ]
+        )
+        risk_free_age_days = int(
+            risk_free_rate_provenance["age_days"]
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "options_v3_cycle_ledger: "
+            "invalid risk-free numeric contract"
+        ) from exc
+
+    if not math.isfinite(certified_risk_free_rate):
+        raise RuntimeError(
+            "options_v3_cycle_ledger: "
+            "risk-free rate must be finite"
+        )
+
+    if risk_free_age_days < 0:
+        raise RuntimeError(
+            "options_v3_cycle_ledger: "
+            "risk-free age_days invalid"
+        )
+
+    if (
+        risk_free_rate_provenance.get(
+            "freshness_verified"
+        )
+        is not True
+    ):
+        raise RuntimeError(
+            "options_v3_cycle_ledger: "
+            "risk-free freshness not verified"
         )
 
     open_before_ids = _position_ids(
@@ -171,6 +248,18 @@ def build_cycle_ledger_entry_v3(
                 ),
                 2,
             ),
+        },
+        "risk_free_rate": {
+            "provider": risk_free_provider,
+            "series_id": risk_free_series_id,
+            "observation_date":
+                risk_free_observation_date,
+            "risk_free_rate": round(
+                certified_risk_free_rate,
+                12,
+            ),
+            "age_days": risk_free_age_days,
+            "freshness_verified": True,
         },
         "execution": {
             "action_policy": ACTION_POLICY,
