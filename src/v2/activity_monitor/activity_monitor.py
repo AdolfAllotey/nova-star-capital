@@ -75,8 +75,7 @@ def engine_execution_artifacts(eid):
             "positions": ROOT / "data/portfolio/long_term_positions.json",
         },
         "options_v2_shadow": {
-            "positions": PREPROD / "options_v3/positions_open.json",
-            "closed_positions": PREPROD / "options_v3/positions_closed.json",
+            "positions": ROOT / "src/v2/options_v2/data/options_v2_positions.json",
         },
         "precious_metals": {
             "positions": ROOT / "data/metals/state/exposure_snapshot.json",
