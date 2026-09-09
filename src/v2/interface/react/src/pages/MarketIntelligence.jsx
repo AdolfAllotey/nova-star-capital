@@ -68,21 +68,26 @@ function Metric({ label, value, tone = "cyan" }) {
 }
 
 function Bar({ label, value, tone = "cyan" }) {
-  const n = Math.max(0, Math.min(100, Number(value || 0)));
+  const raw = value === null || value === undefined || value === "" ? null : Number(value);
+  const hasValue = raw !== null && Number.isFinite(raw);
+  const n = hasValue ? Math.max(0, Math.min(100, raw)) : null;
   const colors = {
     cyan: "bg-cyan-400",
     emerald: "bg-emerald-400",
     amber: "bg-amber-400",
     red: "bg-red-400",
+    slate: "bg-slate-600",
   };
   return (
     <div>
       <div className="mb-1 flex justify-between text-xs">
         <span className="text-slate-300">{label}</span>
-        <span className="text-slate-400">{n.toFixed(0)}%</span>
+        <span className="text-slate-400">{hasValue ? `${n.toFixed(0)}%` : "N/A"}</span>
       </div>
       <div className="h-2 rounded-full bg-slate-800">
-        <div className={`h-2 rounded-full ${colors[tone] || colors.cyan}`} style={{ width: `${n}%` }} />
+        {hasValue ? (
+          <div className={`h-2 rounded-full ${colors[tone] || colors.cyan}`} style={{ width: `${n}%` }} />
+        ) : null}
       </div>
     </div>
   );
@@ -106,29 +111,35 @@ function PipelineStep({ label, value, tone = "cyan" }) {
 
 
 function ScoreBar({ label, value, tone = "cyan" }) {
-  const n = Math.max(0, Math.min(100, Number(value || 0)));
+  const raw = value === null || value === undefined || value === "" ? null : Number(value);
+  const hasValue = raw !== null && Number.isFinite(raw);
+  const n = hasValue ? Math.max(0, Math.min(100, raw)) : null;
   const colors = {
     cyan: "bg-cyan-400",
     emerald: "bg-emerald-400",
     amber: "bg-amber-400",
     red: "bg-red-400",
+    slate: "bg-slate-600",
   };
   return (
     <div className="rounded-xl border border-slate-800 bg-[#071019] p-3">
       <div className="mb-2 flex justify-between text-xs">
         <span className="uppercase tracking-[0.14em] text-slate-400">{label}</span>
-        <span className="font-semibold text-slate-200">{n.toFixed(0)}%</span>
+        <span className="font-semibold text-slate-200">{hasValue ? `${n.toFixed(0)}%` : "N/A"}</span>
       </div>
       <div className="h-2 rounded-full bg-slate-800">
-        <div className={`h-2 rounded-full ${colors[tone] || colors.cyan}`} style={{ width: `${n}%` }} />
+        {hasValue ? (
+          <div className={`h-2 rounded-full ${colors[tone] || colors.cyan}`} style={{ width: `${n}%` }} />
+        ) : null}
       </div>
     </div>
   );
 }
 
 function pct(v) {
+  if (v === null || v === undefined || v === "") return "N/A";
   const n = Number(v);
-  return Number.isFinite(n) ? `${n.toFixed(2)}%` : "—";
+  return Number.isFinite(n) ? `${n.toFixed(2)}%` : "N/A";
 }
 
 export default function MarketIntelligence() {
@@ -150,6 +161,7 @@ export default function MarketIntelligence() {
     },
   });
 const [dashboard, setDashboard] = useState(null);
+  const [systemMetrics, setSystemMetrics] = useState(null);
   const [pam, setPam] = useState(null);
   const [topMovers, setTopMovers] = useState(null);
   const [discovery, setDiscovery] = useState(null);
@@ -162,10 +174,11 @@ const [dashboard, setDashboard] = useState(null);
   useEffect(() => {
     let alive = true;
     async function load() {
-      const [dResult, miResult, mmResult] = await Promise.all([
+      const [dResult, miResult, mmResult, smResult] = await Promise.all([
   fetchMarketSource("/dashboard/v3"),
   fetchMarketSource("/api/market-intelligence"),
   fetchMarketSource("/api/market-memory"),
+  fetchMarketSource("/api/system-metrics"),
 ]);
 
 const d = dResult.ok ? dResult.data : null;
@@ -191,6 +204,9 @@ setSourceState({
 });
       if (!alive) return;
       setDashboard(d);
+      setSystemMetrics(
+        smResult.ok ? (smResult.data?.data ?? null) : null
+      );
       setPam(mi?.activity_dashboard || null);
       setTopMovers(mi?.top_movers || null);
       setDiscovery(mi?.discovery_summary || null);
@@ -285,22 +301,44 @@ setSourceState({
   const metals = engineById.precious_metals || {};
   const options = engineById.options_v2_shadow || {};
 
-  const portfolioHealth = Number(pamSummary.portfolio_health || 0);
-  const activityScore = Number(pamSummary.activity_score || 0);
-  const metaAlignment = Number(validation?.decision_alignment_score ?? 100);
-  const grossExposure = Number(pamSummary.gross_exposure_pct || 0);
-  const alerts = Number(pamSummary.alerts_count || 0);
+  const metricNumber = (value) => {
+    if (value === null || value === undefined || value === "") return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
 
-  const marketBrainScore = Math.round(
-    portfolioHealth * 0.25 +
-    activityScore * 0.20 +
-    metaAlignment * 0.25 +
-    Number(crypto.confidence_pct || 0) * 0.15 +
-    Number(offensive.confidence_pct || 0) * 0.10 +
-    (alerts === 0 ? 5 : 0)
+  const portfolioHealth = metricNumber(pamSummary.portfolio_health);
+  const activityScore = metricNumber(pamSummary.activity_score);
+  const metaAlignment = metricNumber(validation?.decision_alignment_score);
+  const grossExposure = metricNumber(pamSummary.gross_exposure_pct);
+  const alerts = metricNumber(pamSummary.alerts_count);
+
+  // No governed backend contract currently exists for a composite
+  // "Market Brain Score". Do not synthesize an institutional KPI in the UI.
+  const marketBrainScore = null;
+  const brainTone = "slate";
+
+  const executionPolicy =
+    systemMetrics?.execution?.action_policy ?? "N/A";
+
+  const marketConditionsRegime =
+    systemMetrics?.orchestrator?.market_conditions?.regime ?? "N/A";
+
+  const marketConditionsScore = metricNumber(
+    systemMetrics?.orchestrator?.market_conditions?.score
   );
 
-  const brainTone = marketBrainScore >= 85 ? "emerald" : marketBrainScore >= 70 ? "amber" : "red";
+  const discoverySources = [
+    ...(Array.isArray(discovery?.sources_active) ? discovery.sources_active : []),
+    ...(Array.isArray(discovery?.sources_missing) ? discovery.sources_missing : []),
+  ];
+
+  const sourceStatus = (sourceName) => {
+    const found = discoverySources.find(
+      (item) => String(item?.source || "").toLowerCase() === sourceName.toLowerCase()
+    );
+    return found?.status ? String(found.status).toUpperCase() : "N/A";
+  };
 
 
 
@@ -339,7 +377,9 @@ setSourceState({
 
   const marketBrainBullets = [
     `Market regime remains ${String(regime).toUpperCase()}.`,
-    `Market Brain Score is ${marketBrainScore}/100.`,
+    marketBrainScore === null
+      ? "Market Brain Score is unavailable because no governed composite KPI exists."
+      : `Market Brain Score is ${marketBrainScore}/100.`,
     `Discovery pipeline reports ${discoveryCount} candidate(s).`,
     `Tradable opportunities confirmed: ${tradableConfirmed}.`,
     `Top ranked opportunity: ${strongestOpportunity}.`,
@@ -377,9 +417,9 @@ setSourceState({
               ["Market Regime", String(regime).toUpperCase()],
               ["Discovery", `${persistenceCount} persistent`],
               ["Meta Ranking", `${metaCount} ranked`],
-              ["Validation", `${metaAlignment.toFixed(0)}% align`],
-              ["Portfolio", `${pamSummary.capital_deployment_pct ?? 0}% deployed`],
-              ["Execution", "SIMULATED"],
+              ["Validation", metaAlignment === null ? "N/A" : `${metaAlignment.toFixed(0)}% align`],
+              ["Portfolio", pamSummary.capital_deployment_pct == null ? "N/A" : `${pamSummary.capital_deployment_pct}% deployed`],
+              ["Execution", executionPolicy],
             ].map(([label, value]) => (
               <div key={label} className="rounded-xl border border-slate-700 bg-[#071019] px-3 py-3 text-center">
                 <div className="text-sm font-semibold text-slate-100">{value}</div>
@@ -406,8 +446,12 @@ setSourceState({
               "border-red-400/30 bg-red-400/10 text-red-300"
             }`}>
               <div className="text-[10px] uppercase tracking-[0.18em] opacity-70">Market Brain Score</div>
-              <div className="mt-1 text-5xl font-bold">{marketBrainScore}</div>
-              <div className="text-xs opacity-70">/100</div>
+              <div className="mt-1 text-5xl font-bold">
+                {marketBrainScore === null ? "N/A" : marketBrainScore}
+              </div>
+              <div className="text-xs opacity-70">
+                {marketBrainScore === null ? "No governed composite KPI" : "/100"}
+              </div>
             </div>
           </div>
 
@@ -415,8 +459,8 @@ setSourceState({
             <Metric label="Regime" value={String(regime).toUpperCase()} tone="emerald" />
             <Metric label="Discovery" value={`${discoveryCount} candidates`} tone="cyan" />
             <Metric label="Tradable" value={`${tradableConfirmed} confirmed`} tone={Number(tradableConfirmed) > 0 ? "emerald" : "amber"} />
-            <Metric label="Meta Alignment" value={pct(metaAlignment)} tone="emerald" />
-            <Metric label="Execution" value="SIMULATED" tone="amber" />
+            <Metric label="Meta Alignment" value={metaAlignment === null ? "N/A" : pct(metaAlignment)} tone={metaAlignment === null ? "slate" : "emerald"} />
+            <Metric label="Execution" value={executionPolicy} tone={executionPolicy === "SIMULATED_ONLY" ? "amber" : "slate"} />
             <Metric label="Top Opportunity" value={strongestOpportunity} tone="cyan" />
           </div>
 
@@ -537,17 +581,17 @@ setSourceState({
               </div>
 
               {[
-                ["Binance", "ACTIVE", movers.filter((m) => m.source === "binance").length, movers.filter((m) => m.source === "binance" && m.tradable).length, "execution"],
-                ["MEXC", crypto.orders_count > 1 ? "ACTIVE" : "WATCH", movers.filter((m) => m.preferred_exchange === "mexc").length, movers.filter((m) => m.preferred_exchange === "mexc" && m.tradable).length, "execution"],
-                ["Bitpanda", "MANUAL", topCandidates.filter((m) => Array.isArray(m.sources) && m.sources.includes("bitpanda_manual")).length, 0, "discovery"],
-                ["CoinGecko", "ACTIVE", topCandidates.filter((m) => Array.isArray(m.sources) && m.sources.includes("coingecko")).length, 0, "market data"],
-                ["CoinMarketCap", "PENDING", "—", "—", "planned"],
+                ["Binance", sourceStatus("binance"), movers.filter((m) => m.source === "binance").length, movers.filter((m) => m.source === "binance" && m.tradable).length, "execution"],
+                ["MEXC", "N/A", movers.filter((m) => m.preferred_exchange === "mexc").length, movers.filter((m) => m.preferred_exchange === "mexc" && m.tradable).length, "execution"],
+                ["Bitpanda", sourceStatus("bitpanda"), topCandidates.filter((m) => Array.isArray(m.sources) && m.sources.includes("bitpanda_manual")).length, "—", "discovery"],
+                ["CoinGecko", sourceStatus("coingecko"), topCandidates.filter((m) => Array.isArray(m.sources) && m.sources.includes("coingecko")).length, "—", "market data"],
+                ["CoinMarketCap", sourceStatus("coinmarketcap"), "—", "—", "market data"],
               ].map(([source, status, candidates, tradable, role]) => (
                 <div key={source} className="grid grid-cols-5 items-center border-t border-slate-800 px-3 py-3 text-sm">
                   <div className="font-semibold text-slate-100">{source}</div>
                   <div className={
-                    status === "ACTIVE" ? "text-emerald-300" :
-                    status === "WATCH" || status === "MANUAL" ? "text-amber-300" :
+                    status === "OK" ? "text-emerald-300" :
+                    status === "EMPTY" ? "text-amber-300" :
                     "text-slate-400"
                   }>{status}</div>
                   <div className="text-cyan-300">{candidates}</div>
@@ -781,7 +825,9 @@ setSourceState({
                 <div className="rounded-xl border border-emerald-400/10 bg-emerald-400/5 px-3 py-2">
                   <div className="text-[10px] uppercase tracking-[0.14em] text-emerald-300">Posture</div>
                   <div className="mt-1 text-sm font-semibold text-slate-100">
-                    {marketBrainScore >= 80 ? "Constructive" : "Watch"}
+                    {executiveBrief?.market_posture
+                      ? String(executiveBrief.market_posture).toUpperCase()
+                      : "N/A"}
                   </div>
                 </div>
 
@@ -795,7 +841,7 @@ setSourceState({
                 <div className="rounded-xl border border-amber-400/10 bg-amber-400/5 px-3 py-2">
                   <div className="text-[10px] uppercase tracking-[0.14em] text-amber-300">Execution</div>
                   <div className="mt-1 text-sm font-semibold text-slate-100">
-                    SIMULATED ONLY
+                    {executionPolicy}
                   </div>
                 </div>
               </div>
@@ -877,11 +923,27 @@ setSourceState({
               <div className="space-y-2">
 
                 {[
-                  ["Crypto Momentum","Strong","+ + +"],
-                  ["Meta Alignment","Excellent","+ + +"],
-                  ["Discovery Engine","Healthy","+ +"],
-                  ["Macro Risk","Neutral","="],
-                  ["Execution Quality","Excellent","+ + +"]
+                  ["Crypto Momentum", "N/A", "N/A"],
+                  [
+                    "Meta Alignment",
+                    metaAlignment === null ? "N/A" : `${metaAlignment.toFixed(0)}%`,
+                    validation?.status ?? "N/A"
+                  ],
+                  [
+                    "Discovery Engine",
+                    discovery?.status ?? "N/A",
+                    discovery?.candidates_count == null ? "N/A" : `${discovery.candidates_count} candidates`
+                  ],
+                  [
+                    "Macro Risk",
+                    marketConditionsRegime,
+                    marketConditionsScore === null ? "N/A" : `${marketConditionsScore.toFixed(0)}%`
+                  ],
+                  [
+                    "Execution Quality",
+                    validation?.execution_quality ?? "N/A",
+                    validation?.pipeline_health ?? "N/A"
+                  ]
                 ].map(([driver,status,strength])=>(
 
                   <div
@@ -1127,9 +1189,13 @@ setSourceState({
         <div className="mt-4 rounded-2xl border border-cyan-400/10 bg-[#071019] p-4">
           <div className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-cyan-300">AI Market Narrative — V2</div>
           <p className="text-sm text-slate-300">
-            Market intelligence remains constructive. Crypto exposure is close to target, cross-asset stabilizers remain active,
-            meta validation is aligned and no blocking governance condition is detected. The next enhancement will add persistence timeline,
-            cross-source validation, momentum quality scoring and trade explainability.
+            Market posture: <span className="font-semibold">{String(executiveBrief?.market_posture ?? regime ?? "N/A").toUpperCase()}</span>.
+            {" "}Meta validation: <span className="font-semibold">{validation?.status ?? "N/A"}</span>
+            {metaAlignment === null ? "" : ` (${metaAlignment.toFixed(0)}% alignment)`}.
+            {" "}Pipeline health: <span className="font-semibold">{validation?.pipeline_health ?? "N/A"}</span>.
+            {" "}Execution quality: <span className="font-semibold">{validation?.execution_quality ?? "N/A"}</span>.
+            {" "}Execution policy: <span className="font-semibold">{executionPolicy}</span>.
+            {" "}Governance: <span className="font-semibold">{systemMetrics?.governance?.flag ?? "N/A"}</span>.
           </p>
         </div>
 
