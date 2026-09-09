@@ -213,6 +213,7 @@ export default function RiskOverview() {
   const [governance, setGovernance] = useState(null);
   const [executionPlan, setExecutionPlan] = useState(null);
   const [executionOrders, setExecutionOrders] = useState(null);
+  const [systemMetrics, setSystemMetrics] = useState(null);
   const [explainability, setExplainability] = useState([]);
   const [explainabilitySummary, setExplainabilitySummary] = useState(null);
 
@@ -223,7 +224,7 @@ export default function RiskOverview() {
       setLoading(true);
       setErr(null);
 
-      const [stateRes, targetRes, rebalanceRes, fundingRes, govRes, execRes, ordersRes] = await Promise.all([
+      const [stateRes, targetRes, rebalanceRes, fundingRes, govRes, execRes, ordersRes, systemMetricsRes] = await Promise.all([
         fetchJson("/api/portfolio-state", { timeoutMs: 8000 }),
         fetchJson("/api/portfolio-target", { timeoutMs: 8000 }),
         fetchJson("/api/rebalance-plan", { timeoutMs: 8000 }),
@@ -231,6 +232,7 @@ export default function RiskOverview() {
         fetchJson("/governance/status", { timeoutMs: 8000 }),
         fetchJson("/api/execution-plan", { timeoutMs: 8000 }),
         fetchJson("/api/execution-orders", { timeoutMs: 8000 }),
+        fetchJson("/api/system-metrics", { timeoutMs: 8000 }),
       ]);
 
       if (cancelled) return;
@@ -244,6 +246,11 @@ export default function RiskOverview() {
       setGovernance(govRes?.ok ? govRes.data : null);
       setExecutionPlan(execRes?.ok ? execRes.data : null);
       setExecutionOrders(ordersRes?.ok ? ordersRes.data : null);
+      setSystemMetrics(
+        systemMetricsRes?.ok
+          ? (systemMetricsRes.data?.data || systemMetricsRes.data || null)
+          : null
+      );
 
       try {
         const explainRes = await fetch(apiUrl("/api/explainability"), { credentials: "include" });
@@ -293,7 +300,7 @@ export default function RiskOverview() {
         drift,
         severity,
         status: b.status || "UNKNOWN",
-        origin: b.state_origin || "signal_derived",
+        origin: b.state_origin || "UNKNOWN",
       };
     }).sort((a, b) => Math.abs(b.drift) - Math.abs(a.drift));
   }, [bricks, targetWeights]);
@@ -317,8 +324,69 @@ export default function RiskOverview() {
     executionPlan?.blocked === true;
 
   const killSwitch = hardBlock ? "ON" : "OFF";
-  const governanceMode = governance?.mode || governance?.governance_mode || (executionPlan?.blocked ? "SAFE" : "NORMAL");
-  const actionPolicy = governance?.action_policy || executionPlan?.action_policy || executionPlan?.execution_mode || "SIM";
+  const governanceMode =
+    governance?.mode ||
+    governance?.governance_mode ||
+    systemMetrics?.governance?.flag ||
+    "UNKNOWN";
+
+  const actionPolicy =
+    governance?.action_policy ||
+    executionPlan?.action_policy ||
+    executionPlan?.execution_mode ||
+    systemMetrics?.execution?.action_policy ||
+    "UNKNOWN";
+
+  const governedRiskScoreRaw =
+    systemMetrics?.risk_engine?.risk_score ??
+    systemMetrics?.risk_engine?.score;
+
+  const governedRiskScore =
+    governedRiskScoreRaw === null ||
+    governedRiskScoreRaw === undefined ||
+    governedRiskScoreRaw === ""
+      ? null
+      : Number.isFinite(Number(governedRiskScoreRaw))
+      ? Number(governedRiskScoreRaw)
+      : null;
+
+  const governedRiskFlag =
+    systemMetrics?.risk_engine?.global_flag ||
+    systemMetrics?.risk_engine?.flag ||
+    "UNKNOWN";
+
+  const governedGovernanceScoreRaw =
+    systemMetrics?.governance?.score;
+
+  const governedGovernanceScore =
+    governedGovernanceScoreRaw === null ||
+    governedGovernanceScoreRaw === undefined ||
+    governedGovernanceScoreRaw === ""
+      ? null
+      : Number.isFinite(Number(governedGovernanceScoreRaw))
+      ? Number(governedGovernanceScoreRaw)
+      : null;
+
+  const governedGovernanceFlag =
+    systemMetrics?.governance?.flag || "UNKNOWN";
+
+  const governedCorrelationRegime =
+    systemMetrics?.correlation?.regime || "UNKNOWN";
+
+  const governedCorrelationScoreRaw =
+    systemMetrics?.correlation?.score;
+
+  const governedCorrelationScore =
+    governedCorrelationScoreRaw === null ||
+    governedCorrelationScoreRaw === undefined ||
+    governedCorrelationScoreRaw === ""
+      ? null
+      : Number.isFinite(Number(governedCorrelationScoreRaw))
+      ? Number(governedCorrelationScoreRaw)
+      : null;
+
+  const governedCorrelationGate =
+    systemMetrics?.correlation?.gate || null;
 
   const manualFundingRequired =
     fundingPlan?.requires_manual_transfer_between_pools === true ||
@@ -336,38 +404,25 @@ export default function RiskOverview() {
           ? "WATCH"
           : "LOW";
 
-  const riskPressureScore = Math.max(
-    0,
-    Math.min(
-      100,
-      Math.round(
-        (maxDrift * 180)
-        + (hardBlock ? 35 : 0)
-        + (executionPlan?.blocked ? 25 : 0)
-        + (approvedActions.length * 8)
-        + (manualFundingRequired ? 8 : 0)
-      )
-    )
-  );
+  const governedRiskTone =
+    String(governedRiskFlag).toLowerCase().includes("risk_off")
+      ? "red"
+      : String(governedRiskFlag).toLowerCase().includes("caution") ||
+        String(governedRiskFlag).toLowerCase().includes("watch")
+      ? "amber"
+      : governedRiskFlag === "UNKNOWN"
+      ? "slate"
+      : "green";
 
-  const riskPressureLabel =
-    riskPressureScore >= 70 ? "HIGH" :
-    riskPressureScore >= 35 ? "WATCH" :
-    "LOW";
-
-  const riskPressureClass =
-    riskPressureLabel === "HIGH"
+  const governedRiskClass =
+    governedRiskTone === "red"
       ? "text-red-400"
-      : riskPressureLabel === "WATCH"
+      : governedRiskTone === "amber"
       ? "text-amber-300"
-      : "text-emerald-400";
+      : governedRiskTone === "green"
+      ? "text-emerald-400"
+      : "text-slate-300";
 
-  const riskPressureBar =
-    riskPressureLabel === "HIGH"
-      ? "bg-red-400"
-      : riskPressureLabel === "WATCH"
-      ? "bg-amber-300"
-      : "bg-emerald-400";
 
   const riskBrickLabel = (key) => ({
     crypto: "Crypto",
@@ -388,7 +443,7 @@ export default function RiskOverview() {
       const absDrift = Math.abs(row.drift || 0);
       return {
         ...row,
-        pressure: Math.min(100, Math.round(absDrift * 260)),
+        absDrift,
         severity: absDrift >= 0.25 ? "HIGH" : absDrift >= 0.10 ? "WATCH" : "LOW",
       };
     });
@@ -396,14 +451,14 @@ export default function RiskOverview() {
 
   const governanceEvents = [
     {
-      ts: "LIVE",
+      ts: "CURRENT",
       label: hardBlock
         ? "Governance hard block active"
         : "Governance operating normally",
       tone: hardBlock ? "red" : "emerald"
     },
     {
-      ts: "LIVE",
+      ts: "CURRENT",
       label:
         maxDrift >= 0.08
           ? "Portfolio drift escalation detected"
@@ -414,22 +469,22 @@ export default function RiskOverview() {
           : "emerald"
     },
     {
-      ts: "LIVE",
+      ts: "CURRENT",
       label:
         executionPlan?.blocked
           ? "Execution validation required"
-          : "Execution layer synchronized",
+          : "No execution block reported",
       tone:
         executionPlan?.blocked
           ? "red"
           : "cyan"
     },
     {
-      ts: "LIVE",
+      ts: "CURRENT",
       label:
         manualFundingRequired
           ? "Manual funding transfer required"
-          : "Funding pools synchronized",
+          : "No manual funding transfer required",
       tone:
         manualFundingRequired
           ? "amber"
@@ -477,43 +532,20 @@ export default function RiskOverview() {
   if (hardBlock) suggestedActions.push("Resolve governance blocker before execution.");
   if (!suggestedActions.length) suggestedActions.push("Continue monitoring under current policy.");
 
-  const executionReadinessScore = Math.max(
-    0,
-    Math.min(
-      100,
-      Math.round(
-        100
-          - (hardBlock ? 45 : 0)
-          - (executionPlan?.blocked ? 35 : 0)
-          - (maxDrift >= 0.25 ? 25 : maxDrift >= 0.08 ? 15 : maxDrift >= 0.03 ? 7 : 0)
-          - (approvedActions.length > 0 ? 8 : 0)
-          - (manualFundingRequired ? 6 : 0)
-      )
-    )
-  );
-
-  const executionReadinessLabel =
-    hardBlock || executionPlan?.blocked
+  const executionStateLabel =
+    executionPlan?.blocked === true
       ? "BLOCKED"
-      : executionReadinessScore >= 75
-      ? "READY"
-      : executionReadinessScore >= 50
-      ? "DEGRADED"
-      : "WATCH";
+      : actionPolicy !== "UNKNOWN"
+      ? String(actionPolicy).toUpperCase()
+      : "UNKNOWN";
 
-  const executionReadinessClass =
-    executionReadinessLabel === "READY"
-      ? "text-emerald-400"
-      : executionReadinessLabel === "DEGRADED"
-      ? "text-amber-300"
-      : "text-red-400";
+  const executionStateClass =
+    executionPlan?.blocked === true
+      ? "text-red-400"
+      : actionPolicy === "UNKNOWN"
+      ? "text-slate-300"
+      : "text-cyan-300";
 
-  const executionReadinessBar =
-    executionReadinessLabel === "READY"
-      ? "bg-emerald-400"
-      : executionReadinessLabel === "DEGRADED"
-      ? "bg-amber-300"
-      : "bg-red-400";
 
   const riskConfidencePct = (() => {
     const weights = pt?.final_brick_weights || {};
@@ -647,7 +679,7 @@ export default function RiskOverview() {
       status:
         approvedActions.length > 0
           ? "PENDING"
-          : "CLEAR",
+          : "NONE",
       color:
         approvedActions.length > 0
           ? "amber"
@@ -689,7 +721,7 @@ export default function RiskOverview() {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <LiveIndicator label={loading ? "SYNCING" : "LIVE RISK"} tone={severity === "LOW" ? "emerald" : severity === "WATCH" || severity === "MEDIUM" ? "amber" : "red"} />
+            <LiveIndicator label={loading ? "SYNCING" : "CURRENT RISK"} tone={severity === "LOW" ? "emerald" : severity === "WATCH" || severity === "MEDIUM" ? "amber" : "red"} />
             <StatusPill tone={killSwitch === "ON" ? "red" : "green"}>Kill Switch {killSwitch}</StatusPill>
             <StatusPill tone={severity === "LOW" ? "green" : severity === "WATCH" || severity === "MEDIUM" ? "amber" : "red"}>{severity}</StatusPill>
             <StatusPill tone="blue">{String(regime).toUpperCase()}</StatusPill>
@@ -796,7 +828,7 @@ export default function RiskOverview() {
 
         <div className="mb-3 grid grid-cols-[1.35fr_1fr] gap-2.5">
           <Box className="p-2.5">
-            <Title right={loading ? "Loading" : "Live"}>Risk Command Center</Title>
+            <Title right={loading ? "Loading" : "Current"}>Risk Command Center</Title>
             <div className="grid grid-cols-3 gap-2.5">
               <div className="rounded-xl border border-[#1c2633] bg-[#0d1520] p-2.5 min-h-[178px]">
                 <div className="text-[10px] uppercase tracking-wider text-slate-500">Governance</div>
@@ -833,8 +865,8 @@ export default function RiskOverview() {
                   </div>
 
                   <div className={`flex items-center gap-1 text-[10px] font-semibold ${driftTrendClass}`}>
-                    <span className="h-1.5 w-1.5 rounded-full bg-red-400 animate-pulse" />
-                    LIVE
+                    <span className="h-1.5 w-1.5 rounded-full bg-red-400" />
+                    CURRENT
                   </div>
                 </div>
 
@@ -853,19 +885,14 @@ export default function RiskOverview() {
                           : "bg-emerald-400"
                       }`}
                       style={{
-                        width:
-                          driftTrend === "WORSENING"
-                            ? "88%"
-                            : driftTrend === "WATCH"
-                            ? "54%"
-                            : "18%"
+                        width: `${Math.min(100, maxDrift * 100)}%`
                       }}
                     />
                   </div>
                 </div>
 
                 <div className="mt-3 text-[13px] leading-5 text-slate-300">
-                  Real-time drift deterioration monitoring across portfolio sleeves.
+                  Current allocation drift snapshot across portfolio sleeves.
                 </div>
               </div>
 
@@ -875,29 +902,22 @@ export default function RiskOverview() {
                     Execution Readiness
                   </div>
 
-                  <div className={`flex items-center gap-1 text-[10px] font-semibold ${executionReadinessClass}`}>
-                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                    LIVE
+                  <div className={`flex items-center gap-1 text-[10px] font-semibold ${executionStateClass}`}>
+                    <span className="h-1.5 w-1.5 rounded-full bg-cyan-400" />
+                    CURRENT
                   </div>
                 </div>
 
-                <div className={`mt-2 text-base font-semibold ${executionReadinessClass}`}>
-                  {executionReadinessScore}/100
+                <div className={`mt-2 text-base font-semibold ${executionStateClass}`}>
+                  {executionStateLabel}
                 </div>
 
-                <div className={`mt-1 text-[10px] font-semibold uppercase tracking-[0.16em] ${executionReadinessClass}`}>
-                  {executionReadinessLabel}
-                </div>
-
-                <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-800">
-                  <div
-                    className={`h-full rounded-full ${executionReadinessBar}`}
-                    style={{ width: `${executionReadinessScore}%` }}
-                  />
+                <div className="mt-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+                  Governed execution policy
                 </div>
 
                 <div className="mt-3 text-[13px] leading-5 text-slate-300">
-                  Execution readiness combines governance, blockers, drift pressure and funding constraints.
+                  Current execution state comes directly from the governed execution and governance contracts.
                 </div>
               </div>
             </div>
@@ -1066,12 +1086,12 @@ export default function RiskOverview() {
                 Risk Heatmap
               </div>
               <div className="text-[10px] uppercase tracking-[0.14em] text-slate-500">
-                Cross-brick pressure, drift and severity snapshot
+                Cross-brick allocation drift and severity snapshot
               </div>
             </div>
 
             <div className="rounded-md border border-cyan-500/20 bg-cyan-500/10 px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.14em] text-cyan-300">
-              Live
+              Current
             </div>
           </div>
 
@@ -1117,7 +1137,7 @@ export default function RiskOverview() {
                           ? "bg-amber-300"
                           : "bg-emerald-400"
                       }`}
-                      style={{ width: `${Math.min(100, absDrift * 260)}%` }}
+                      style={{ width: `${Math.min(100, absDrift * 100)}%` }}
                     />
                   </div>
 
@@ -1142,16 +1162,16 @@ export default function RiskOverview() {
             </div>
 
             <div className="rounded-md border border-violet-500/20 bg-violet-500/10 px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.14em] text-violet-300">
-              Live Trace
+              Current Trace
             </div>
           </div>
 
           <div className="grid grid-cols-4 gap-2 xl:grid-cols-8">
             {[
-              ["Drift escalation", maxDrift >= 0.08 ? "ACTIVE" : "CLEAR", maxDrift >= 0.08 ? "red" : "emerald"],
-              ["Execution policy", String(actionPolicy || "SIM").replace("SIM", "SIM"), "amber"],
-              ["Governance block", hardBlock ? "BLOCKED" : "CLEAR", hardBlock ? "red" : "emerald"],
-              ["Supervision", executionPlan?.blocked ? "REVIEW" : "NORMAL", executionPlan?.blocked ? "amber" : "cyan"],
+              ["Drift escalation", maxDrift >= 0.08 ? "ACTIVE" : "INACTIVE", maxDrift >= 0.08 ? "red" : "emerald"],
+              ["Execution policy", String(actionPolicy || "UNKNOWN"), "amber"],
+              ["Governance block", hardBlock ? "BLOCKED" : "NOT BLOCKED", hardBlock ? "red" : "emerald"],
+              ["Supervision", executionPlan?.blocked ? "REVIEW" : "NO BLOCK REPORTED", executionPlan?.blocked ? "amber" : "cyan"],
             ].map(([label, value, tone]) => (
               <div
                 key={label}
@@ -1211,25 +1231,29 @@ export default function RiskOverview() {
                 label: "Risk",
                 value: severity,
                 tone: severity === "LOW" ? "emerald" : severity === "MEDIUM" ? "amber" : "red",
-                detail: `Pressure ${riskPressureScore}/100`
+                detail: governedRiskScore === null
+                  ? `Risk Engine ${governedRiskFlag}`
+                  : `Risk Engine ${governedRiskScore.toFixed(2)} · ${governedRiskFlag}`
               },
               {
                 label: "Governance",
                 value: hardBlock ? "BLOCKED" : "OK",
                 tone: hardBlock ? "red" : "emerald",
-                detail: actionPolicy || "SIM"
+                detail: actionPolicy || "UNKNOWN"
               },
               {
                 label: "Execution",
-                value: executionPlan?.blocked ? "BLOCKED" : "READY",
+                value: executionStateLabel,
                 tone: executionPlan?.blocked ? "red" : "cyan",
-                detail: executionPlan?.blocked ? "Execution guard active" : "Simulated execution allowed"
+                detail: executionPlan?.blocked
+                  ? "Execution guard active"
+                  : `Policy ${String(actionPolicy).toUpperCase()}`
               },
               {
                 label: "Funding",
-                value: manualFundingRequired ? "MANUAL" : "READY",
+                value: manualFundingRequired ? "MANUAL" : "NO MANUAL FLAG",
                 tone: manualFundingRequired ? "amber" : "emerald",
-                detail: manualFundingRequired ? "Manual transfer required" : "Funding state clear"
+                detail: manualFundingRequired ? "Manual transfer required" : "No manual transfer requirement reported"
               },
             ].map((item) => (
               <div
@@ -1272,16 +1296,16 @@ export default function RiskOverview() {
           <div className="mb-3 flex items-center justify-between">
             <div>
               <div className="text-sm font-semibold uppercase tracking-wide text-white">
-                Live Governance Feed
+                Governance State Feed
               </div>
 
               <div className="text-[10px] uppercase tracking-[0.14em] text-slate-500">
-                Real-time orchestration, supervision and governance events
+                Current orchestration, supervision and governance state
               </div>
             </div>
 
             <div className="rounded-md border border-cyan-500/20 bg-cyan-500/10 px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.14em] text-cyan-300">
-              Streaming
+              Current state
             </div>
           </div>
 
@@ -1332,12 +1356,12 @@ export default function RiskOverview() {
                 Top Risk Contributors
               </div>
               <div className="text-[10px] uppercase tracking-[0.14em] text-slate-500">
-                Highest portfolio pressure sources by sleeve drift
+                Highest portfolio allocation drift by sleeve
               </div>
             </div>
 
             <div className="rounded-md border border-red-500/20 bg-red-500/10 px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.14em] text-red-300">
-              Pressure
+              Drift
             </div>
           </div>
 
@@ -1364,7 +1388,7 @@ export default function RiskOverview() {
                     ? "text-amber-300"
                     : "text-emerald-300"
                 }`}>
-                  {row.pressure}/100
+                  {(row.absDrift * 100).toFixed(1)}%
                 </div>
 
                 <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800">
@@ -1376,7 +1400,7 @@ export default function RiskOverview() {
                         ? "bg-amber-300"
                         : "bg-emerald-400"
                     }`}
-                    style={{ width: `${row.pressure}%` }}
+                    style={{ width: `${Math.min(100, row.absDrift * 100)}%` }}
                   />
                 </div>
 
@@ -1393,95 +1417,67 @@ export default function RiskOverview() {
           <div className="mb-3 flex items-center justify-between">
             <div>
               <div className="text-sm font-semibold uppercase tracking-wide text-white">
-                Cross-Brick Pressure Map
+                Governed Risk Signals
               </div>
               <div className="text-[10px] uppercase tracking-[0.14em] text-slate-500">
-                Portfolio-level pressure propagation across NSC sleeves
+                Backend risk, governance, execution, correlation, drift and funding state
               </div>
             </div>
 
             <div className="rounded-md border border-cyan-500/20 bg-cyan-500/10 px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.14em] text-cyan-300">
-              Contagion Monitor
+              Governed
             </div>
           </div>
 
           <div className="grid grid-cols-3 gap-2 xl:grid-cols-6">
             {[
               {
-                source: "Crypto",
-                target: "Offensive Equities",
-                pressure: maxDrift >= 0.10 ? "Elevated" : "Contained",
-                tone: maxDrift >= 0.10 ? "amber" : "emerald",
-                reason: "Risk-on sleeve correlation"
+                label: "Risk Engine",
+                value: governedRiskScore === null ? "N/A" : governedRiskScore.toFixed(2),
+                detail: governedRiskFlag,
               },
               {
-                source: "Offensive Equities",
-                target: "Defensive Equities",
-                pressure: severity === "HIGH" ? "Rotation watch" : "Balanced",
-                tone: severity === "HIGH" ? "amber" : "cyan",
-                reason: "Offensive to defensive rotation"
+                label: "Governance",
+                value: governedGovernanceScore === null ? "N/A" : governedGovernanceScore.toFixed(0),
+                detail: governedGovernanceFlag,
               },
               {
-                source: "Defensive Equities",
-                target: "Bonds",
-                pressure: severity === "HIGH" ? "Stabilizer active" : "Normal",
-                tone: severity === "HIGH" ? "cyan" : "emerald",
-                reason: "Portfolio stabilization sleeve"
+                label: "Execution",
+                value: executionStateLabel,
+                detail: executionPlan?.blocked ? "Hard execution guard" : "Governed policy",
               },
               {
-                source: "Bonds",
-                target: "Precious Metals",
-                pressure: manualFundingRequired ? "Manual funding" : "Operational",
-                tone: manualFundingRequired ? "amber" : "emerald",
-                reason: "Macro hedge coordination"
+                label: "Correlation",
+                value: governedCorrelationScore === null ? "N/A" : governedCorrelationScore.toFixed(0),
+                detail: governedCorrelationGate?.active
+                  ? `Gate ${governedCorrelationGate.regime || "ACTIVE"}`
+                  : governedCorrelationRegime,
               },
               {
-                source: "Precious Metals",
-                target: "US Options",
-                pressure: severity === "HIGH" ? "Hedge overlay" : "Standby",
-                tone: severity === "HIGH" ? "amber" : "cyan",
-                reason: "Systemic hedge and volatility overlay"
+                label: "Max Drift",
+                value: `${(maxDrift * 100).toFixed(1)}%`,
+                detail: `${highDriftCount} high · ${mediumDriftCount} monitored`,
               },
               {
-                source: "US Options",
-                target: "Portfolio Hedge",
-                pressure: executionPlan?.blocked ? "Blocked" : "Shadow mode",
-                tone: executionPlan?.blocked ? "red" : "violet",
-                reason: "Options overlay remains governed"
+                label: "Funding",
+                value: manualFundingRequired ? "MANUAL" : "NO MANUAL FLAG",
+                detail: manualFundingRequired
+                  ? "Manual inter-pool control"
+                  : "No manual transfer flag",
               },
-            ].map((flow) => (
+            ].map((signal) => (
               <div
-                key={`${flow.source}-${flow.target}`}
-                className={`rounded-xl border p-3 ${
-                  flow.tone === "red"
-                    ? "border-red-500/25 bg-red-500/[0.06]"
-                    : flow.tone === "amber"
-                    ? "border-amber-500/25 bg-amber-500/[0.05]"
-                    : flow.tone === "cyan"
-                    ? "border-cyan-500/20 bg-cyan-500/[0.04]"
-                    : "border-emerald-500/20 bg-emerald-500/[0.04]"
-                }`}
+                key={signal.label}
+                className="rounded-xl border border-cyan-500/15 bg-cyan-500/[0.035] p-3"
               >
-                <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.12em] text-slate-500">
-                  <span>{flow.source}</span>
-                  <span>→</span>
-                  <span>{flow.target}</span>
+                <div className="text-[10px] uppercase tracking-[0.12em] text-slate-500">
+                  {signal.label}
                 </div>
-
-                <div className={`mt-2 text-sm font-semibold ${
-                  flow.tone === "red"
-                    ? "text-red-300"
-                    : flow.tone === "amber"
-                    ? "text-amber-300"
-                    : flow.tone === "cyan"
-                    ? "text-cyan-300"
-                    : "text-emerald-300"
-                }`}>
-                  {flow.pressure}
+                <div className="mt-2 text-sm font-semibold text-cyan-200">
+                  {signal.value}
                 </div>
-
                 <div className="mt-2 text-[10px] text-slate-500">
-                  {flow.reason}
+                  {signal.detail}
                 </div>
               </div>
             ))}
@@ -1518,7 +1514,7 @@ export default function RiskOverview() {
               <div className="rounded-lg border border-[#1c2633] bg-[#0d1520] px-3 py-2">
                 <div className="text-[9px] uppercase tracking-wider text-slate-500">Safety State</div>
                 <div className={`mt-1 text-xs font-semibold ${executionPlan?.blocked ? "text-red-400" : "text-emerald-400"}`}>
-                  {executionPlan?.blocked ? "BLOCKED" : "READY / SIMULATED"}
+                  {executionPlan?.blocked ? "BLOCKED" : String(actionPolicy || "UNKNOWN").toUpperCase()}
                 </div>
               </div>
             </div>
@@ -1536,35 +1532,26 @@ export default function RiskOverview() {
 
           <Box className="p-2.5">
             <Title>Why Not / Why Exit</Title>
-            <div className="mb-2 rounded-2xl border border-red-500/15 bg-red-500/[0.035] p-2.5">
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-[10px] uppercase tracking-[0.14em] text-slate-500">
-                  Risk Pressure Score
+            <div className="mb-2 rounded-2xl border border-cyan-500/15 bg-cyan-500/[0.035] p-2.5">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-[10px] uppercase tracking-[0.14em] text-slate-500">
+                    Governed Risk Engine
+                  </div>
+                  <div className={`mt-1 text-lg font-semibold whitespace-nowrap ${governedRiskClass}`}>
+                    {governedRiskScore === null ? "N/A" : governedRiskScore.toFixed(2)}
+                  </div>
                 </div>
-                <div className={`mt-1 text-lg font-semibold whitespace-nowrap ${riskPressureClass}`}>
-                  {riskPressureScore}/100
+
+                <div className="rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.14em] text-cyan-300">
+                  {governedRiskFlag}
                 </div>
               </div>
 
-              <div className={`rounded-md border px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.14em] ${
-                riskPressureLabel === "HIGH"
-                  ? "border-red-500/30 bg-red-500/10 text-red-300"
-                  : riskPressureLabel === "WATCH"
-                  ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
-                  : "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
-              }`}>
-                {riskPressureLabel}
+              <div className="mt-2 text-[10px] text-slate-500">
+                Backend Risk Engine contract. No frontend composite pressure score.
               </div>
             </div>
-
-            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800">
-              <div
-                className={`h-full rounded-full ${riskPressureBar}`}
-                style={{ width: `${riskPressureScore}%` }}
-              />
-            </div>
-          </div>
 
           <div className="grid grid-cols-5 gap-2">
               <Metric label="Symbols" value={explainabilitySummary?.total_symbols ?? 0} />
@@ -1595,7 +1582,7 @@ export default function RiskOverview() {
         </div>
 
         <div className="rounded-2xl border border-[#1f2a37] bg-[#09111a]/70 px-5 py-4 text-[10px] text-slate-600">
-          Sources: {apiUrl("/api/portfolio-state")} · {apiUrl("/api/portfolio-target")} · {apiUrl("/api/rebalance-plan")} · {apiUrl("/api/funding-plan")} · {apiUrl("/governance/status")} · {apiUrl("/api/execution-plan")} · {apiUrl("/api/execution-orders")}
+          Sources: {apiUrl("/api/portfolio-state")} · {apiUrl("/api/portfolio-target")} · {apiUrl("/api/rebalance-plan")} · {apiUrl("/api/funding-plan")} · {apiUrl("/governance/status")} · {apiUrl("/api/execution-plan")} · {apiUrl("/api/execution-orders")} · {apiUrl("/api/system-metrics")}
         </div>
         </div>
       </main>
