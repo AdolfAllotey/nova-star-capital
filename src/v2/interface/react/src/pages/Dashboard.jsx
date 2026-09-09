@@ -435,7 +435,6 @@ export default function DashboardV4() {
           Number(
             row.total_pnl_eur ??
             row.total_pnl_including_options_eur ??
-            row.total_pnl_including_shadow_eur ??
             row.realized_pnl_eur ??
             0
           )
@@ -509,7 +508,6 @@ export default function DashboardV4() {
           Number(
             row.total_pnl_eur ??
             row.total_pnl_including_options_eur ??
-            row.total_pnl_including_shadow_eur ??
             row.realized_pnl_eur ??
             0
           )
@@ -545,7 +543,6 @@ export default function DashboardV4() {
       const value = Number(
         row.total_pnl_eur ??
         row.total_pnl_including_options_eur ??
-        row.total_pnl_including_shadow_eur ??
         row.realized_pnl_eur ??
         0
       );
