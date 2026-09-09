@@ -14,7 +14,9 @@ import {
 
 
 function formatEUR(value) {
-  const n = Number(value || 0);
+  if (value === null || value === undefined || value === "") return "N/A";
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "N/A";
   return new Intl.NumberFormat("fr-FR", {
     style: "currency",
     currency: "EUR",
@@ -23,7 +25,9 @@ function formatEUR(value) {
 }
 
 function formatPct(value) {
-  const n = Number(value || 0);
+  if (value === null || value === undefined || value === "") return "N/A";
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "N/A";
   return `${(n * 100).toFixed(1)}%`;
 }
 
@@ -182,31 +186,27 @@ export default function FamilyOfficeDashboard() {
   }, [portfolio, headline]);
 
   const treasuryFlowRows = useMemo(() => {
-    const cashWeight = Number(treasuryState?.weights?.cash_weight ?? treasuryState?.treasury?.liquid_cash_eur / Math.max(1, treasuryState?.nav_eur || 1) ?? 0);
-    const proposedOutflows = Number(treasuryState?.funding_impact?.proposed_outflows_from_cash_eur || 0);
-    const nav = Number(treasuryState?.nav_eur || headline?.nav_eur || 0);
-    const fundingPressure = nav > 0 ? Math.min(100, Math.round((proposedOutflows / nav) * 100)) : 0;
-    const treasuryStable = treasuryState?.health?.treasury_health === "normal" ? 88 : treasuryState?.health?.cash_negative_after_proposed ? 25 : 60;
-    const liquidityReserve = Math.round(Math.max(0, Math.min(100, cashWeight * 100)));
-    const rebalanceLoad = Number(rebalance?.kpis?.actions_proposed || 0) > 0
-      ? Math.min(100, Number(rebalance?.kpis?.actions_proposed || 0) * 25)
-      : 0;
+    const cashWeight = treasuryState?.weights?.cash_weight;
+    const proposedOutflows = treasuryState?.funding_impact?.proposed_outflows_from_cash_eur;
+    const treasuryHealth = treasuryState?.health?.treasury_health;
+    const cashNegative = treasuryState?.health?.cash_negative_after_proposed;
+    const proposedActions = rebalance?.kpis?.actions_proposed;
 
     return [
-      ["Cash Liquidity", liquidityReserve, liquidityReserve >= 70 ? "emerald" : "amber"],
-      ["Funding Pressure", fundingPressure, fundingPressure >= 30 ? "amber" : "emerald"],
-      ["Treasury Stability", treasuryStable, treasuryStable >= 75 ? "cyan" : "amber"],
-      ["Liquidity Reserve", liquidityReserve, liquidityReserve >= 70 ? "emerald" : "amber"],
-      ["Rebalance Load", rebalanceLoad, rebalanceLoad > 0 ? "amber" : "emerald"],
+      ["Cash Weight", formatPct(cashWeight), cashWeight == null ? "slate" : "emerald"],
+      ["Proposed Cash Outflows", formatEUR(proposedOutflows), proposedOutflows == null ? "slate" : "amber"],
+      ["Treasury Health", treasuryHealth ? String(treasuryHealth).toUpperCase() : "UNKNOWN", treasuryHealth === "normal" ? "emerald" : "amber"],
+      ["Cash After Proposed", cashNegative == null ? "UNKNOWN" : cashNegative ? "NEGATIVE" : "NON-NEGATIVE", cashNegative ? "amber" : "emerald"],
+      ["Rebalance Proposed", proposedActions ?? "N/A", proposedActions == null ? "slate" : Number(proposedActions) > 0 ? "amber" : "emerald"],
     ];
-  }, [treasuryState, headline, rebalance]);
+  }, [treasuryState, rebalance]);
 
   const timelineRows = useMemo(() => {
     return [
       ["Rebalance governance", `Status: ${(rebalance?.status || "unknown").toUpperCase()} · proposed actions: ${rebalance?.kpis?.actions_proposed || 0}`, rebalance?.engine || "rebalance engine", "cyan"],
       ["Treasury validation", `Health: ${(treasuryState?.health?.treasury_health || "unknown").toUpperCase()} · cash: ${formatEUR(treasury?.liquid_cash_eur)}`, treasuryState?.updated_at || "latest API state", "emerald"],
       ["Funding request", `Manual reviews: ${funding?.kpis?.manual_review_required || 0} · transfers: ${funding?.kpis?.transfers_total || 0}`, funding?.engine || "funding engine", "amber"],
-      ["Collateral state", `Debt: ${collateral?.governance?.new_debt_allowed ? "OPEN" : "RESTRICTED"} · LTV: ${formatPct(collateral?.ltv_current)}`, collateral?.updated_at || "latest API state", "amber"],
+      ["Collateral state", `Debt: ${collateral?.governance?.new_debt_allowed == null ? "UNKNOWN" : collateral.governance.new_debt_allowed ? "OPEN" : "RESTRICTED"} · LTV: ${formatPct(collateral?.ltv_current)}`, collateral?.updated_at || "latest API state", "amber"],
       ["PREPROD governance", `Capital mode: ${(headline?.capital_mode || "unknown").toUpperCase()} · valuation: ${(headline?.valuation_mode || "unknown").toUpperCase()}`, context?.engine || "capital context", "cyan"],
     ];
   }, [rebalance, treasuryState, treasury, funding, collateral, headline, context]);
@@ -282,7 +282,7 @@ export default function FamilyOfficeDashboard() {
             ["Treasury", formatEUR(treasury.total_treasury_eur), "emerald"],
             ["Collateral", formatEUR(collateral.eligible_collateral_value_eur), "cyan"],
             ["Survival", headline.survival_mode || "NORMAL", "amber"],
-            ["Funding", funding.status || "PROPOSED", "amber"],
+            ["Funding", funding?.status || "UNKNOWN", "amber"],
             ["Governance", headline.capital_mode || "SIMULATED", "emerald"],
           ].map(([label, value, tone], idx) => {
             const cls =
@@ -330,9 +330,9 @@ export default function FamilyOfficeDashboard() {
             <div className="grid grid-cols-2 gap-3">
               {[
                 ["Treasury Stability", "Stable", "emerald"],
-                ["Collateral Safety", cards?.collateral?.status || "SAFE", "cyan"],
-                ["Debt Capacity", collateral?.governance?.new_debt_allowed ? "Open" : "Restricted", "amber"],
-                ["Funding Governance", funding.status || "Controlled", "amber"],
+                ["Collateral Safety", cards?.collateral?.status || "UNKNOWN", "cyan"],
+                ["Debt Capacity", collateral?.governance?.new_debt_allowed == null ? "Unknown" : collateral.governance.new_debt_allowed ? "Open" : "Restricted", "amber"],
+                ["Funding Governance", funding?.status || "UNKNOWN", "amber"],
               ].map(([label, value, tone], idx) => {
                 const cls =
                   tone === "emerald"
@@ -415,8 +415,8 @@ export default function FamilyOfficeDashboard() {
             ["NAV", formatEUR(headline.nav_eur), "cyan"],
             ["Enterprise", formatEUR(headline.enterprise_net_value_eur), "emerald"],
             ["Treasury", formatEUR(treasury.total_treasury_eur), "cyan"],
-            ["Collateral", cards?.collateral?.status || "SAFE", "emerald"],
-            ["Funding", (funding.status || "PROPOSED").toUpperCase(), "amber"],
+            ["Collateral", cards?.collateral?.status || "UNKNOWN", "emerald"],
+            ["Funding", (funding?.status || "UNKNOWN").toUpperCase(), "amber"],
             ["Governance", (headline.capital_mode || "SIMULATED").toUpperCase(), "amber"],
             ["PREPROD", "LOCKED", "cyan"],
           ].map(([label, value, tone], idx) => {
@@ -582,9 +582,9 @@ export default function FamilyOfficeDashboard() {
                 </div>
               </div>
 
-              <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/25 bg-emerald-500/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-emerald-300">
-                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.75)]" />
-                ACTIVE
+              <div className="inline-flex items-center gap-2 rounded-full border border-cyan-500/25 bg-cyan-500/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-cyan-300">
+                <span className="h-1.5 w-1.5 rounded-full bg-cyan-400 shadow-[0_0_10px_rgba(34,211,238,0.45)]" />
+                {(portfolio?.status || "UNKNOWN").toUpperCase()}
               </div>
             </div>
 
@@ -906,44 +906,29 @@ export default function FamilyOfficeDashboard() {
                 </div>
               </div>
 
-              <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/25 bg-emerald-500/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-emerald-300">
-                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.75)]" />
-                ACTIVE
+              <div className="inline-flex items-center gap-2 rounded-full border border-cyan-500/25 bg-cyan-500/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-cyan-300">
+                <span className="h-1.5 w-1.5 rounded-full bg-cyan-400 shadow-[0_0_10px_rgba(34,211,238,0.45)]" />
+                {(headline?.capital_mode || "UNKNOWN").toUpperCase()}
               </div>
             </div>
 
             <div className="space-y-3">
               {[
-                ["Treasury Governance", "STABLE", 88, "emerald"],
-                ["Collateral Governance", (cards?.collateral?.status || "SAFE").toUpperCase(), 82, "cyan"],
-                ["Debt Governance", collateral?.governance?.new_debt_allowed ? "OPEN" : "RESTRICTED", 64, "amber"],
-                ["Funding Governance", (funding.status || "PROPOSED").toUpperCase(), 68, "amber"],
-                ["Rebalance Governance", (rebalance.status || "PROPOSED").toUpperCase(), 72, "cyan"],
-                ["Capital Preservation", "CONTROLLED", 86, "emerald"],
-              ].map(([label, state, score, tone], idx) => {
-                const width = Math.max(5, Math.min(100, Number(score)));
-                const bar =
-                  tone === "emerald"
-                    ? "bg-emerald-400"
-                    : tone === "amber"
-                      ? "bg-amber-300"
-                      : "bg-cyan-400";
-
-                return (
-                  <div key={idx}>
-                    <div className="mb-1 flex items-center justify-between text-[12px]">
-                      <span className="font-semibold text-slate-200">{label}</span>
-                      <span className="text-slate-500">{state}</span>
-                    </div>
-                    <div className="h-1.5 rounded bg-[#172231]">
-                      <div
-                        className={`h-1.5 rounded ${bar} shadow-[0_0_10px_rgba(34,211,238,0.25)]`}
-                        style={{ width: `${width}%` }}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
+                ["Treasury Governance", treasuryState?.health?.treasury_health ? String(treasuryState.health.treasury_health).toUpperCase() : "UNKNOWN"],
+                ["Collateral Governance", cards?.collateral?.status ? String(cards.collateral.status).toUpperCase() : "UNKNOWN"],
+                ["Debt Governance", collateral?.governance?.new_debt_allowed == null ? "UNKNOWN" : collateral.governance.new_debt_allowed ? "OPEN" : "RESTRICTED"],
+                ["Funding Governance", funding?.status ? String(funding.status).toUpperCase() : "UNKNOWN"],
+                ["Rebalance Governance", rebalance?.status ? String(rebalance.status).toUpperCase() : "UNKNOWN"],
+                ["Capital Mode", headline?.capital_mode ? String(headline.capital_mode).toUpperCase() : "UNKNOWN"],
+              ].map(([label, state], idx) => (
+                <div
+                  key={idx}
+                  className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-900/40 px-3 py-2 text-[12px]"
+                >
+                  <span className="font-semibold text-slate-200">{label}</span>
+                  <span className="text-slate-400">{state}</span>
+                </div>
+              ))}
             </div>
 
             <div className="mt-4 rounded-xl border border-cyan-500/20 bg-cyan-500/10 p-3 text-[12px] leading-6 text-slate-300">
@@ -986,7 +971,7 @@ export default function FamilyOfficeDashboard() {
               />
               <Metric
                 label="Nouvelle dette"
-                value={collateral?.governance?.new_debt_allowed ? "Allowed" : "Blocked"}
+                value={collateral?.governance?.new_debt_allowed == null ? "Unknown" : collateral.governance.new_debt_allowed ? "Allowed" : "Blocked"}
               />
             </div>
           </Card>
