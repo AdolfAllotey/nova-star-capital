@@ -191,6 +191,12 @@ def build_engine_snapshot(engine):
             "gap_pct": capital_gap_pct,
         })
 
+    positions_count = (
+        int(brick.get("positions_count", 0) or 0)
+        if eid == "options_us"
+        else len(positions)
+    )
+
     return {
         "id": eid,
         "name": engine["name"],
@@ -204,7 +210,7 @@ def build_engine_snapshot(engine):
         "confidence_pct": pct(brick.get("confidence", 0)) if brick.get("confidence", 0) <= 1 else brick.get("confidence", 0),
         "orders_count": len(engine_orders),
         "fills_count": len(fills),
-        "positions_count": len(positions),
+        "positions_count": positions_count,
         "last_event": "snapshot_generated",
         "alerts": alerts,
     }
@@ -219,7 +225,7 @@ def main():
 
     avg_health = round(sum(e["health_score"] for e in engines) / max(1, len(engines)), 2)
     avg_activity = round(sum(e["activity_score"] for e in engines) / max(1, len(engines)), 2)
-    gross_exposure = round(sum(e["capital_pct"] for e in investment), 2)
+    gross_exposure = round(sum(e["capital_pct"] for e in active_investment), 2)
     capital_deployment = round(min(100.0, gross_exposure), 2)
 
     dashboard = {
@@ -229,7 +235,7 @@ def main():
             "portfolio_health": avg_health,
             "activity_score": avg_activity,
             "investment_engines_active": len(active_investment),
-            "investment_engines_total": len(investment),
+            "investment_engines_total": len(active_investment),
             "capital_deployment_pct": capital_deployment,
             "gross_exposure_pct": gross_exposure,
             "alerts_count": len(alerts),
