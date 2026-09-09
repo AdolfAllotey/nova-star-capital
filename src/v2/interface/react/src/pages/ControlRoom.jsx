@@ -425,11 +425,12 @@ export default function ControlRoom() {
   const [dynamicMetricsAudit, setDynamicMetricsAudit] = useState(null);
   const [executionOrders, setExecutionOrders] = useState(null);
   const [activityDashboard, setActivityDashboard] = useState(null);
+  const [systemMetrics, setSystemMetrics] = useState(null);
   const [sourceState, setSourceState] = useState({
     loading: true,
     online: false,
     available: 0,
-    total: 10,
+    total: 11,
     failures: [],
     lastRefresh: null,
   });
@@ -447,6 +448,7 @@ export default function ControlRoom() {
         ["dynamicMetricsAudit", "/api/portfolio/global-dynamic-metrics-audit"],
         ["executionOrders", "/api/execution-orders"],
         ["activityDashboard", "/api/activity-dashboard"],
+        ["systemMetrics", "/api/system-metrics"],
       ];
 
       setSourceState((previous) => ({
@@ -510,6 +512,11 @@ export default function ControlRoom() {
       setActivityDashboard(
         byName.activityDashboard?.ok
           ? byName.activityDashboard.data
+          : null
+      );
+      setSystemMetrics(
+        byName.systemMetrics?.ok
+          ? (byName.systemMetrics.data?.data ?? null)
           : null
       );
 
@@ -947,49 +954,101 @@ const telemetryStatus =
       ? "watch"
       : "ok";
 
-const signalFreshnessPct = Math.max(
-  0,
-  Math.min(
-    100,
-    Number(
-      dashboard?.signal_freshness_pct ??
-      global?.signal_freshness_pct ??
-      94
-    )
-  )
+function metricNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function metricLabel(value) {
+  if (value === null || value === undefined || value === "") return "N/A";
+  return String(value).replaceAll("_", " ");
+}
+
+const signalFreshnessPct = metricNumber(
+  dashboard?.signal_freshness_pct ??
+  global?.signal_freshness_pct
 );
 
-const apiLatencyMs = Number(
+const apiLatencyMs = metricNumber(
   dashboard?.api_latency_ms ??
-  global?.api_latency_ms ??
-  42
+  global?.api_latency_ms
 );
 
 const rebalanceReductions =
   Number(global.rebalanceReductions ?? global.rebalance_reductions ?? 0);
 
-const globalConfidenceScore = Math.max(0, Math.min(100, Math.round(Number(global?.confidencePct ?? 0))));
-const marketRegimeScore = globalConfidenceScore || (regime === "risk_on" ? 82 : regime === "risk_off" ? 38 : 55);
-const governancePolicyScore = hardBlock ? 20 : actionPolicy.includes("SIMULATED") ? 72 : 88;
-const riskFlagsScore = Math.max(20, Math.min(100, riskFlags > 0 ? 85 - riskFlags * 10 : 95));
-const fundingConstraintScore = global?.masterFundingManualApprovalRequired ? 68 : 92;
-const executionReadinessScore = hardBlock ? 20 : global?.globalAuditStatus === "OK" ? Math.max(80, globalConfidenceScore) : 65;
-const metaScoreValue = Math.round((marketRegimeScore + governancePolicyScore + riskFlagsScore + executionReadinessScore) / 4);
-const signalQualityScore = Math.round((globalConfidenceScore + riskFlagsScore) / 2);
-const riskConsensusScore = riskFlagsScore;
-const governanceConfidenceScore = governancePolicyScore;
-const narrativeCoherenceScore = global?.orchestrationStatus === "OK" ? Math.max(80, globalConfidenceScore) : 65;
+const riskComponents = Array.isArray(systemMetrics?.risk_engine?.components)
+  ? systemMetrics.risk_engine.components
+  : [];
 
-const liquidityPulseScore = 50;
-const liquidityPulseState = "Neutral / stale";
-const volatilityStateScore = 65;
-const volatilityStateLabel = "Calm";
-const correlationRegimeScore = 35;
-const correlationRegimeLabel = "High corr";
-const systemicStressScore = 70;
-const systemicStressLabel = "Stress elevated";
-const crossAssetFrictionScore = global?.masterFundingManualApprovalRequired ? 66 : 90;
-const crossAssetFrictionLabel = global?.masterFundingManualApprovalRequired ? "Manual Funding" : "Clear";
+const coherenceComponent = riskComponents.find(
+  (component) => component?.name === "coherence"
+);
+
+const globalConfidenceScore = metricNumber(global?.confidencePct);
+
+const marketRegimeScore = metricNumber(
+  systemMetrics?.orchestrator?.market_conditions?.score
+);
+
+const governancePolicyScore = metricNumber(
+  systemMetrics?.governance?.score
+);
+
+const riskFlagsScore = metricNumber(
+  systemMetrics?.risk_engine?.score
+);
+
+const fundingConstraintScore = null;
+
+const executionReadinessScore = null;
+
+const metaScoreValue = metricNumber(
+  systemMetrics?.meta_score?.avg_meta_score
+);
+
+const signalQualityScore = metricNumber(
+  systemMetrics?.orchestrator?.signal_quality?.score
+);
+
+const riskConsensusScore = metricNumber(
+  systemMetrics?.risk_engine?.score
+);
+
+const governanceConfidenceScore = metricNumber(
+  systemMetrics?.governance?.score
+);
+
+const narrativeCoherenceScore = metricNumber(
+  coherenceComponent?.score
+);
+
+const liquidityPulseScore = null;
+const liquidityPulseState = "N/A";
+
+const volatilityStateScore = metricNumber(
+  systemMetrics?.risk_engine?.inputs?.volatility_state?.score
+);
+const volatilityStateLabel =
+  volatilityStateScore === null ? "N/A" : "Backend risk metric";
+
+const correlationRegimeScore = metricNumber(
+  systemMetrics?.correlation?.gate?.score
+);
+const correlationRegimeLabel = metricLabel(
+  systemMetrics?.correlation?.gate?.regime ??
+  systemMetrics?.correlation?.regime
+);
+
+const systemicStressScore = null;
+const systemicStressLabel = "N/A";
+
+const crossAssetFrictionScore = null;
+const crossAssetFrictionLabel =
+  global?.masterFundingManualApprovalRequired
+    ? "Manual Funding"
+    : "Clear";
 
 const manualFundingRequired = Boolean(global?.masterFundingManualApprovalRequired);
 const autoTransferAllowed = Boolean(global?.masterFundingAutoTransferAllowed);
@@ -1009,9 +1068,21 @@ const fundingMonitorMessage = manualFundingRequired
 
 const marketStabilityLabel = global?.globalAuditStatus === "OK" ? "Stable" : "Watch";
 const marketStabilityTone = global?.globalAuditStatus === "OK" ? "emerald" : "amber";
-const systemCoherenceLabel = global?.orchestrationStatus === "OK" ? "High" : "Watch";
-const systemCoherenceScore = global?.orchestrationStatus === "OK" ? Math.max(80, globalConfidenceScore) : 60;
-const systemCoherenceTone = global?.orchestrationStatus === "OK" ? "emerald" : "amber";
+const systemCoherenceLabel =
+  narrativeCoherenceScore === null
+    ? "N/A"
+    : global?.orchestrationStatus === "OK"
+      ? "High"
+      : "Watch";
+
+const systemCoherenceScore = narrativeCoherenceScore;
+
+const systemCoherenceTone =
+  systemCoherenceScore === null
+    ? "slate"
+    : global?.orchestrationStatus === "OK"
+      ? "emerald"
+      : "amber";
 
 
 const totalTarget = Number(
@@ -2090,8 +2161,8 @@ const current = Number(bricks?.[key]?.current_weight_estimate ?? bricks?.[key]?.
               <div className="grid grid-cols-[1fr_1fr_1fr_1fr_1.1fr] gap-3">
                 <TelemetryMetric
                   label="API Latency"
-                  value={`${apiLatencyMs}ms`}
-                  status={apiLatencyMs > 500 ? "critical" : apiLatencyMs > 180 ? "caution" : "ok"}
+                  value={apiLatencyMs === null ? "N/A" : `${apiLatencyMs}ms`}
+                  status={apiLatencyMs === null ? "caution" : apiLatencyMs > 500 ? "critical" : apiLatencyMs > 180 ? "caution" : "ok"}
                 />
                 <TelemetryMetric
                   label="Governance Sync"
@@ -2105,8 +2176,8 @@ const current = Number(bricks?.[key]?.current_weight_estimate ?? bricks?.[key]?.
                 />
                 <TelemetryMetric
                   label="Signal Freshness"
-                  value={`${signalFreshnessPct.toFixed(0)}%`}
-                  status={signalFreshnessPct < 60 ? "critical" : signalFreshnessPct < 80 ? "caution" : "ok"}
+                  value={signalFreshnessPct === null ? "N/A" : `${signalFreshnessPct.toFixed(0)}%`}
+                  status={signalFreshnessPct === null ? "caution" : signalFreshnessPct < 60 ? "critical" : signalFreshnessPct < 80 ? "caution" : "ok"}
                 />
                 <Heartbeat status={telemetryStatus === "critical" ? "critical" : telemetryStatus === "watch" ? "caution" : "ok"} />
               </div>
@@ -2172,9 +2243,23 @@ const current = Number(bricks?.[key]?.current_weight_estimate ?? bricks?.[key]?.
 
                 <div className="rounded-xl border border-[#1f2a37] bg-[#0d1520] px-4 py-3">
                   <div className="text-[9px] uppercase tracking-widest text-slate-500">Confidence</div>
-                  <div className="mt-1 text-[13px] font-semibold text-emerald-300">{globalConfidenceScore}%</div>
+                  <div className="mt-1 text-[13px] font-semibold text-emerald-300">
+                    {globalConfidenceScore === null
+                      ? "N/A"
+                      : `${Number(globalConfidenceScore).toFixed(0)}%`}
+                  </div>
                   <div className="mt-2 h-1.5 rounded bg-[#172231]">
-                    <div className="h-1.5 rounded bg-emerald-400" style={{ width: `${Math.max(0, Math.min(100, Number(globalConfidenceScore || 0)))}%` }} />
+                    {globalConfidenceScore !== null ? (
+                      <div
+                        className="h-1.5 rounded bg-emerald-400"
+                        style={{
+                          width: `${Math.max(
+                            0,
+                            Math.min(100, Number(globalConfidenceScore))
+                          )}%`
+                        }}
+                      />
+                    ) : null}
                   </div>
                 </div>
 
@@ -2303,19 +2388,22 @@ const current = Number(bricks?.[key]?.current_weight_estimate ?? bricks?.[key]?.
                 {[
                   ["Market Regime", marketRegimeScore, regime],
                   ["Governance Policy", governancePolicyScore, actionPolicy],
-                  ["Risk Flags", riskFlagsScore, `${riskFlags} active flag(s)`],
+                  ["Risk Engine", riskFlagsScore, systemMetrics?.risk_engine?.global_flag ?? `${riskFlags} active flag(s)`],
                   ["Funding Constraint", fundingConstraintScore, global?.masterFundingManualApprovalRequired ? "manual inter-universe funding" : "funding clear"],
-                  ["Execution Readiness", executionReadinessScore, hardBlock ? "blocked" : "audit ok"],
+                  ["Execution Readiness", executionReadinessScore, systemMetrics?.execution?.hard_block ? "blocked" : systemMetrics?.execution?.global_flag ?? "N/A"],
                 ].map(([label, score, detail], idx) => {
-                  const width = Math.max(5, Math.min(100, Number(score || 0)));
+                  const hasScore = score !== null && score !== undefined && Number.isFinite(Number(score));
+                  const width = hasScore ? Math.max(0, Math.min(100, Number(score))) : 0;
                   const color =
-                    width >= 80
-                      ? "bg-emerald-400"
-                      : width >= 60
-                        ? "bg-cyan-400"
-                        : width >= 40
-                          ? "bg-amber-300"
-                          : "bg-red-400";
+                    !hasScore
+                      ? "bg-slate-600"
+                      : width >= 80
+                        ? "bg-emerald-400"
+                        : width >= 60
+                          ? "bg-cyan-400"
+                          : width >= 40
+                            ? "bg-amber-300"
+                            : "bg-red-400";
 
                   return (
                     <div key={idx}>
@@ -2324,7 +2412,9 @@ const current = Number(bricks?.[key]?.current_weight_estimate ?? bricks?.[key]?.
                         <span className="text-slate-500">{detail}</span>
                       </div>
                       <div className="h-1.5 rounded bg-[#172231]">
-                        <div className={`h-1.5 rounded ${color}`} style={{ width: `${width}%` }} />
+                        {hasScore ? (
+                          <div className={`h-1.5 rounded ${color}`} style={{ width: `${width}%` }} />
+                        ) : null}
                       </div>
                     </div>
                   );
@@ -2756,22 +2846,90 @@ const current = Number(bricks?.[key]?.current_weight_estimate ?? bricks?.[key]?.
                   <div className="absolute left-[50%] top-[50%] h-[2px] w-[360px] -translate-x-1/2 -rotate-45 bg-cyan-400/15" />
 
                   {[
-                    ["Meta-Score Engine", `${metaScoreValue}/100`, metaScoreValue >= 80 ? "emerald" : metaScoreValue >= 60 ? "amber" : "red", "50%", "42%"],
-                    ["Signal Quality", signalQualityScore >= 80 ? "high" : signalQualityScore >= 60 ? "watch" : "low", signalQualityScore >= 80 ? "emerald" : signalQualityScore >= 60 ? "amber" : "red", "24%", "18%"],
-                    ["Risk Consensus",
-riskConsensusScore >= 80 ? "clear" : riskConsensusScore >= 60 ? "watch" : "critical",
-riskConsensusScore >= 80 ? "emerald" : riskConsensusScore >= 60 ? "amber" : "red",
-"76%", "18%"],
-                    ["Strategy Selector", regime === "risk_on" ? "risk-on bias" : regime === "risk_off" ? "defensive bias" : "neutral bias", "cyan", "24%", "70%"],
-                    ["Governance AI",
-actionPolicy,
-governanceConfidenceScore >= 80 ? "emerald" : "amber",
-"76%", "70%"],
-                    ["Execution Consensus",
-global?.globalAuditStatus || "UNKNOWN",
-(global?.globalAuditStatus === "OK" ? "emerald" : "amber"),
-"50%",
-`${globalConfidenceScore}%`],
+                    [
+                      "Meta-Score Engine",
+                      metaScoreValue === null
+                        ? "N/A"
+                        : `${Number(metaScoreValue).toFixed(0)}/100`,
+                      metaScoreValue === null
+                        ? "slate"
+                        : metaScoreValue >= 80
+                          ? "emerald"
+                          : metaScoreValue >= 60
+                            ? "amber"
+                            : "red",
+                      "50%",
+                      "42%"
+                    ],
+                    [
+                      "Signal Quality",
+                      signalQualityScore === null
+                        ? "N/A"
+                        : signalQualityScore >= 80
+                          ? "high"
+                          : signalQualityScore >= 60
+                            ? "watch"
+                            : "low",
+                      signalQualityScore === null
+                        ? "slate"
+                        : signalQualityScore >= 80
+                          ? "emerald"
+                          : signalQualityScore >= 60
+                            ? "amber"
+                            : "red",
+                      "24%",
+                      "18%"
+                    ],
+                    [
+                      "Risk Consensus",
+                      riskConsensusScore === null
+                        ? "N/A"
+                        : riskConsensusScore >= 80
+                          ? "clear"
+                          : riskConsensusScore >= 60
+                            ? "watch"
+                            : "critical",
+                      riskConsensusScore === null
+                        ? "slate"
+                        : riskConsensusScore >= 80
+                          ? "emerald"
+                          : riskConsensusScore >= 60
+                            ? "amber"
+                            : "red",
+                      "76%",
+                      "18%"
+                    ],
+                    [
+                      "Strategy Selector",
+                      regime === "risk_on"
+                        ? "risk-on bias"
+                        : regime === "risk_off"
+                          ? "defensive bias"
+                          : "neutral bias",
+                      "cyan",
+                      "24%",
+                      "70%"
+                    ],
+                    [
+                      "Governance AI",
+                      actionPolicy,
+                      governanceConfidenceScore === null
+                        ? "slate"
+                        : governanceConfidenceScore >= 80
+                          ? "emerald"
+                          : "amber",
+                      "76%",
+                      "70%"
+                    ],
+                    [
+                      "Execution Consensus",
+                      global?.globalAuditStatus || "UNKNOWN",
+                      global?.globalAuditStatus === "OK" ? "emerald" : "amber",
+                      "50%",
+                      globalConfidenceScore === null
+                        ? "N/A"
+                        : `${Number(globalConfidenceScore).toFixed(0)}%`
+                    ],
                     ["Narrative Engine", global?.orchestrationStatus === "OK" ? "coherent" : "watch", global?.orchestrationStatus === "OK" ? "emerald" : "amber", "50%", "10%"],
                   ].map(([label, value, tone, x, y], idx) => {
                     const cls =
@@ -2779,7 +2937,11 @@ global?.globalAuditStatus || "UNKNOWN",
                         ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
                         : tone === "amber"
                           ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
-                          : "border-cyan-500/30 bg-cyan-500/10 text-cyan-300";
+                          : tone === "red"
+                            ? "border-red-500/30 bg-red-500/10 text-red-300"
+                            : tone === "slate"
+                              ? "border-slate-500/30 bg-slate-500/10 text-slate-300"
+                              : "border-cyan-500/30 bg-cyan-500/10 text-cyan-300";
 
                     return (
                       <div
@@ -2811,24 +2973,31 @@ global?.globalAuditStatus || "UNKNOWN",
                       ["Execution Readiness", executionReadinessScore, "Audit OK / simulated"],
                       ["Narrative Coherence", narrativeCoherenceScore, "Decision rationale aligned"],
                     ].map(([label, score, detail], idx) => {
-                      const width = Math.max(5, Math.min(100, Number(score)));
+                      const hasScore = score !== null && score !== undefined && Number.isFinite(Number(score));
+                      const width = hasScore ? Math.max(0, Math.min(100, Number(score))) : 0;
                       const color =
-                        width >= 82
-                          ? "bg-emerald-400"
-                          : width >= 65
-                            ? "bg-cyan-400"
-                            : width >= 50
-                              ? "bg-amber-300"
-                              : "bg-red-400";
+                        !hasScore
+                          ? "bg-slate-600"
+                          : width >= 82
+                            ? "bg-emerald-400"
+                            : width >= 65
+                              ? "bg-cyan-400"
+                              : width >= 50
+                                ? "bg-amber-300"
+                                : "bg-red-400";
 
                       return (
                         <div key={idx}>
                           <div className="mb-1 flex items-center justify-between text-[11px]">
                             <span className="font-semibold text-slate-200">{label}</span>
-                            <span className="text-slate-500">{score}%</span>
+                            <span className="text-slate-500">
+                              {hasScore ? `${Number(score).toFixed(0)}%` : "N/A"}
+                            </span>
                           </div>
                           <div className="h-1.5 rounded bg-[#172231]">
-                            <div className={`h-1.5 rounded ${color} shadow signals-[0_0_10px_rgba(34,211,238,0.25)]`} style={{ width: `${width}%` }} />
+                            {hasScore ? (
+                              <div className={`h-1.5 rounded ${color} shadow signals-[0_0_10px_rgba(34,211,238,0.25)]`} style={{ width: `${width}%` }} />
+                            ) : null}
                           </div>
                           <div className="mt-1 text-[10px] text-slate-500">{detail}</div>
                         </div>
@@ -2865,24 +3034,47 @@ global?.globalAuditStatus || "UNKNOWN",
                   ["Liquidity Pulse", liquidityPulseState, liquidityPulseScore, "cyan"],
                   ["Volatility State", volatilityStateLabel, volatilityStateScore, "cyan"],
                   ["Correlation Regime", correlationRegimeLabel, correlationRegimeScore, "amber"],
-                  ["Systemic Stress", systemicStressLabel, systemicStressScore, systemicStressScore >= 70 ? "amber" : "cyan"],
-                  ["Cross-Asset Friction", crossAssetFrictionLabel, crossAssetFrictionScore, crossAssetFrictionScore >= 80 ? "emerald" : "amber"],
+                  [
+                    "Systemic Stress",
+                    systemicStressLabel,
+                    systemicStressScore,
+                    systemicStressScore === null
+                      ? "slate"
+                      : systemicStressScore >= 70
+                        ? "amber"
+                        : "cyan"
+                  ],
+                  [
+                    "Cross-Asset Friction",
+                    crossAssetFrictionLabel,
+                    crossAssetFrictionScore,
+                    crossAssetFrictionScore === null
+                      ? "slate"
+                      : crossAssetFrictionScore >= 80
+                        ? "emerald"
+                        : "amber"
+                  ],
                 ].map(([label, state, score, tone], idx) => {
-                  const width = Math.max(5, Math.min(100, Number(score)));
+                  const hasScore = score !== null && score !== undefined && Number.isFinite(Number(score));
+                  const width = hasScore ? Math.max(0, Math.min(100, Number(score))) : 0;
 
                   const bar =
                     tone === "emerald"
                       ? "bg-emerald-400"
                       : tone === "amber"
                         ? "bg-amber-300"
-                        : "bg-cyan-400";
+                        : tone === "slate"
+                          ? "bg-slate-600"
+                          : "bg-cyan-400";
 
                   const chip =
                     tone === "emerald"
                       ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-300"
                       : tone === "amber"
                         ? "border-amber-500/25 bg-amber-500/10 text-amber-300"
-                        : "border-cyan-500/25 bg-cyan-500/10 text-cyan-300";
+                        : tone === "slate"
+                          ? "border-slate-500/25 bg-slate-500/10 text-slate-300"
+                          : "border-cyan-500/25 bg-cyan-500/10 text-cyan-300";
 
                   return (
                     <div key={idx} className="rounded-xl border border-[#172231] bg-[#0d1520] px-4 py-3 transition-all duration-300 hover:border-cyan-500/25 hover:bg-[#101b29]">
@@ -2892,12 +3084,14 @@ global?.globalAuditStatus || "UNKNOWN",
                           <div className="mt-1 text-[13px] font-semibold text-slate-100">{state}</div>
                         </div>
                         <span className={`rounded-md border px-2 py-0.5 text-[10px] font-semibold ${chip}`}>
-                          {score}/100
+                          {hasScore ? `${Number(score).toFixed(0)}/100` : "N/A"}
                         </span>
                       </div>
 
                       <div className="h-1.5 rounded bg-[#172231]">
-                        <div className={`h-1.5 rounded ${bar} shadow signals-[0_0_10px_rgba(34,211,238,0.25)]`} style={{ width: `${width}%` }} />
+                        {hasScore ? (
+                          <div className={`h-1.5 rounded ${bar} shadow signals-[0_0_10px_rgba(34,211,238,0.25)]`} style={{ width: `${width}%` }} />
+                        ) : null}
                       </div>
                     </div>
                   );
@@ -2966,7 +3160,15 @@ global?.globalAuditStatus || "UNKNOWN",
                       ["Volatility", volatilityStateLabel, "cyan"],
                       ["Liquidity", liquidityPulseState, "cyan"],
                       ["Correlation", correlationRegimeLabel, "amber"],
-                      ["Stress", systemicStressLabel, systemicStressScore >= 70 ? "amber" : "cyan"],
+                      [
+                        "Stress",
+                        systemicStressLabel,
+                        systemicStressScore === null
+                          ? "slate"
+                          : systemicStressScore >= 70
+                            ? "amber"
+                            : "cyan"
+                      ],
                       ["Flow Of Funds", manualFundingRequired ? "Manual" : "Clear", manualFundingRequired ? "amber" : "emerald"],
                       ["Info Imbalance", global?.globalAuditStatus === "OK" ? "Controlled" : "Watch", global?.globalAuditStatus === "OK" ? "cyan" : "amber"],
                       ["Market Stability", marketStabilityLabel, marketStabilityTone],
@@ -2977,7 +3179,9 @@ global?.globalAuditStatus || "UNKNOWN",
                           ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-300"
                           : tone === "amber"
                             ? "border-amber-500/25 bg-amber-500/10 text-amber-300"
-                            : "border-cyan-500/25 bg-cyan-500/10 text-cyan-300";
+                            : tone === "slate"
+                              ? "border-slate-500/25 bg-slate-500/10 text-slate-300"
+                              : "border-cyan-500/25 bg-cyan-500/10 text-cyan-300";
 
                       return (
                         <div key={idx} className={`rounded-xl border px-3 py-3 transition-all duration-300 hover:scale-[1.02] ${cls}`}>
@@ -3003,15 +3207,18 @@ global?.globalAuditStatus || "UNKNOWN",
                       ["Risk Concentration", riskConsensusScore, riskFlags > 0 ? "Watch" : "Controlled"],
                       ["System Coherence", systemCoherenceScore, systemCoherenceLabel],
                     ].map(([label, score, state], idx) => {
-                      const width = Math.max(5, Math.min(100, Number(score)));
+                      const hasScore = score !== null && score !== undefined && Number.isFinite(Number(score));
+                      const width = hasScore ? Math.max(0, Math.min(100, Number(score))) : 0;
                       const color =
-                        width >= 80
-                          ? "bg-emerald-400"
-                          : width >= 65
-                            ? "bg-cyan-400"
-                            : width >= 50
-                              ? "bg-amber-300"
-                              : "bg-red-400";
+                        !hasScore
+                          ? "bg-slate-600"
+                          : width >= 80
+                            ? "bg-emerald-400"
+                            : width >= 65
+                              ? "bg-cyan-400"
+                              : width >= 50
+                                ? "bg-amber-300"
+                                : "bg-red-400";
 
                       return (
                         <div key={idx}>
@@ -3020,7 +3227,9 @@ global?.globalAuditStatus || "UNKNOWN",
                             <span className="text-slate-500">{state}</span>
                           </div>
                           <div className="h-1.5 rounded bg-[#172231]">
-                            <div className={`h-1.5 rounded ${color} shadow signals-[0_0_10px_rgba(34,211,238,0.25)]`} style={{ width: `${width}%` }} />
+                            {hasScore ? (
+                              <div className={`h-1.5 rounded ${color} shadow signals-[0_0_10px_rgba(34,211,238,0.25)]`} style={{ width: `${width}%` }} />
+                            ) : null}
                           </div>
                         </div>
                       );
@@ -3030,7 +3239,7 @@ global?.globalAuditStatus || "UNKNOWN",
               </div>
 
               <div className="mt-3 rounded-xl border border-cyan-500/20 bg-cyan-500/10 px-4 py-3 text-[12px] leading-relaxed text-slate-300">
-                Cross-asset conditions remain coherent enough to support monitored risk-on exposure, while correlation and systemic stress indicators justify maintaining governance in WATCH mode.
+                Cross-asset monitoring uses governed backend metrics. Metrics without a current backend value are shown as N/A and do not contribute a synthetic score.
               </div>
             </Box>
           </div>

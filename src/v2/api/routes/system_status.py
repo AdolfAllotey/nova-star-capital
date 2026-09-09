@@ -67,6 +67,27 @@ def artefact_status(path: Path) -> dict[str, Any]:
     }
 
 
+@router.get("/api/system-metrics")
+def system_metrics() -> dict[str, Any]:
+    path = ARTEFACTS["system_metrics"]
+    payload = read_json(path)
+
+    if not isinstance(payload, dict):
+        return {
+            "status": "unavailable",
+            "env": "PREPROD",
+            "source": str(path),
+            "data": None,
+        }
+
+    return {
+        "status": "ok",
+        "env": payload.get("env", "PREPROD"),
+        "source": str(path),
+        "data": payload,
+    }
+
+
 @router.get("/api/status")
 def system_status() -> dict[str, Any]:
     artefacts = {
