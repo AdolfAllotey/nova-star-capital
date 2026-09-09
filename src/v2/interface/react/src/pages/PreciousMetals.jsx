@@ -1,10 +1,13 @@
 import { apiUrl } from "../lib/apiClient";
 import React, { useEffect, useMemo, useState } from "react";
-function normalizeMode(value) {
-  if (!value) return "PREPROD";
-  const v = String(value).toLowerCase();
-  if (v.includes("signal")) return "PREPROD";
-  return value;
+function displayValue(value) {
+  return value === null || value === undefined || value === "" ? "N/A" : value;
+}
+
+function formatPct(value) {
+  if (value === null || value === undefined || value === "") return "N/A";
+  const n = Number(value);
+  return Number.isFinite(n) ? `${(n * 100).toFixed(1)}%` : "N/A";
 }
 
 import SectionCard from "../components/ui/SectionCard";
@@ -56,15 +59,19 @@ function toneClass(value) {
 }
 
 function ProgressRow({ label, value }) {
-  const pct = Math.max(0, Math.min(100, Number(value || 0) * 100));
+  const n = value === null || value === undefined || value === "" ? null : Number(value);
+  const pct = Number.isFinite(n) ? Math.max(0, Math.min(100, n * 100)) : null;
+
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between text-sm">
         <span className="text-zinc-300">{label}</span>
-        <span className="text-white">{pct.toFixed(1)}%</span>
+        <span className="text-white">{pct === null ? "N/A" : `${pct.toFixed(1)}%`}</span>
       </div>
       <div className="h-2 rounded-full bg-white/10">
-        <div className="h-2 rounded-full bg-white/70" style={{ width: `${pct}%` }} />
+        {pct === null ? null : (
+          <div className="h-2 rounded-full bg-white/70" style={{ width: `${pct}%` }} />
+        )}
       </div>
     </div>
   );
@@ -78,15 +85,9 @@ function KeyValueGrid({ items = [] }) {
           <div className="mb-2 text-xs uppercase tracking-wide text-zinc-400">{item.label}</div>
           <div>
             {item.badge ? (
-              <StatusBadge
-  label={
-    item?.key === "execution_mode" || item?.key === "mode"
-      ? "PREPROD"
-      : normalizeMode(item.value)
-  }
-/>
+              <StatusBadge label={displayValue(item.value)} />
             ) : (
-              <div className="text-white">{String(normalizeMode(item.value) ?? "-")}</div>
+              <div className="text-white">{String(displayValue(item.value))}</div>
             )}
           </div>
         </div>
@@ -134,11 +135,11 @@ export default function PreciousMetals() {
   const riskEntries = useMemo(() => Object.entries(riskFlags), [riskFlags]);
 
   const narrative = [
-    `Metals macro score currently reads ${signal?.metals_macro_score ?? "-"}.`,
-    `Target exposure stands at ${((signal?.target_exposure || 0) * 100).toFixed(1)}%.`,
-    `Confidence stands at ${((signal?.confidence || 0) * 100).toFixed(1)}%.`,
-    `Current regime is ${signal?.regime || portfolioState?.regime || "unknown"}.`,
-    `Funding pool currently routes through ${portfolioState?.funding_pool || "ibkr_pool"}.`,
+    `Metals macro score currently reads ${displayValue(signal?.metals_macro_score)}.`,
+    `Target exposure stands at ${formatPct(signal?.target_exposure)}.`,
+    `Confidence stands at ${formatPct(signal?.confidence)}.`,
+    `Current regime is ${displayValue(signal?.regime ?? portfolioState?.regime)}.`,
+    `Funding pool currently routes through ${displayValue(portfolioState?.funding_pool)}.`,
   ];
 
   return (
@@ -147,9 +148,9 @@ export default function PreciousMetals() {
         title="Precious Metals"
         subtitle="Systemic hedge sleeve for macro defense, store-of-value exposure, and cross-regime protection."
         badges={[
-          { label: signal?.regime || portfolioState?.regime || "unknown" },
-          { label: "PREPROD" },
-          { label: `Confidence ${((signal?.confidence || 0) * 100).toFixed(1)}%` },
+          { label: signal?.regime ?? portfolioState?.regime ?? "N/A" },
+          { label: signal?.execution_mode ?? portfolioState?.status ?? "N/A" },
+          { label: `Confidence ${formatPct(signal?.confidence)}` },
         ]}
       />
 
@@ -173,10 +174,10 @@ export default function PreciousMetals() {
       </SectionCard>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <MicroCard label="Metals Macro Score" value={signal?.metals_macro_score ?? "-"} />
-        <MicroCard label="Target Exposure" value={`${((signal?.target_exposure || 0) * 100).toFixed(1)}%`} />
-        <MicroCard label="Confidence" value={`${((signal?.confidence || 0) * 100).toFixed(1)}%`} />
-        <MicroCard label="Regime" value={signal?.regime || "-"} />
+        <MicroCard label="Metals Macro Score" value={displayValue(signal?.metals_macro_score)} />
+        <MicroCard label="Target Exposure" value={formatPct(signal?.target_exposure)} />
+        <MicroCard label="Confidence" value={formatPct(signal?.confidence)} />
+        <MicroCard label="Regime" value={displayValue(signal?.regime)} />
       </div>
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
@@ -197,27 +198,27 @@ export default function PreciousMetals() {
             items={[
               {
                 label: "Target Weight Snapshot",
-                value: `${((portfolioState?.target_weight_snapshot || 0) * 100).toFixed(1)}%`,
+                value: formatPct(portfolioState?.target_weight_snapshot),
               },
               {
                 label: "Portfolio Role",
-                value: portfolioState?.portfolio_role || "-",
+                value: displayValue(portfolioState?.portfolio_role),
               },
               {
                 label: "Funding Pool",
-                value: portfolioState?.funding_pool || "-",
+                value: displayValue(portfolioState?.funding_pool),
               },
               {
                 label: "Rebalance Frequency",
-                value: inertia?.rebalance_frequency || "-",
+                value: displayValue(inertia?.rebalance_frequency),
               },
               {
                 label: "Max Weight Change / Cycle",
-                value: inertia?.max_weight_change_per_cycle ?? "-",
+                value: displayValue(inertia?.max_weight_change_per_cycle),
               },
               {
                 label: "Min Threshold To Rebalance",
-                value: inertia?.min_threshold_to_rebalance ?? "-",
+                value: displayValue(inertia?.min_threshold_to_rebalance),
               },
             ]}
           />

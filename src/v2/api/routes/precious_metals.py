@@ -4,7 +4,7 @@ from pathlib import Path
 
 router = APIRouter()
 
-METALS_SIGNAL_PATH = Path("/opt/nsc/app/src/v2/data/precious_metals/metals_signal.json")
+METALS_SIGNAL_PATH = Path("/opt/nsc/data/preprod/metals/metals_signal.json")
 PORTFOLIO_STATE_PATH = Path("/opt/nsc/app/src/v2/data/portfolio/state/portfolio_state.json")
 
 
