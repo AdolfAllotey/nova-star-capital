@@ -38,16 +38,37 @@ export function formatCryptoDisplay(symbol) {
   return `${name} (${formatted})`;
 }
 
-export function formatEur(value) {
-  const n = Number(value || 0);
-  return new Intl.NumberFormat("fr-FR", {
+export function formatEur(value, options = {}) {
+  if (value === null || value === undefined || value === "") return "N/A";
+
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "N/A";
+
+  const { signed = false, maximumFractionDigits = 0 } = options || {};
+
+  const formatted = new Intl.NumberFormat("fr-FR", {
     style: "currency",
     currency: "EUR",
-    maximumFractionDigits: 0
+    maximumFractionDigits
   }).format(n);
+
+  return signed && n > 0 ? `+${formatted}` : formatted;
 }
 
-export function formatPct(value, digits = 1) {
-  const n = Number(value || 0) * 100;
-  return `${n.toFixed(digits)}%`;
+export function formatPct(value, options = {}) {
+  if (value === null || value === undefined || value === "") return "N/A";
+
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "N/A";
+
+  const normalized =
+    typeof options === "number"
+      ? { digits: options }
+      : (options || {});
+
+  const { digits = 1, signed = false } = normalized;
+  const pct = n * 100;
+  const formatted = `${pct.toFixed(digits)}%`;
+
+  return signed && pct > 0 ? `+${formatted}` : formatted;
 }

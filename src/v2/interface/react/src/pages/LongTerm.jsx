@@ -5,13 +5,16 @@ import CryptoBadge from "../components/ui/CryptoBadge";
 import LongTermMiniCurve from "../components/longterm/LongTermMiniCurve";
 import { formatEur, formatPct } from "../utils/formatters";
 
-function num(v, fallback = 0) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : fallback;
+function numericValue(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
 }
 
-function toneClass(v) {
-  return Number(v || 0) >= 0 ? "text-emerald-400" : "text-red-400";
+function toneClass(value) {
+  const n = numericValue(value);
+  if (n === null) return "text-slate-400";
+  return n >= 0 ? "text-emerald-400" : "text-red-400";
 }
 
 function prettyLabel(value) {
@@ -84,10 +87,14 @@ function StatusPill({ children, tone = "blue" }) {
 }
 
 function AllocationBar({ value }) {
-  const width = Math.max(0, Math.min(100, num(value)));
+  const n = numericValue(value);
+  const width = n === null ? null : Math.max(0, Math.min(100, n));
+
   return (
     <div className="h-1.5 rounded bg-[#1a2532]">
-      <div className="h-1.5 rounded bg-blue-500" style={{ width: `${width}%` }} />
+      {width !== null ? (
+        <div className="h-1.5 rounded bg-blue-500" style={{ width: `${width}%` }} />
+      ) : null}
     </div>
   );
 }
@@ -142,11 +149,11 @@ export default function LongTerm() {
     ? [...positions].sort((a, b) => Number(b?.market_value_eur || 0) - Number(a?.market_value_eur || 0))[0]
     : null;
 
-  const totalValue = num(totals.market_value_eur);
-  const invested = num(totals.invested_eur);
-  const pnl = num(totals.pnl_eur);
-  const pnlPct = num(totals.pnl_pct);
-  const holdings = Number(totals.positions || positions.length || 0);
+  const totalValue = numericValue(totals.market_value_eur);
+  const invested = numericValue(totals.invested_eur);
+  const pnl = numericValue(totals.pnl_eur);
+  const pnlPct = numericValue(totals.pnl_pct);
+  const holdings = numericValue(totals.positions) ?? positions.length;
 
   const cryptoCount = positions.filter((p) => String(p.asset_class || "").toLowerCase().includes("crypto")).length;
   const equityCount = positions.filter((p) => String(p.asset_class || "").toLowerCase().includes("equity")).length;
@@ -189,15 +196,25 @@ export default function LongTerm() {
           <div className="flex gap-2">
             <StatusPill tone="blue">Holdings {holdings}</StatusPill>
             <StatusPill tone="green">Value {formatEur(totalValue)}</StatusPill>
-            <StatusPill tone={pnl >= 0 ? "green" : "red"}>PnL {formatEur(pnl, { signed: true })}</StatusPill>
+            <StatusPill tone={pnl === null ? "slate" : pnl >= 0 ? "green" : "red"}>
+              PnL {formatEur(pnl, { signed: true })}
+            </StatusPill>
           </div>
         </div>
 
         <div className="mb-3 grid grid-cols-5 gap-3">
           <Metric label="Invested Capital" value={formatEur(invested)} />
           <Metric label="Market Value" value={formatEur(totalValue)} tone="blue" />
-          <Metric label="Total PnL" value={formatEur(pnl, { signed: true })} tone={pnl >= 0 ? "green" : "red"} />
-          <Metric label="Total Return" value={formatPct(pnlPct, { signed: true })} tone={pnlPct >= 0 ? "green" : "red"} />
+          <Metric
+            label="Total PnL"
+            value={formatEur(pnl, { signed: true })}
+            tone={pnl === null ? "slate" : pnl >= 0 ? "green" : "red"}
+          />
+          <Metric
+            label="Total Return"
+            value={formatPct(pnlPct, { signed: true })}
+            tone={pnlPct === null ? "slate" : pnlPct >= 0 ? "green" : "red"}
+          />
           <Metric label="Top Holding" value={topPosition?.symbol || "—"} tone="amber" />
         </div>
 
@@ -245,20 +262,26 @@ export default function LongTerm() {
                   No asset class data available.
                 </div>
               ) : assetRows.map(([key, row]) => {
-                const share = totalValue > 0 ? (num(row.market_value_eur) / totalValue) * 100 : 0;
+                const rowValue = numericValue(row.market_value_eur);
+                const share =
+                  totalValue !== null && totalValue > 0 && rowValue !== null
+                    ? (rowValue / totalValue) * 100
+                    : null;
                 return (
                   <div key={key} className="rounded-lg border border-[#1c2633] bg-[#0d1520] px-3 py-2">
                     <div className="grid grid-cols-[1fr_100px_90px] items-center gap-2 text-xs">
                       <div>
                         <div className="text-slate-200">{prettyLabel(row.asset_class || key)}</div>
-                        <div className="text-[10px] text-slate-500">{Number(row.positions || 0)} positions</div>
+                        <div className="text-[10px] text-slate-500">{numericValue(row.positions) ?? "N/A"} positions</div>
                       </div>
                       <div className="text-right text-slate-300">{formatEur(row.market_value_eur)}</div>
                       <div className={`text-right ${toneClass(row.pnl_eur)}`}>{formatEur(row.pnl_eur, { signed: true })}</div>
                     </div>
                     <div className="mt-2 grid grid-cols-[1fr_45px] items-center gap-2">
                       <AllocationBar value={share} />
-                      <div className="text-right text-[10px] text-slate-500">{share.toFixed(1)}%</div>
+                      <div className="text-right text-[10px] text-slate-500">
+                        {share === null ? "N/A" : `${share.toFixed(1)}%`}
+                      </div>
                     </div>
                   </div>
                 );
@@ -274,20 +297,26 @@ export default function LongTerm() {
                   No source brick data available.
                 </div>
               ) : sourceRows.map(([key, row]) => {
-                const share = totalValue > 0 ? (num(row.market_value_eur) / totalValue) * 100 : 0;
+                const rowValue = numericValue(row.market_value_eur);
+                const share =
+                  totalValue !== null && totalValue > 0 && rowValue !== null
+                    ? (rowValue / totalValue) * 100
+                    : null;
                 return (
                   <div key={key} className="rounded-lg border border-[#1c2633] bg-[#0d1520] px-3 py-2">
                     <div className="grid grid-cols-[1fr_100px_90px] items-center gap-2 text-xs">
                       <div>
                         <div className="text-slate-200">{prettyLabel(row.source_brick || key)}</div>
-                        <div className="text-[10px] text-slate-500">{Number(row.positions || 0)} positions</div>
+                        <div className="text-[10px] text-slate-500">{numericValue(row.positions) ?? "N/A"} positions</div>
                       </div>
                       <div className="text-right text-slate-300">{formatEur(row.market_value_eur)}</div>
                       <div className={`text-right ${toneClass(row.pnl_eur)}`}>{formatEur(row.pnl_eur, { signed: true })}</div>
                     </div>
                     <div className="mt-2 grid grid-cols-[1fr_45px] items-center gap-2">
                       <AllocationBar value={share} />
-                      <div className="text-right text-[10px] text-slate-500">{share.toFixed(1)}%</div>
+                      <div className="text-right text-[10px] text-slate-500">
+                        {share === null ? "N/A" : `${share.toFixed(1)}%`}
+                      </div>
                     </div>
                   </div>
                 );
