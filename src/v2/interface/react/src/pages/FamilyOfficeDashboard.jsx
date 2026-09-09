@@ -124,7 +124,7 @@ export default function FamilyOfficeDashboard() {
     const drift = portfolio?.drift || {};
 
     return Object.keys({ ...targets, ...current, ...drift })
-      .filter((k) => !["options_v2_shadow"].includes(k))
+      .filter((k) => !String(k).endsWith("_shadow"))
       .map((key) => ({
         key,
         target: Number(targets[key] || 0),
@@ -153,7 +153,7 @@ export default function FamilyOfficeDashboard() {
     const weights = portfolio?.current_weights || {};
     const targets = portfolio?.target_weights || {};
     const keys = Object.keys({ ...weights, ...targets })
-      .filter((k) => k !== "options_v2_shadow")
+      .filter((k) => !String(k).endsWith("_shadow"))
       .filter((k) => Number(weights[k] || 0) > 0 || Number(targets[k] || 0) > 0)
       .sort((a, b) => Number(weights[b] || 0) - Number(weights[a] || 0));
 
