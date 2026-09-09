@@ -3105,7 +3105,7 @@ global?.globalAuditStatus || "UNKNOWN",
                       ["Defensive", pamCapitalGapPct("equities_defensive")],
                       ["Bonds", pamCapitalGapPct("bonds")],
                       ["Metals", pamCapitalGapPct("precious_metals")],
-                      ["Options", pamCapitalGapPct("options_v2_shadow")],
+                      ["Options", pamCapitalGapPct("options_us")],
                     ].map(([label, gap]) => (
                       <div key={label} className="rounded-xl border border-[#1f2a37] bg-[#08111a] px-3 py-2">
                         <div className="text-[9px] uppercase tracking-[0.16em] text-slate-500">{label}</div>
