@@ -4,7 +4,7 @@ from pathlib import Path
 
 router = APIRouter()
 
-BOND_SIGNAL_PATH = Path("/opt/nsc/app/src/v2/data/bonds/bond_signal.json")
+BOND_SIGNAL_PATH = Path("/opt/nsc/data/preprod/bonds/bond_signal.json")
 PORTFOLIO_STATE_PATH = Path("/opt/nsc/app/src/v2/data/portfolio/state/portfolio_state.json")
 
 
