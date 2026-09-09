@@ -276,7 +276,8 @@ export default function RiskOverview() {
   const targetWeights = pt?.final_brick_weights || {};
 
   const driftRows = useMemo(() => {
-    const keys = Array.from(new Set([...Object.keys(bricks), ...Object.keys(targetWeights)]));
+    const keys = Array.from(new Set([...Object.keys(bricks), ...Object.keys(targetWeights)]))
+      .filter((key) => !String(key).endsWith("_shadow"));
     return keys.map((key) => {
       const b = bricks[key] || {};
       const target = num(targetWeights[key] ?? b.target_weight_snapshot);

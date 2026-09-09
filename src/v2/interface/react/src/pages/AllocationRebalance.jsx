@@ -150,7 +150,8 @@ export default function AllocationRebalance() {
   const actions = Array.isArray(rebalancePlan?.actions) ? rebalancePlan.actions : [];
 
   const rows = useMemo(() => {
-    const keys = Array.from(new Set([...Object.keys(weights), ...Object.keys(bricks)]));
+    const keys = Array.from(new Set([...Object.keys(weights), ...Object.keys(bricks)]))
+      .filter((key) => !String(key).endsWith("_shadow"));
     return keys.map((key) => {
       const b = bricks[key] || {};
       const target = num(weights[key] ?? b.target_weight_snapshot);

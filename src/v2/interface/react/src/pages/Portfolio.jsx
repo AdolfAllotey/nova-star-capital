@@ -260,7 +260,8 @@ export default function Portfolio() {
   const regime = portfolioTarget?.portfolio_regime || portfolioTarget?.data?.portfolio_regime || portfolioState?.portfolio_regime || "unknown";
 
   const allocationRows = useMemo(() => {
-    const keys = Array.from(new Set([...Object.keys(finalWeights), ...Object.keys(stateBricks)]));
+    const keys = Array.from(new Set([...Object.keys(finalWeights), ...Object.keys(stateBricks)]))
+      .filter((key) => !String(key).endsWith("_shadow"));
     return keys.map((key) => {
       const state = stateBricks[key] || {};
       const target = num(finalWeights[key] ?? state.target_weight_snapshot);
