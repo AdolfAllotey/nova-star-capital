@@ -620,23 +620,26 @@ setSourceState({
               <div className="divide-y divide-slate-800">
                 {(metaItems.length ? metaItems : movers.slice(0, 6)).slice(0, 6).map((m, idx) => {
                   const symbol = m.symbol || m.asset || m.ticker || "-";
-                  const change = Number(m.chg_24h ?? m.change_24h_pct ?? m.change_pct ?? m.pct_change ?? m.chg24h ?? 0);
-                  const metaScore = Number(m.meta_rank ?? m.rank ?? m.score ?? m.discovery_score ?? 0);
-                  const quality = Math.round(Math.min(100, Math.max(0, metaScore || Math.abs(change))));
-                  const verdict = m.verdict || m.persistence_status || m.status || (m.tradable ? "TRADABLE" : quality >= 70 ? "WATCH" : "OBSERVE");
+                  const changeRaw = m.chg_24h ?? m.change_24h_pct ?? m.change_pct ?? m.pct_change ?? m.chg24h;
+                  const change = changeRaw == null ? null : Number(changeRaw);
+                  const metaRaw = m.meta_rank ?? m.rank ?? m.score ?? m.discovery_score;
+                  const metaScore = metaRaw == null ? null : Number(metaRaw);
+                  const qualityRaw = m.quality_score ?? m.quality ?? m.meta_quality_score;
+                  const quality = qualityRaw == null ? null : Number(qualityRaw);
+                  const verdict = m.verdict || m.persistence_status || m.status || (m.tradable === true ? "TRADABLE" : "N/A");
                   return (
                     <div key={`${symbol}-${idx}`} className="grid grid-cols-5 items-center px-3 py-2 text-sm">
                       <div>
                         <div className="font-semibold text-slate-100">{symbol}</div>
                         <div className="text-[10px] uppercase text-slate-500">{m.source || (Array.isArray(m.discovery_sources) ? m.discovery_sources.join(", ") : "market")}</div>
                       </div>
-                      <div className={change >= 0 ? "text-emerald-300" : "text-red-300"}>{Number.isFinite(change) ? `${change.toFixed(2)}%` : "—"}</div>
-                      <div className="text-cyan-300">{metaScore ? metaScore.toFixed(2) : "—"}</div>
+                      <div className={Number.isFinite(change) && change < 0 ? "text-red-300" : "text-emerald-300"}>
+                        {Number.isFinite(change) ? `${change.toFixed(2)}%` : "—"}
+                      </div>
+                      <div className="text-cyan-300">{Number.isFinite(metaScore) ? metaScore.toFixed(2) : "—"}</div>
                       <div className="text-xs text-slate-400">{verdict}</div>
-                      <div>
-                        <div className="h-2 rounded-full bg-slate-800">
-                          <div className="h-2 rounded-full bg-cyan-400" style={{ width: `${quality}%` }} />
-                        </div>
+                      <div className="text-xs text-cyan-300">
+                        {Number.isFinite(quality) ? quality.toFixed(0) : "N/A"}
                       </div>
                     </div>
                   );
@@ -644,7 +647,7 @@ setSourceState({
               </div>
             </div>
             <div className="mt-3 text-xs text-slate-500">
-              Quality combines available meta score, momentum strength and tradability context. V3 will add persistence duration and cross-source confirmation.
+              Quality is displayed only when supplied by the governed market intelligence payload.
             </div>
           </Card>
         </div>
@@ -973,39 +976,6 @@ setSourceState({
         </div>
 
         <div className="mb-4">
-          <Card title="Sector Rotation Tracker" icon={TrendingUp}>
-            <div className="grid gap-3 md:grid-cols-6">
-              {[
-                ["AI", 64, "amber"],
-                ["Gaming", 78, "emerald"],
-                ["Infrastructure", 86, "emerald"],
-                ["DeFi", 58, "cyan"],
-                ["Layer 1 / 2", 52, "cyan"],
-                ["Meme / High Beta", 41, "amber"],
-              ].map(([sector, score, tone]) => (
-                <div key={sector} className="rounded-xl border border-slate-800 bg-[#071019] p-3">
-                  <div className="mb-2 text-xs font-semibold text-slate-200">{sector}</div>
-                  <div className="h-2 rounded-full bg-slate-800">
-                    <div
-                      className={
-                        tone === "emerald" ? "h-2 rounded-full bg-emerald-400" :
-                        tone === "amber" ? "h-2 rounded-full bg-amber-400" :
-                        "h-2 rounded-full bg-cyan-400"
-                      }
-                      style={{ width: `${score}%` }}
-                    />
-                  </div>
-                  <div className="mt-2 text-[10px] uppercase tracking-[0.12em] text-slate-500">{score}% rotation strength</div>
-                </div>
-              ))}
-            </div>
-            <div className="mt-3 text-xs text-slate-500">
-              V1 rotation tracker uses provisional sector buckets. V2 will classify assets dynamically from token metadata and discovery history.
-            </div>
-          </Card>
-        </div>
-
-        <div className="mb-4">
           <Card title="Persistence Timeline" icon={Activity}>
             <div className="space-y-3">
               {memoryAssets.length ? memoryAssets.slice(0, 8).map((m, idx) => {
@@ -1094,10 +1064,10 @@ setSourceState({
                 {metaItems.slice(0, 8).map((m, idx) => (
                   <div key={`decision-${idx}`} className="grid grid-cols-7 items-center px-3 py-3 text-sm">
                     <div className="font-semibold text-slate-100">{m.symbol || "-"}</div>
-                    <div className="text-cyan-300">{Number(m.discovery_score ?? 0).toFixed(0)}</div>
-                    <div className="text-emerald-300">{Number(m.persistence_score ?? 0).toFixed(0)}</div>
-                    <div className="text-amber-300">{Number(m.momentum_score ?? 0).toFixed(0)}</div>
-                    <div className="text-cyan-300">{Number(m.meta_rank ?? 0).toFixed(2)}</div>
+                    <div className="text-cyan-300">{m.discovery_score == null ? "N/A" : Number(m.discovery_score).toFixed(0)}</div>
+                    <div className="text-emerald-300">{m.persistence_score == null ? "N/A" : Number(m.persistence_score).toFixed(0)}</div>
+                    <div className="text-amber-300">{m.momentum_score == null ? "N/A" : Number(m.momentum_score).toFixed(0)}</div>
+                    <div className="text-cyan-300">{m.meta_rank == null ? "N/A" : Number(m.meta_rank).toFixed(2)}</div>
                     <div className={m.tradable ? "text-emerald-300" : "text-slate-500"}>{m.tradable ? "YES" : "NO"}</div>
                     <div className="text-xs uppercase tracking-[0.12em] text-slate-400">{m.verdict || "WATCH"}</div>
                   </div>
@@ -1136,10 +1106,10 @@ setSourceState({
             <div className="space-y-3">
               {metaItems.length ? metaItems.map((m, idx) => {
                 const rank = Number(m.meta_rank ?? m.rank ?? m.score ?? 0);
-                const discoveryScore = Number(m.discovery_score ?? 0);
-                const persistenceScore = Number(m.persistence_score ?? 0);
+                const discoveryScore = m.discovery_score == null ? null : Number(m.discovery_score);
+                const persistenceScore = m.persistence_score == null ? null : Number(m.persistence_score);
                 const momentumScore = Number(m.momentum_score ?? 0);
-                const socialScore = Number(m.social_score ?? 0);
+                const socialScore = m.social_score == null ? null : Number(m.social_score);
                 const sourceScore = Number(m.source_score ?? 0);
                 const drivers = m.explainability?.positive_drivers || [];
                 return (
@@ -1158,10 +1128,10 @@ setSourceState({
                     </div>
 
                     <div className="grid grid-cols-5 gap-2">
-                      <Metric label="Discovery" value={discoveryScore.toFixed(0)} tone="cyan" />
-                      <Metric label="Persist." value={persistenceScore.toFixed(0)} tone="emerald" />
+                      <Metric label="Discovery" value={discoveryScore == null ? "N/A" : discoveryScore.toFixed(0)} tone="cyan" />
+                      <Metric label="Persist." value={persistenceScore == null ? "N/A" : persistenceScore.toFixed(0)} tone="emerald" />
                       <Metric label="Momentum" value={momentumScore.toFixed(0)} tone="amber" />
-                      <Metric label="Social" value={socialScore.toFixed(0)} tone="slate" />
+                      <Metric label="Social" value={socialScore == null ? "N/A" : socialScore.toFixed(0)} tone="slate" />
                       <Metric label="Sources" value={sourceScore.toFixed(0)} tone="cyan" />
                     </div>
 
@@ -1187,7 +1157,7 @@ setSourceState({
         </div>
 
         <div className="mt-4 rounded-2xl border border-cyan-400/10 bg-[#071019] p-4">
-          <div className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-cyan-300">AI Market Narrative — V2</div>
+          <div className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-cyan-300">Governed Market Summary</div>
           <p className="text-sm text-slate-300">
             Market posture: <span className="font-semibold">{String(executiveBrief?.market_posture ?? regime ?? "N/A").toUpperCase()}</span>.
             {" "}Meta validation: <span className="font-semibold">{validation?.status ?? "N/A"}</span>
