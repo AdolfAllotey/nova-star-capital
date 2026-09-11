@@ -877,6 +877,36 @@ const allocatorDriftRows = (Object.keys(weights).length ? Object.keys(weights) :
   };
 });
 
+const cashBufferRaw =
+  pt?.cash_buffer ??
+  portfolioTarget?.cash_buffer ??
+  portfolioTarget?.data?.cash_buffer ??
+  ps?.cash_buffer ??
+  null;
+
+const cashBufferMinRaw =
+  pt?.cash_buffer_min_pct ??
+  portfolioTarget?.cash_buffer_min_pct ??
+  portfolioTarget?.data?.cash_buffer_min_pct ??
+  null;
+
+const governedCashBuffer =
+  cashBufferRaw == null ? null : Number(cashBufferRaw);
+
+const governedCashBufferMin =
+  cashBufferMinRaw == null ? null : Number(cashBufferMinRaw);
+
+const cashBufferPolicySatisfied =
+  governedCashBuffer != null &&
+  governedCashBufferMin != null
+    ? governedCashBuffer >= governedCashBufferMin
+    : null;
+
+const cashBufferMinLabel =
+  governedCashBufferMin == null
+    ? "N/A"
+    : `${(governedCashBufferMin * 100).toFixed(1)}%`;
+
 const explainabilityMessages = [
   {
     level: regime === "risk_off" ? "WATCH" : "INFO",
@@ -911,24 +941,18 @@ const explainabilityMessages = [
 
   {
     level:
-      Number(
-        pt?.cash_buffer ??
-        portfolioTarget?.cash_buffer ??
-        portfolioTarget?.data?.cash_buffer ??
-        ps?.cash_buffer ??
-        0
-      ) > 0.1 ? "INFO" : "CAUTION",
+      cashBufferPolicySatisfied == null
+        ? "INFO"
+        : cashBufferPolicySatisfied
+          ? "INFO"
+          : "CAUTION",
 
     text:
-      Number(
-        pt?.cash_buffer ??
-        portfolioTarget?.cash_buffer ??
-        portfolioTarget?.data?.cash_buffer ??
-        ps?.cash_buffer ??
-        0
-      ) > 0.1
-        ? "Cash buffer remains above 10%, preserving funding flexibility."
-        : "Cash buffer is below 10%; allocator should monitor liquidity pressure."
+      cashBufferPolicySatisfied == null
+        ? "Cash buffer policy data is unavailable."
+        : cashBufferPolicySatisfied
+          ? `Cash buffer meets the governed minimum of ${cashBufferMinLabel}, preserving funding flexibility.`
+          : `Cash buffer is below the governed minimum of ${cashBufferMinLabel}; allocator should monitor liquidity pressure.`
   },
 
   {
@@ -1091,17 +1115,6 @@ const totalTarget = Number(
   portfolioTarget?.data?.total_final_weight ??
   Object.values(weights).reduce((a, b) => a + Number(b || 0), 0)
 );
-
-const cashBuffer = Number(
-  pt?.cash_buffer ??
-  portfolioTarget?.cash_buffer ??
-  portfolioTarget?.data?.cash_buffer ??
-  ps?.cash_buffer ??
-  portfolioState?.cash_buffer ??
-  portfolioState?.data?.cash_buffer ??
-  0
-);
-
 
   return (
     <div className="min-h-screen bg-[#05080d] text-slate-100">
