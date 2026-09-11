@@ -676,97 +676,7 @@ const portfolioKeys = Array.from(
     return indexA - indexB;
   });
 
-const driftRows = portfolioKeys.map((key) => {
-  const b = bricks?.[key] || {};
-  const target = Number(
-    finalWeights?.[key] ??
-    b.target_weight_snapshot ??
-    0
-  );
-  const current = Number(
-    b.current_weight_estimate ??
-    b.target_weight_snapshot ??
-    0
-  );
 
-  return {
-    key,
-    target,
-    current,
-    drift: Math.abs(current - target),
-  };
-});
-
-const maxDrift = driftRows.length
-  ? Math.max(...driftRows.map((r) => Number(r.drift || 0)))
-  : 0;
-
-const driftTrend =
-  maxDrift >= 0.25
-    ? "WORSENING"
-    : maxDrift >= 0.10
-    ? "WATCH"
-    : "STABLE";
-
-const driftTrendClass =
-  driftTrend === "WORSENING"
-    ? "text-red-400"
-    : driftTrend === "WATCH"
-    ? "text-amber-300"
-    : "text-emerald-400";
-
-const executionReadiness =
-  Boolean(global?.globalAuditBlocking || global?.masterAuditHardBlock)
-    ? 25
-    : maxDrift >= 0.25
-    ? 75
-    : 92;
-
-const executionReadinessClass =
-  executionReadiness < 40
-    ? "text-red-400"
-    : executionReadiness < 80
-    ? "text-emerald-300"
-    : "text-emerald-400";
-
-
-const riskSeverityScore = Math.min(
-  100,
-  Math.max(
-    Boolean(
-      global?.globalAuditBlocking ||
-      global?.masterAuditHardBlock ||
-      global?.institutionalSummaryStatus === "BLOCKING" ||
-      global?.supervisionGateMode === "SAFE"
-    ) ? 85 : 0,
-    Math.round(
-      Math.abs(maxDrift || 0) +
-      (Number(global?.riskFlags || 0) * 12) +
-      (Boolean(global?.globalAuditBlocking || global?.masterAuditHardBlock) ? 35 : 0)
-    )
-  )
-);
-
-const riskHeatClass =
-  effectivePortfolioRegime === "BLOCKING" || effectivePortfolioRegime === "HARD_BLOCK"
-    ? "border-red-500/35 bg-red-500/[0.06] shadow signals-[0_0_28px_rgba(239,68,68,0.14)]"
-    : riskSeverityScore >= 70
-    ? "border-red-500/35 bg-red-500/[0.06] shadow signals-[0_0_28px_rgba(239,68,68,0.14)]"
-    : riskSeverityScore >= 35
-    ? "border-amber-500/30 bg-amber-500/[0.05] shadow signals-[0_0_24px_rgba(245,158,11,0.10)]"
-    : "border-emerald-500/25 bg-emerald-500/[0.04] shadow signals-[0_0_22px_rgba(16,185,129,0.08)]";
-
-const riskPulseClass =
-  effectivePortfolioRegime === "BLOCKING" || effectivePortfolioRegime === "HARD_BLOCK" || riskSeverityScore >= 70
-    ? "animate-pulse"
-    : "";
-
-const driftHeatClass =
-  Math.abs(maxDrift || 0) >= 0.25
-    ? "border-red-500/35 bg-red-500/[0.06] shadow signals-[0_0_28px_rgba(239,68,68,0.14)]"
-    : Math.abs(maxDrift || 0) >= 0.10
-    ? "border-amber-500/30 bg-amber-500/[0.05]"
-    : "border-emerald-500/25 bg-emerald-500/[0.04]";
 
 
   const protectedBrick = protectionSummary[0];
@@ -1823,17 +1733,17 @@ const allocationRows = portfolioKeys.map((key) => {
 
                   <div className="min-w-[92px] text-center leading-tight">
                     <div className="text-[8px] uppercase tracking-[0.18em] text-slate-500">
-                      Severity Score
+                      Risk Level
                     </div>
 
                     <div className={`mt-1 text-sm font-semibold ${
-                      riskSeverityScore >= 70
+                      riskLevel === "BLOCKING" || riskLevel === "HIGH"
                         ? "text-red-400"
-                        : riskSeverityScore >= 35
+                        : riskLevel === "WATCH"
                         ? "text-amber-300"
                         : "text-emerald-400"
                     }`}>
-                      {riskSeverityScore}/100
+                      {riskLevel}
                     </div>
                   </div>
                 </div>
@@ -1841,7 +1751,7 @@ const allocationRows = portfolioKeys.map((key) => {
 
                 {[
                   ["Protection", global.protectionLevel || "—"],
-                  ["Kill Switch", global.masterAuditHardBlock ? "ON" : "OFF"],
+                  ["Hard Block", global.masterAuditHardBlock ? "ON" : "OFF"],
                   ["Governance", global.masterAuditGovernancePolicy === "SIMULATED_ONLY" ? "SIM ONLY" : (global.governanceMode || "—")],
                   ["Supervision", global.supervisionGateOpen ? (global.supervisionGateMode || "OPEN") : "CLOSED"],
                   ["Systemic Stress", effectivePortfolioRegime === "BLOCKING" || effectivePortfolioRegime === "HARD_BLOCK" ? "BLOCKING" : effectivePortfolioRegime === "SAFE_MODE" ? "SAFE_MODE" : Number(global?.riskFlags || 0) > 0 ? `WATCH (${global.riskFlagsDetails?.[0]?.softVetos?.[0] || "flag"})` : "NONE"],
