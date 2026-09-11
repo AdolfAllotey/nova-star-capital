@@ -287,10 +287,19 @@ export default function RiskOverview() {
       .filter((key) => !String(key).endsWith("_shadow"));
     return keys.map((key) => {
       const b = bricks[key] || {};
-      const target = num(targetWeights[key] ?? b.target_weight_snapshot);
-      const exposure = num(b.current_weight_estimate ?? b.target_weight_snapshot ?? target);
-      const drift = exposure - target;
-      const severity = Math.abs(drift) >= 0.08 ? "HIGH" : Math.abs(drift) >= 0.03 ? "MEDIUM" : "LOW";
+      const targetRaw = targetWeights[key] ?? b.target_weight_snapshot;
+      const exposureRaw = b.current_weight_estimate;
+      const target = targetRaw == null ? null : num(targetRaw);
+      const exposure = exposureRaw == null ? null : num(exposureRaw);
+      const drift = target == null || exposure == null ? null : exposure - target;
+      const severity =
+        drift == null
+          ? "N/A"
+          : Math.abs(drift) >= 0.08
+          ? "HIGH"
+          : Math.abs(drift) >= 0.03
+          ? "MEDIUM"
+          : "LOW";
 
       return {
         key,
@@ -302,17 +311,28 @@ export default function RiskOverview() {
         status: b.status || "UNKNOWN",
         origin: b.state_origin || "UNKNOWN",
       };
-    }).sort((a, b) => Math.abs(b.drift) - Math.abs(a.drift));
+    }).sort((a, b) => {
+      if (a.drift == null && b.drift == null) return 0;
+      if (a.drift == null) return 1;
+      if (b.drift == null) return -1;
+      return Math.abs(b.drift) - Math.abs(a.drift);
+    });
   }, [bricks, targetWeights]);
 
-  const maxDrift = driftRows.reduce((acc, row) => Math.max(acc, Math.abs(row.drift)), 0);
-  const highDriftCount = driftRows.filter((row) => Math.abs(row.drift) >= 0.08).length;
-  const mediumDriftCount = driftRows.filter((row) => Math.abs(row.drift) >= 0.03).length;
+  const validDriftRows = driftRows.filter((row) => row.drift != null);
+  const maxDrift = validDriftRows.reduce((acc, row) => Math.max(acc, Math.abs(row.drift)), 0);
+  const highDriftCount = validDriftRows.filter((row) => Math.abs(row.drift) >= 0.08).length;
+  const mediumDriftCount = validDriftRows.filter((row) => Math.abs(row.drift) >= 0.03).length;
 
-  const topDriftRow = driftRows[0] || null;
+  const topDriftRow = validDriftRows[0] || null;
   const topDriftLabel = topDriftRow?.label || topDriftRow?.key || "portfolio sleeve";
-  const topDriftAbsPct = Math.abs(num(topDriftRow?.drift)) * 100;
-  const topDriftDirection = num(topDriftRow?.drift) < 0 ? "under-allocated" : "over-allocated";
+  const topDriftAbsPct = topDriftRow?.drift == null ? null : Math.abs(topDriftRow.drift) * 100;
+  const topDriftDirection =
+    topDriftRow?.drift == null
+      ? null
+      : topDriftRow.drift < 0
+        ? "under-allocated"
+        : "over-allocated";
 
   const approvedActions = Array.isArray(rebalancePlan?.actions)
     ? rebalancePlan.actions.filter((a) => a.status === "approved")
@@ -323,7 +343,7 @@ export default function RiskOverview() {
     String(governance?.action_policy || "").toUpperCase() === "BLOCKED" ||
     executionPlan?.blocked === true;
 
-  const killSwitch = hardBlock ? "ON" : "OFF";
+  const executionGuard = hardBlock ? "BLOCKED" : "CLEAR";
   const governanceMode =
     governance?.mode ||
     governance?.governance_mode ||
@@ -437,14 +457,23 @@ export default function RiskOverview() {
   }[key] || String(key || "Unknown").replaceAll("_", " "));
 
   const topRiskContributors = [...driftRows]
-    .sort((a, b) => Math.abs(b.drift || 0) - Math.abs(a.drift || 0))
+    .sort((a, b) => {
+      if (a.drift == null && b.drift == null) return 0;
+      if (a.drift == null) return 1;
+      if (b.drift == null) return -1;
+      return Math.abs(b.drift) - Math.abs(a.drift);
+    })
     .slice(0, 8)
     .map((row) => {
-      const absDrift = Math.abs(row.drift || 0);
+      const absDrift = row.drift == null ? null : Math.abs(row.drift);
       return {
         ...row,
         absDrift,
-        severity: absDrift >= 0.25 ? "HIGH" : absDrift >= 0.10 ? "WATCH" : "LOW",
+        severity:
+          absDrift == null ? "N/A" :
+          absDrift >= 0.08 ? "HIGH" :
+          absDrift >= 0.03 ? "MEDIUM" :
+          "LOW",
       };
     });
 
@@ -527,7 +556,7 @@ export default function RiskOverview() {
 
   const suggestedActions = [];
   if (maxDrift >= 0.25) suggestedActions.push(topDriftRow ? `Review ${topDriftLabel.toLowerCase()} allocation gap before next rebalance cycle.` : "Reduce portfolio drift exposure.");
-  if (maxDrift >= 0.08) suggestedActions.push(topDriftRow ? `Validate whether ${topDriftLabel.toLowerCase()} under-allocation is intentional or requires manual funding.` : "Review highest deviation sleeves.");
+  if (maxDrift >= 0.08) suggestedActions.push(topDriftRow ? `Validate whether ${topDriftLabel.toLowerCase()} ${topDriftDirection} is intentional or requires review.` : "Review highest deviation sleeves.");
   if (approvedActions.length > 0) suggestedActions.push("Validate pending rebalance actions.");
   if (hardBlock) suggestedActions.push("Resolve governance blocker before execution.");
   if (!suggestedActions.length) suggestedActions.push("Continue monitoring under current policy.");
@@ -716,13 +745,13 @@ export default function RiskOverview() {
           <div>
             <h1 className="text-lg font-semibold whitespace-nowrap uppercase tracking-wide">Risk Console</h1>
             <p className="text-xs text-slate-400">
-              Governance, kill-switch, exposure drift, blockers and execution readiness
+              Governance, execution guard, exposure drift, blockers and execution readiness
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
             <LiveIndicator label={loading ? "SYNCING" : "CURRENT RISK"} tone={severity === "LOW" ? "emerald" : severity === "WATCH" || severity === "MEDIUM" ? "amber" : "red"} />
-            <StatusPill tone={killSwitch === "ON" ? "red" : "green"}>Kill Switch {killSwitch}</StatusPill>
+            <StatusPill tone={executionGuard === "BLOCKED" ? "red" : "green"}>Execution Guard {executionGuard}</StatusPill>
             <StatusPill tone={severity === "LOW" ? "green" : severity === "WATCH" || severity === "MEDIUM" ? "amber" : "red"}>{severity}</StatusPill>
             <StatusPill tone="blue">{String(regime).toUpperCase()}</StatusPill>
             <StatusPill tone="amber">{String(actionPolicy).toUpperCase()}</StatusPill>
@@ -738,7 +767,7 @@ export default function RiskOverview() {
 
         <PremiumSectionHeader
           title="Risk Protection Layer"
-          subtitle="Kill-switch, severity, exposure drift and execution readiness"
+          subtitle="Execution guard, severity, exposure drift and execution readiness"
           tone={severity === "LOW" ? "emerald" : severity === "WATCH" || severity === "MEDIUM" ? "amber" : "red"}
           badges={["portfolio risk", "governance linked", "preprod protected"]}
         />
@@ -764,7 +793,7 @@ export default function RiskOverview() {
                 title: "Market Risk",
                 value: severity === "LOW" ? "LOW" : severity,
                 meta1: `Regime ${String(regime).toUpperCase()}`,
-                meta2: `Confidence ${riskConfidencePct}%`,
+                meta2: `Weighted Brick Confidence ${riskConfidencePct}%`,
                 tone: severity === "LOW" ? "green" : severity === "MEDIUM" ? "amber" : "red",
               },
               {
@@ -840,8 +869,8 @@ export default function RiskOverview() {
 
               <div className="rounded-xl border border-[#1c2633] bg-[#0d1520] p-2.5 min-h-[178px]">
                 <div className="text-[10px] uppercase tracking-wider text-slate-500">Protection</div>
-                <div className={`mt-2 text-base font-semibold ${killSwitch === "ON" ? "text-red-400" : "text-emerald-400"}`}>
-                  {killSwitch === "ON" ? "BLOCKED" : "PROTECTED"}
+                <div className={`mt-2 text-base font-semibold ${executionGuard === "BLOCKED" ? "text-red-400" : "text-emerald-400"}`}>
+                  {executionGuard === "BLOCKED" ? "BLOCKED" : "CLEAR"}
                 </div>
                 <div className="mt-3 text-[13px] leading-5 text-slate-300">
                   Hard block: {hardBlock ? "active" : "inactive"} · Execution blocked: {executionPlan?.blocked ? "yes" : "no"}
@@ -1063,13 +1092,29 @@ export default function RiskOverview() {
               {driftRows.map((row) => (
                 <div key={row.key} className="grid grid-cols-[1fr_70px_70px_130px_70px_80px_100px] items-center gap-2 text-xs">
                   <div className="truncate text-slate-200">{row.label}</div>
-                  <div className="text-slate-300">{pct(row.target)}</div>
-                  <div className="text-slate-300">{pct(row.exposure)}</div>
-                  <RiskBar value={row.drift} />
-                  <div className={Math.abs(row.drift) >= 0.08 ? "text-red-400" : Math.abs(row.drift) >= 0.03 ? "text-amber-300" : "text-emerald-400"}>
-                    {(row.drift * 100).toFixed(1)}%
+                  <div className="text-slate-300">{row.target == null ? "N/A" : pct(row.target)}</div>
+                  <div className="text-slate-300">{row.exposure == null ? "N/A" : pct(row.exposure)}</div>
+                  {row.drift == null ? <div className="text-center text-slate-500">N/A</div> : <RiskBar value={row.drift} />}
+                  <div className={
+                    row.drift == null
+                      ? "text-slate-500"
+                      : Math.abs(row.drift) >= 0.08
+                      ? "text-red-400"
+                      : Math.abs(row.drift) >= 0.03
+                      ? "text-amber-300"
+                      : "text-emerald-400"
+                  }>
+                    {row.drift == null ? "N/A" : `${(row.drift * 100).toFixed(1)}%`}
                   </div>
-                  <div className={row.severity === "HIGH" ? "text-red-400" : row.severity === "MEDIUM" ? "text-amber-300" : "text-emerald-400"}>
+                  <div className={
+                    row.severity === "N/A"
+                      ? "text-slate-500"
+                      : row.severity === "HIGH"
+                      ? "text-red-400"
+                      : row.severity === "MEDIUM"
+                      ? "text-amber-300"
+                      : "text-emerald-400"
+                  }>
                     {row.severity}
                   </div>
                   <div className="truncate text-slate-500">{row.origin}</div>
@@ -1097,19 +1142,22 @@ export default function RiskOverview() {
 
           <div className="grid grid-cols-6 gap-2">
             {driftRows.map((row) => {
-              const absDrift = Math.abs(row.drift || 0);
+              const absDrift = row.drift == null ? null : Math.abs(row.drift);
               const severity =
-                absDrift >= 0.25 ? "HIGH" :
-                absDrift >= 0.10 ? "WATCH" :
+                absDrift == null ? "N/A" :
+                absDrift >= 0.08 ? "HIGH" :
+                absDrift >= 0.03 ? "MEDIUM" :
                 "LOW";
 
               return (
                 <div
                   key={row.key}
                   className={`rounded-xl border p-3 ${
-                    severity === "HIGH"
+                    severity === "N/A"
+                      ? "border-slate-500/20 bg-slate-500/[0.04]"
+                      : severity === "HIGH"
                       ? "border-red-500/25 bg-red-500/[0.06]"
-                      : severity === "WATCH"
+                      : severity === "MEDIUM"
                       ? "border-amber-500/25 bg-amber-500/[0.05]"
                       : "border-emerald-500/20 bg-emerald-500/[0.04]"
                   }`}
@@ -1119,25 +1167,29 @@ export default function RiskOverview() {
                   </div>
 
                   <div className={`mt-2 text-lg font-semibold whitespace-nowrap ${
-                    severity === "HIGH"
+                    severity === "N/A"
+                      ? "text-slate-400"
+                      : severity === "HIGH"
                       ? "text-red-300"
-                      : severity === "WATCH"
+                      : severity === "MEDIUM"
                       ? "text-amber-300"
                       : "text-emerald-300"
                   }`}>
-                    {(absDrift * 100).toFixed(1)}%
+                    {absDrift == null ? "N/A" : `${(absDrift * 100).toFixed(1)}%`}
                   </div>
 
                   <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800">
                     <div
                       className={`h-full rounded-full ${
-                        severity === "HIGH"
+                        severity === "N/A"
+                          ? "bg-slate-600"
+                          : severity === "HIGH"
                           ? "bg-red-400"
-                          : severity === "WATCH"
+                          : severity === "MEDIUM"
                           ? "bg-amber-300"
                           : "bg-emerald-400"
                       }`}
-                      style={{ width: `${Math.min(100, absDrift * 100)}%` }}
+                      style={{ width: absDrift == null ? "0%" : `${Math.min(100, absDrift * 100)}%` }}
                     />
                   </div>
 
@@ -1370,9 +1422,11 @@ export default function RiskOverview() {
               <div
                 key={row.key}
                 className={`rounded-xl border p-3 ${
-                  row.severity === "HIGH"
+                  row.severity === "N/A"
+                    ? "border-slate-500/20 bg-slate-500/[0.04]"
+                    : row.severity === "HIGH"
                     ? "border-red-500/25 bg-red-500/[0.06]"
-                    : row.severity === "WATCH"
+                    : row.severity === "MEDIUM"
                     ? "border-amber-500/25 bg-amber-500/[0.05]"
                     : "border-emerald-500/20 bg-emerald-500/[0.04]"
                 }`}
@@ -1382,31 +1436,35 @@ export default function RiskOverview() {
                 </div>
 
                 <div className={`mt-2 text-lg font-semibold whitespace-nowrap ${
-                  row.severity === "HIGH"
+                  row.severity === "N/A"
+                    ? "text-slate-400"
+                    : row.severity === "HIGH"
                     ? "text-red-300"
-                    : row.severity === "WATCH"
+                    : row.severity === "MEDIUM"
                     ? "text-amber-300"
                     : "text-emerald-300"
                 }`}>
-                  {(row.absDrift * 100).toFixed(1)}%
+                  {row.absDrift == null ? "N/A" : `${(row.absDrift * 100).toFixed(1)}%`}
                 </div>
 
                 <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800">
                   <div
                     className={`h-full rounded-full ${
-                      row.severity === "HIGH"
+                      row.severity === "N/A"
+                        ? "bg-slate-600"
+                        : row.severity === "HIGH"
                         ? "bg-red-400"
-                        : row.severity === "WATCH"
+                        : row.severity === "MEDIUM"
                         ? "bg-amber-300"
                         : "bg-emerald-400"
                     }`}
-                    style={{ width: `${Math.min(100, row.absDrift * 100)}%` }}
+                    style={{ width: row.absDrift == null ? "0%" : `${Math.min(100, row.absDrift * 100)}%` }}
                   />
                 </div>
 
                 <div className="mt-2 flex justify-between text-[9px] uppercase tracking-[0.12em] text-slate-500">
                   <span>{row.severity}</span>
-                  <span>{(Math.abs(row.drift || 0) * 100).toFixed(1)}%</span>
+                  <span>{row.absDrift == null ? "N/A" : `${(row.absDrift * 100).toFixed(1)}%`}</span>
                 </div>
               </div>
             ))}
