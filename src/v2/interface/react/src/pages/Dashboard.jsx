@@ -584,10 +584,30 @@ export default function DashboardV4() {
       )
     : "—";
 
-  const currentDrawdown = ddCurve?.length ? Number(ddCurve[ddCurve.length - 1]?.v || 0) : 0;
-  const maxDrawdown = ddCurve?.length
-    ? Math.min(...ddCurve.map((x) => Number(x.v || 0)))
-    : 0;
+  const validDrawdownValues = Array.isArray(ddCurve)
+    ? ddCurve
+        .map((x) => x?.v)
+        .filter((v) => v !== null && v !== undefined && Number.isFinite(Number(v)))
+        .map(Number)
+    : [];
+
+  const globalDrawdownRaw = global?.drawdown;
+  const globalDrawdown =
+    globalDrawdownRaw !== null &&
+    globalDrawdownRaw !== undefined &&
+    Number.isFinite(Number(globalDrawdownRaw))
+      ? Number(globalDrawdownRaw)
+      : null;
+
+  const currentDrawdown =
+    validDrawdownValues.length > 0
+      ? validDrawdownValues[validDrawdownValues.length - 1]
+      : globalDrawdown;
+
+  const maxDrawdown =
+    validDrawdownValues.length > 0
+      ? Math.min(...validDrawdownValues)
+      : null;
 
   const protectionSummary =
 
@@ -725,11 +745,24 @@ const portfolioKeys = Array.from(
   const ytdPnl = dashboardOnline
     ? Number(global.pnlYTD ?? global.pnlGlobal ?? 0)
     : null;
-  const latestDrawdownPct = ddCurve?.length ? Number(ddCurve[ddCurve.length - 1].v || 0) : 0;
-  const drawdownPct = Number(global.drawdown ?? latestDrawdownPct);
-  const drawdownValue = dashboardOnline
-    ? Number(global.drawdownValue ?? 0)
-    : null;
+  const latestDrawdownPct =
+    validDrawdownValues.length > 0
+      ? validDrawdownValues[validDrawdownValues.length - 1]
+      : null;
+
+  const drawdownPct =
+    globalDrawdown !== null
+      ? globalDrawdown
+      : latestDrawdownPct;
+
+  const drawdownValueRaw = global?.drawdownValue;
+  const drawdownValue =
+    dashboardOnline &&
+    drawdownValueRaw !== null &&
+    drawdownValueRaw !== undefined &&
+    Number.isFinite(Number(drawdownValueRaw))
+      ? Number(drawdownValueRaw)
+      : null;
 
   
 
@@ -1473,7 +1506,13 @@ const allocationRows = portfolioKeys.map((key) => {
             <Kpi icon={Activity} label="Trading PnL" value={eur(tradingPnl)} sub="Active strategies ex-LT" tone={tradingPnl >= 0 ? "green" : "red"} />
             <Kpi icon={BarChart3} label="Options US PnL" value={eur(optionsPnl)} sub="Funded simulation" tone={optionsPnl >= 0 ? "green" : "red"} />
             <Kpi icon={CircleCheck} label="LT PnL" value={eur(longTermPnl)} sub="Patrimonial assets" tone={longTermPnl >= 0 ? "green" : "red"} />
-            <Kpi icon={LineChart} label="Drawdown" value={`${drawdownPct}%`} sub={eur(drawdownValue)} tone="red" />
+            <Kpi
+              icon={LineChart}
+              label="Drawdown"
+              value={drawdownPct !== null ? `${drawdownPct.toFixed(2)}%` : "N/A"}
+              sub={eur(drawdownValue)}
+              tone="red"
+            />
             <Kpi icon={Briefcase} label="Open Positions" value={global.openPositions ?? 0} sub="Across bricks" />
             <Kpi 
   icon={ServerCog} 
@@ -1571,16 +1610,20 @@ const allocationRows = portfolioKeys.map((key) => {
                   </select>
                   <span className="text-[10px] text-slate-400">{ddCurve?.length || 0} pts</span>
                   <span className="text-xs font-semibold text-red-400">
-                    {ddCurve?.length
-                      ? `${ddCurve[ddCurve.length - 1].v}%`
-                      : "0%"}
+                    {currentDrawdown !== null
+                      ? `${currentDrawdown.toFixed(2)}%`
+                      : "N/A"}
                   </span>
                 </div>
               </div>
 
               <div className="mb-1 flex items-center justify-between text-[9px] text-slate-500">
-                <span>current DD {currentDrawdown.toFixed(2)}%</span>
-                <span className="text-red-300">max DD {maxDrawdown.toFixed(2)}%</span>
+                <span>
+                  current DD {currentDrawdown !== null ? `${currentDrawdown.toFixed(2)}%` : "N/A"}
+                </span>
+                <span className="text-red-300">
+                  max DD {maxDrawdown !== null ? `${maxDrawdown.toFixed(2)}%` : "N/A"}
+                </span>
               </div>
 
               <div className="mb-1 flex items-center gap-2 text-[9px] text-slate-400">
