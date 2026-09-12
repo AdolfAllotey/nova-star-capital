@@ -703,17 +703,22 @@ const portfolioKeys = Array.from(
 
   const protectedBrick = protectionSummary[0];
 
-  const ordersExecuted = Number(global.ordersExecuted ?? Math.max(0, Number(global.ordersCount ?? 0) - Number(global.ordersRejected ?? 0)));
-  const ordersRejected = Number(global.ordersRejected ?? 0);
-  const activeEntryOrders = Number(global.activeEntryOrders ?? 0);
-  const exitOrders = Number(global.exitOrders ?? 0);
-  const optionsSignals = Number(
-    global.optionsSignals ??
-    global.optionsUsSignals ??
-    global.shadowSignals ??
-    0
+  const numericOrNull = (value) =>
+    value !== null &&
+    value !== undefined &&
+    value !== "" &&
+    Number.isFinite(Number(value))
+      ? Number(value)
+      : null;
+
+  const ordersExecuted = numericOrNull(global.ordersExecuted);
+  const ordersRejected = numericOrNull(global.ordersRejected);
+  const activeEntryOrders = numericOrNull(global.activeEntryOrders);
+  const exitOrders = numericOrNull(global.exitOrders);
+  const optionsSignals = numericOrNull(
+    global.optionsSignals ?? global.optionsUsSignals
   );
-  const fillRatio = Number(global.fillRatio ?? (Number(global.ordersCount ?? 0) > 0 ? Math.round((ordersExecuted / Number(global.ordersCount ?? 1)) * 100) : 0));
+  const fillRatio = numericOrNull(global.fillRatio);
 
   const dailyPnl = dashboardOnline
     ? Number(global.pnlDaily ?? global.pnlGlobal ?? 0)
@@ -764,7 +769,7 @@ const portfolioKeys = Array.from(
       ? Number(drawdownValueRaw)
       : null;
 
-  
+
 
 const allocationRows = portfolioKeys.map((key) => {
     const b = bricks?.[key] || {};
@@ -826,7 +831,7 @@ const allocationRows = portfolioKeys.map((key) => {
   const safetyMode = String(global?.governanceMode || global?.supervisionGateMode || "UNKNOWN").toUpperCase();
 
 
-  
+
   const effectiveRegimeTone =
     effectivePortfolioRegime === "BLOCKING" || effectivePortfolioRegime === "HARD_BLOCK"
       ? "text-red-400"
@@ -849,7 +854,7 @@ const allocationRows = portfolioKeys.map((key) => {
             ? ["Defensive posture", "Capital preserved", "Exposure reduced"]
             : ["Offensive active", "Defensive maintained", "Hedges monitored"];
 
-  
+
   const effectiveRegimeBarClass =
     effectivePortfolioRegime === "BLOCKING" || effectivePortfolioRegime === "HARD_BLOCK"
       ? "bg-red-400"
@@ -859,14 +864,14 @@ const allocationRows = portfolioKeys.map((key) => {
           ? "bg-cyan-300"
           : "bg-emerald-400";
 
-  const marketRegimeDelta = Number(global?.confidenceDelta ?? global?.confidenceHistory?.delta ?? 
+  const marketRegimeDelta = Number(global?.confidenceDelta ?? global?.confidenceHistory?.delta ??
     marketRegime?.delta ??
     marketRegime?.confidence_delta ??
     marketRegime?.score_delta ??
     0
   );
 
-  
+
 
   const labelMap = {
     crypto: "Crypto",
@@ -1514,11 +1519,11 @@ const allocationRows = portfolioKeys.map((key) => {
               tone="red"
             />
             <Kpi icon={Briefcase} label="Open Positions" value={global.openPositions ?? 0} sub="Across bricks" />
-            <Kpi 
-  icon={ServerCog} 
-  label="Orders Today" 
-  value={global.ordersToday ?? global.ordersCount ?? 0} 
-  sub={`${activeEntryOrders} entry / ${exitOrders} exit / ${optionsSignals} options signals`} 
+            <Kpi
+  icon={ServerCog}
+  label="Orders Today"
+  value={global.ordersToday ?? "N/A"}
+  sub={`${activeEntryOrders ?? "N/A"} entry / ${exitOrders ?? "N/A"} exit / ${optionsSignals ?? "N/A"} options signals`}
 />
             <Kpi icon={ShieldCheck} label="Protected Bricks" value={`${global.protectedBricksCount ?? 0} / ${Object.keys(bricks || {}).length || 0}`} sub="Protected" tone="green" />
             <Kpi icon={ShieldCheck} label="Trailing Hits" value={global.trailingHitsCount ?? 0} sub="Today" />
@@ -1530,7 +1535,7 @@ const allocationRows = portfolioKeys.map((key) => {
               <div className="mb-1 flex items-center justify-between">
                 <div>
                   <div className="text-sm font-bold uppercase tracking-wide text-white whitespace-nowrap">Equity Curve</div>
-                  
+
                 </div>
 
                 <div className="flex items-center gap-2">
@@ -1592,7 +1597,7 @@ const allocationRows = portfolioKeys.map((key) => {
               <div className="mb-1 flex items-center justify-between">
                 <div>
                   <div className="text-sm font-bold uppercase tracking-wide text-white whitespace-nowrap">Drawdown</div>
-                  
+
                 </div>
 
                 <div className="flex items-center gap-2">
@@ -1680,7 +1685,7 @@ const allocationRows = portfolioKeys.map((key) => {
             <Box className="grid min-h-[318px] grid-cols-[0.9fr_1.5fr] overflow-visible p-3">
               <div className="border-r border-[#1f2a37] pr-4">
                 <div className="mb-2 flex items-start justify-between">
-                  
+
 <div className="flex items-center justify-between">
   <Title>Risk Console</Title>
 
@@ -1719,7 +1724,7 @@ const allocationRows = portfolioKeys.map((key) => {
                       ? "text-lg font-semibold text-amber-300"
                       : "text-lg font-semibold text-red-400"
                   }>
-                    
+
 {riskLevel}
 
 <div className="mt-0.5 text-[8px] text-slate-500">
@@ -2054,12 +2059,12 @@ const allocationRows = portfolioKeys.map((key) => {
                 {[
                   ["Candidate Orders", global.candidatesCount ?? 0],
                   ["Final Orders", global.ordersCount ?? 0],
-                  ["Entry Orders", activeEntryOrders],
-                  ["Exit Orders", exitOrders],
-                  ["Options Signals", optionsSignals],
-                  ["Fills", ordersExecuted],
-                  ["Rejected", ordersRejected],
-                  ["Fill Ratio", `${fillRatio}%`],
+                  ["Entry Orders", activeEntryOrders ?? "N/A"],
+                  ["Exit Orders", exitOrders ?? "N/A"],
+                  ["Options Signals", optionsSignals ?? "N/A"],
+                  ["Fills", ordersExecuted ?? "N/A"],
+                  ["Rejected", ordersRejected ?? "N/A"],
+                  ["Fill Ratio", fillRatio !== null ? `${fillRatio}%` : "N/A"],
                 ].map(([label, value], i) => (
                   <div key={label} className={i === 4 ? "" : "border-r border-[#1f2a37]"}>
                     <div className="text-[9px] uppercase leading-tight text-slate-500">{label}</div>
