@@ -749,112 +749,18 @@ const allocationRows = portfolioKeys.map((key) => {
     };
   });
 
-  const portfolioConfidence = useMemo(() => {
-    const entries = Object.entries(finalWeights || {});
-    let weighted = 0;
-    let total = 0;
+  const strategicConfidencePctRaw =
+    global?.strategicConfidencePct ??
+    global?.confidenceSplit?.strategic?.confidencePct ??
+    global?.confidencePct ??
+    null;
 
-    entries.forEach(([key, weight]) => {
-      const w = Number(weight || 0);
-      const c = Number(
-        portfolioTarget?.brick_confidence?.[key] ??
-        portfolioTarget?.data?.brick_confidence?.[key] ??
-        bricks?.[key]?.confidence ??
-        0
-      );
-
-      if (w > 0 && c > 0) {
-        weighted += w * c;
-        total += w;
-      }
-    });
-
-    if (total > 0) return weighted / total;
-
-    const strategyRows = Array.isArray(strategies) ? strategies : [];
-    let sWeighted = 0;
-    let sTotal = 0;
-
-    strategyRows.forEach((s) => {
-      const w = Number(s.targetExposure || 0);
-      const c = Number(s.confidence || s.conf || 0);
-      if (w > 0 && c > 0) {
-        sWeighted += w * c;
-        sTotal += w;
-      }
-    });
-
-    return sTotal > 0 ? sWeighted / sTotal : 0;
-  }, [finalWeights, portfolioTarget, bricks, strategies]);
-
-  const marketRegimeConfidence = Number(
-    marketRegime?.confidence ??
-    marketRegime?.score ??
-    global?.confidence ??
-    portfolioConfidence ??
-    0
-  );
-
-  const riskModeScore = (() => {
-    const mode = String(
-      global?.riskMode ||
-      global?.riskLimits?.risk_mode ||
-      global?.governance?.inputs?.risk_limits?.risk_mode ||
-      ""
-    ).toLowerCase();
-
-    if (mode.includes("blocked") || mode.includes("hard")) return 0.2;
-    if (mode.includes("reduced")) return 0.55;
-    if (mode.includes("caution")) return 0.65;
-    if (mode.includes("normal")) return 0.85;
-    return 0.6;
-  })();
-
-  const governanceScore = (() => {
-    if (global?.masterAuditHardBlock || global?.globalAuditBlocking) return 0.15;
-    const mode = String(global?.governanceMode || "").toLowerCase();
-    if (mode.includes("ok") || mode.includes("open")) return 0.9;
-    if (mode.includes("caution") || mode.includes("watch")) return 0.65;
-    if (mode.includes("blocked")) return 0.2;
-    return 0.6;
-  })();
-
-  const correlationScore = (() => {
-    const gate =
-      global?.correlationGate ||
-      global?.correlation_gate_state ||
-      global?.governance?.correlation_gate_state ||
-      null;
-
-    if (!gate) return 0.65;
-    if (gate.active === true) return 0.35;
-    return 0.85;
-  })();
-
-  const nscBrainConfidence = Number(
-    global?.confidence ??
-    global?.confidencePct / 100 ??
-    portfolioConfidence ??
-    (
-      marketRegimeConfidence * 0.4 +
-      riskModeScore * 0.3 +
-      governanceScore * 0.15 +
-      correlationScore * 0.15
-    )
-  );
-
-  const rawPortfolioConfidencePct = Math.round(Math.max(0, Math.min(1, nscBrainConfidence)) * 100);
-
-  const blockingPenalty =
-    global?.globalAuditBlocking || global?.institutionalSummaryStatus === "BLOCKING"
-      ? 25
-      : global?.globalAuditStatus === "BLOCKING"
-        ? 25
-        : global?.orchestrationStatus === "WARNING"
-          ? 10
-          : 0;
-
-  const portfolioConfidencePct = Math.max(0, Math.min(100, rawPortfolioConfidencePct - blockingPenalty));
+  const strategicConfidencePct =
+    strategicConfidencePctRaw !== null &&
+    strategicConfidencePctRaw !== undefined &&
+    Number.isFinite(Number(strategicConfidencePctRaw))
+      ? Math.max(0, Math.min(100, Number(strategicConfidencePctRaw)))
+      : null;
 
   const portfolioRegimeRaw = String(
     marketRegime?.regime ||
@@ -1148,12 +1054,12 @@ const allocationRows = portfolioKeys.map((key) => {
                 </div>
                 <div className="mt-3 space-y-2.5">
                   {[
-                    ["Strategic", Number(global?.strategicConfidencePct ?? global?.confidenceSplit?.strategic?.confidencePct ?? portfolioConfidencePct), "Allocation quality", "from-blue-500 to-cyan-300", Number(global?.confidenceDelta ?? 0) * 100],
-                    ["Operational", Number(global?.operationalConfidencePct ?? global?.confidenceSplit?.operational?.confidencePct ?? 0), "System health", "from-emerald-500 to-teal-300", Number(global?.operationalConfidenceDelta ?? 0)],
-                    ["Execution", Number(global?.executionConfidencePct ?? global?.confidenceSplit?.execution?.confidencePct ?? 0), "Execution readiness", "from-violet-500 to-fuchsia-300", Number(global?.executionConfidenceDelta ?? 0)],
+                    ["Strategic", strategicConfidencePct, "Governed allocation confidence", "from-blue-500 to-cyan-300", global?.confidenceDelta != null ? Number(global.confidenceDelta) * 100 : null],
                   ].map(([label, value, subtitle, gradient, delta]) => {
-                    const pct = Math.max(0, Math.min(100, Math.round(Number(value || 0))));
-                    const dRaw = Number(delta || 0);
+                    const pct = value != null && Number.isFinite(Number(value))
+                      ? Math.max(0, Math.min(100, Math.round(Number(value))))
+                      : null;
+                    const dRaw = delta != null && Number.isFinite(Number(delta)) ? Number(delta) : 0;
                     const d = Math.abs(dRaw) < 0.01 ? 0 : Number(dRaw.toFixed(2));
 
                     return (
@@ -1164,7 +1070,7 @@ const allocationRows = portfolioKeys.map((key) => {
                             <div className="text-[8px] text-slate-500">{subtitle}</div>
                           </div>
                           <div className="text-right">
-                            <div className="text-[10px] font-bold text-slate-100">{pct}%</div>
+                            <div className="text-[10px] font-bold text-slate-100">{pct != null ? `${pct}%` : "N/A"}</div>
                             {d !== 0 && (
                               <div className={`whitespace-nowrap text-[8px] font-semibold ${d > 0 ? "text-emerald-300" : d < -5 ? "text-red-300" : "text-amber-300"}`}>
                                 {d > 0 ? "▲" : "▼"}{Math.abs(d).toFixed(2)}
@@ -1176,7 +1082,7 @@ const allocationRows = portfolioKeys.map((key) => {
                         <div className="h-1.5 overflow-hidden rounded-full bg-slate-900/90 ring-1 ring-white/5">
                           <div
                             className={`h-full rounded-full bg-gradient-to-r ${gradient} shadow-[0_0_14px_rgba(34,211,238,0.35)]`}
-                            style={{ width: `${pct}%` }}
+                            style={{ width: `${pct ?? 0}%` }}
                           />
                         </div>
                       </div>
@@ -1254,8 +1160,7 @@ const allocationRows = portfolioKeys.map((key) => {
                 </div>
                 <div className="mt-1 text-[13px] leading-5 text-slate-300">
                   Portfolio operating in <span className="font-semibold text-emerald-300">{effectivePortfolioRegime}</span> regime.
-                  Portfolio confidence remains <span className="font-semibold text-cyan-300">{portfolioConfidencePct >= 80 ? "HIGH" : portfolioConfidencePct >= 60 ? "ACCEPTABLE" : "UNDER WATCH"}</span>
-                  <span className="text-slate-500"> ({portfolioConfidencePct}%)</span>.
+                  Governed strategic confidence is <span className="font-semibold text-cyan-300">{strategicConfidencePct != null ? `${Math.round(strategicConfidencePct)}%` : "N/A"}</span>.
                   {hasBlocking ? (
                     <span className="ml-1 font-semibold text-red-300">Blocking governance condition detected.</span>
                   ) : (
@@ -1302,7 +1207,7 @@ const allocationRows = portfolioKeys.map((key) => {
                 {
                   title: "Market Regime",
                   value: effectivePortfolioRegime,
-                  meta1: `Confidence ${portfolioConfidencePct}%`,
+                  meta1: `Strategic confidence ${strategicConfidencePct != null ? `${Math.round(strategicConfidencePct)}%` : "N/A"}`,
                   meta2: "Engine Market Regime",
                   badge: effectivePortfolioRegime === "RISK_ON" ? "HEALTHY" : effectivePortfolioRegime === "RISK_OFF" ? "DEFENSIVE" : "WATCH",
                   tone: effectivePortfolioRegime === "BLOCKING" || effectivePortfolioRegime === "HARD_BLOCK" ? "red" : effectivePortfolioRegime === "RISK_CONTROLLED" ? "amber" : "green",
@@ -1403,7 +1308,7 @@ const allocationRows = portfolioKeys.map((key) => {
                     <span>
                       Market regime confidence is
                       <span className="ml-1 font-semibold text-cyan-300">
-                        {blockingPenalty > 0 ? "risk-adjusted under blocking controls" : portfolioConfidencePct >= 80 ? "strong" : portfolioConfidencePct >= 60 ? "acceptable" : "under watch"}
+                        {strategicConfidencePct != null ? `${Math.round(strategicConfidencePct)}% (governed strategic)` : "N/A"}
                       </span>
                     </span>
                   </div>

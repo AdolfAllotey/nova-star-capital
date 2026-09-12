@@ -52,8 +52,6 @@ CRYPTO_OPEN_POSITIONS_PATH = Path("/opt/nsc/data/preprod/trading/open_positions.
 CRYPTO_EXECUTION_PLAN_PATH = Path("/opt/nsc/data/preprod/trading/execution_plan.json")
 EQUITY_CURVE_STATE_PATH = Path("/opt/nsc/data/preprod/analysis/equity_curve_state.json")
 CONFIDENCE_HISTORY_PATH = Path("/opt/nsc/data/preprod/portfolio/audit/confidence_history.jsonl")
-OPERATIONAL_CONFIDENCE_PATH = Path("/opt/nsc/data/preprod/portfolio/audit/operational_confidence.json")
-EXECUTION_CONFIDENCE_PATH = Path("/opt/nsc/data/preprod/portfolio/audit/execution_confidence.json")
 PNL_STATE_PATH = Path("/opt/nsc/data/preprod/analysis/pnl_state.json")
 TRADE_JOURNAL_STATE_PATH = Path("/opt/nsc/data/preprod/analysis/trade_journal_state.json")
 OPTIONS_V3_CLOSED_PATH = Path("/opt/nsc/data/preprod/options_v3/options_v3_positions_closed.json")
@@ -1276,8 +1274,6 @@ def dashboard_v3() -> Dict[str, Any]:
     )
 
 
-    operational_confidence = load_json(OPERATIONAL_CONFIDENCE_PATH, default={}) or {}
-    execution_confidence = load_json(EXECUTION_CONFIDENCE_PATH, default={}) or {}
 
     global_payload = {
         "env": "PREPROD",
@@ -1286,28 +1282,12 @@ def dashboard_v3() -> Dict[str, Any]:
         "confidencePct": round(avg_brick_confidence * 100, 2),
         "strategicConfidence": avg_brick_confidence,
         "strategicConfidencePct": round(avg_brick_confidence * 100, 2),
-        "operationalConfidence": safe_float(operational_confidence.get("confidence"), 0.0),
-        "operationalConfidencePct": safe_float(operational_confidence.get("confidencePct"), 0.0),
-        "executionConfidence": safe_float(execution_confidence.get("confidence"), 0.0),
-        "executionConfidencePct": safe_float(execution_confidence.get("confidencePct"), 0.0),
         "confidenceSplit": {
             "strategic": {
                 "label": "Strategic",
                 "confidence": avg_brick_confidence,
                 "confidencePct": round(avg_brick_confidence * 100, 2),
                 "source": str(PORTFOLIO_TARGET_PATH),
-            },
-            "operational": {
-                "label": "Operational",
-                "confidence": safe_float(operational_confidence.get("confidence"), 0.0),
-                "confidencePct": safe_float(operational_confidence.get("confidencePct"), 0.0),
-                "source": str(OPERATIONAL_CONFIDENCE_PATH),
-            },
-            "execution": {
-                "label": "Execution",
-                "confidence": safe_float(execution_confidence.get("confidence"), 0.0),
-                "confidencePct": safe_float(execution_confidence.get("confidencePct"), 0.0),
-                "source": str(EXECUTION_CONFIDENCE_PATH),
             },
         },
         "confidenceHistory": confidence_history,
