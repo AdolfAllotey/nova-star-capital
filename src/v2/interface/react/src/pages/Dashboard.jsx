@@ -1875,17 +1875,27 @@ const allocationRows = portfolioKeys.map((key) => {
                 <div>Brick</div><div>Mode</div><div>Regime</div><div>Target</div><div>Current</div><div>Pos</div><div>PnL</div><div>Risk</div><div>Conf.</div>
               </div>
 
-              {strategies.map((s) => {
+              {strategies
+                .filter((s) => !String(s?.key || "").endsWith("_shadow"))
+                .map((s) => {
                 const key = normalizeBrickKey(s.key);
                 const riskOk = Number(s.riskFlags ?? 0) === 0;
-                const confRaw = Number(
+
+                const confSource =
                   s.confidence ??
                   s.conf ??
                   portfolioTarget?.brick_confidence?.[key] ??
                   portfolioTarget?.data?.brick_confidence?.[key] ??
-                  0
-                );
-                const conf = Math.round(confRaw * 100);
+                  null;
+
+                const confRaw =
+                  confSource !== null &&
+                  confSource !== undefined &&
+                  Number.isFinite(Number(confSource))
+                    ? Number(confSource)
+                    : null;
+
+                const conf = confRaw !== null ? Math.round(confRaw * 100) : null;
 
                 return (
                   <div key={s.key || s.name} className="grid grid-cols-[1.15fr_0.75fr_0.75fr_0.55fr_0.6fr_0.45fr_0.65fr_0.45fr_0.45fr] gap-2 border-b border-[#172231] py-1.5 text-[9.5px]">
@@ -1896,12 +1906,14 @@ const allocationRows = portfolioKeys.map((key) => {
                       </span>
                     </div>
                     <div className="truncate">{s.regime || "—"}</div>
-                    <div>{pct(s.targetExposure)}</div>
-                    <div>{pct(s.currentExposure ?? s.targetExposure)}</div>
+                    <div>{s.targetExposure != null ? pct(s.targetExposure) : "N/A"}</div>
+                    <div>{s.currentExposure != null ? pct(s.currentExposure) : "N/A"}</div>
                     <div>{s.positions ?? s.openPositions ?? 0}</div>
-                    <div className={Number(s.pnl || 0) >= 0 ? "text-emerald-400" : "text-red-400"}>{eur(s.pnl)}</div>
+                    <div className={s.pnl != null && Number(s.pnl) < 0 ? "text-red-400" : "text-emerald-400"}>{eur(s.pnl)}</div>
                     <div className={riskOk ? "text-emerald-400" : "text-amber-300"}>●</div>
-                    <div className={confidenceClass(confRaw)}>{conf}%</div>
+                    <div className={confRaw !== null ? confidenceClass(confRaw) : "text-slate-500"}>
+                      {conf !== null ? `${conf}%` : "N/A"}
+                    </div>
                   </div>
                 );
               })}
