@@ -133,7 +133,9 @@ function eur(v) {
 }
 
 function pct(v) {
-  const n = Number(v || 0);
+  if (v === null || v === undefined || v === "") return "N/A";
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "N/A";
   return `${(n * 100).toFixed(1)}%`;
 }
 
@@ -734,18 +736,29 @@ const portfolioKeys = Array.from(
 const allocationRows = portfolioKeys.map((key) => {
     const b = bricks?.[key] || {};
 
+    const targetSource =
+      finalWeights?.[key] ??
+      b.target_weight_snapshot ??
+      null;
+
+    const currentSource =
+      b.current_weight_estimate ??
+      null;
+
     return {
       key,
-      target: Number(
-        finalWeights?.[key] ??
-        b.target_weight_snapshot ??
-        0
-      ),
-      current: Number(
-        b.current_weight_estimate ??
-        b.target_weight_snapshot ??
-        0
-      ),
+      target:
+        targetSource !== null &&
+        targetSource !== undefined &&
+        Number.isFinite(Number(targetSource))
+          ? Number(targetSource)
+          : null,
+      current:
+        currentSource !== null &&
+        currentSource !== undefined &&
+        Number.isFinite(Number(currentSource))
+          ? Number(currentSource)
+          : null,
     };
   });
 
@@ -843,16 +856,43 @@ const allocationRows = portfolioKeys.map((key) => {
     return s;
   };
 
-  const cashBufferPct = Number(global?.capitalObserved || 0) > 0
-    ? Number(global?.cashAvailable || 0) / Number(global?.capitalObserved || 1)
-    : Number(
-        portfolioTarget?.cash_buffer ??
-        portfolioTarget?.data?.cash_buffer ??
-        portfolioTarget?.summary?.cash_buffer ??
-        portfolioState?.cash_buffer ??
-        portfolioState?.data?.cash_buffer ??
-        0
-      );
+  const capitalObservedRaw = global?.capitalObserved;
+  const cashAvailableRaw = global?.cashAvailable;
+
+  const governedCashBufferRaw =
+    portfolioTarget?.cash_buffer ??
+    portfolioTarget?.data?.cash_buffer ??
+    portfolioTarget?.summary?.cash_buffer ??
+    portfolioState?.cash_buffer ??
+    portfolioState?.data?.cash_buffer ??
+    null;
+
+  const cashBufferMinRaw =
+    portfolioTarget?.cash_buffer_min_pct ??
+    portfolioTarget?.data?.cash_buffer_min_pct ??
+    null;
+
+  const cashBufferMinPct =
+    cashBufferMinRaw !== null &&
+    cashBufferMinRaw !== undefined &&
+    Number.isFinite(Number(cashBufferMinRaw))
+      ? Number(cashBufferMinRaw)
+      : null;
+
+  const cashBufferPct =
+    capitalObservedRaw !== null &&
+    capitalObservedRaw !== undefined &&
+    cashAvailableRaw !== null &&
+    cashAvailableRaw !== undefined &&
+    Number.isFinite(Number(capitalObservedRaw)) &&
+    Number(capitalObservedRaw) > 0 &&
+    Number.isFinite(Number(cashAvailableRaw))
+      ? Number(cashAvailableRaw) / Number(capitalObservedRaw)
+      : governedCashBufferRaw !== null &&
+        governedCashBufferRaw !== undefined &&
+        Number.isFinite(Number(governedCashBufferRaw))
+        ? Number(governedCashBufferRaw)
+        : null;
 
   const dashboardRegime = String(
     marketRegime?.regime ||
@@ -899,8 +939,18 @@ const allocationRows = portfolioKeys.map((key) => {
       tone: global?.masterFundingManualApprovalRequired ? "amber" : "green",
     },
     {
-      label: cashBufferPct > 0.1 ? "Cash buffer above flexibility threshold" : "Cash buffer under monitoring",
-      tone: cashBufferPct > 0.1 ? "green" : "amber",
+      label:
+        cashBufferPct === null || cashBufferMinPct === null
+          ? "Cash buffer status unavailable"
+          : cashBufferPct >= cashBufferMinPct
+            ? "Cash buffer at or above governed minimum"
+            : "Cash buffer below governed minimum",
+      tone:
+        cashBufferPct === null || cashBufferMinPct === null
+          ? "amber"
+          : cashBufferPct >= cashBufferMinPct
+            ? "green"
+            : "amber",
     },
   ];
 
@@ -952,8 +1002,18 @@ const allocationRows = portfolioKeys.map((key) => {
       tone: String(global?.protectionLevel || "").toUpperCase().includes("PROTECTED") ? "green" : "amber",
     },
     {
-      label: cashBufferPct > 0.1 ? "CASH HEALTHY" : "CASH WATCH",
-      tone: cashBufferPct > 0.1 ? "green" : "amber",
+      label:
+        cashBufferPct === null || cashBufferMinPct === null
+          ? "CASH N/A"
+          : cashBufferPct >= cashBufferMinPct
+            ? "CASH HEALTHY"
+            : "CASH WATCH",
+      tone:
+        cashBufferPct === null || cashBufferMinPct === null
+          ? "amber"
+          : cashBufferPct >= cashBufferMinPct
+            ? "green"
+            : "amber",
     },
     {
       label: global?.masterFundingManualApprovalRequired ? "FUNDING MANUAL" : "FUNDING OK",
@@ -1727,35 +1787,58 @@ const allocationRows = portfolioKeys.map((key) => {
                   <div>Brick</div><div>Target %</div><div>Current %</div><div></div><div>Gap %</div><div>Urgency</div>
                 </div>
                 {allocationRows.map((r) => {
-                  const gap = Math.round((Number(r.current || 0) - Number(r.target || 0)) * 1000) / 10;
-                  const absGap = Math.abs(gap);
-                  const urgency = absGap >= 20 ? "HIGH" : absGap >= 8 ? "WATCH" : "LOW";
+                  const hasGap = r.current !== null && r.target !== null;
+                  const gap = hasGap
+                    ? Math.round((r.current - r.target) * 1000) / 10
+                    : null;
+                  const absGap = gap !== null ? Math.abs(gap) : null;
+                  const urgency =
+                    absGap === null
+                      ? null
+                      : absGap >= 20
+                        ? "HIGH"
+                        : absGap >= 8
+                          ? "WATCH"
+                          : "LOW";
+
                   return (
                     <div key={r.key} className="grid grid-cols-[1.45fr_48px_48px_65px_48px_58px] gap-2 items-center text-[10px]">
                       <div className="truncate text-white">{humanBrickName(r.key)}</div>
                       <div>{pct(r.target)}</div>
                       <div>{pct(r.current)}</div>
                       <div className="h-1.5 rounded bg-slate-800">
-                        <div
-                          className={`h-1.5 rounded ${
-                            gap < -8 ? "bg-red-400" : gap > 8 ? "bg-emerald-400" : "bg-blue-400"
-                          }`}
-                          style={{ width: `${Math.min(100, Math.abs(gap) * 2.8)}%` }}
-                        />
+                        {gap !== null ? (
+                          <div
+                            className={`h-1.5 rounded ${
+                              gap < -8 ? "bg-red-400" : gap > 8 ? "bg-emerald-400" : "bg-blue-400"
+                            }`}
+                            style={{ width: `${Math.min(100, Math.abs(gap) * 2.8)}%` }}
+                          />
+                        ) : null}
                       </div>
-                      <div className={gap < 0 ? "text-red-400" : "text-emerald-400"}>
-                        {gap > 0 ? "+" : ""}{gap.toFixed(1)}%
+                      <div className={
+                        gap === null
+                          ? "text-slate-500"
+                          : gap < 0
+                            ? "text-red-400"
+                            : "text-emerald-400"
+                      }>
+                        {gap === null ? "N/A" : `${gap > 0 ? "+" : ""}${gap.toFixed(1)}%`}
                       </div>
                       <div>
-                        <span className={`rounded-md border px-1.5 py-0.5 text-[8px] font-semibold ${
-                          urgency === "HIGH"
-                            ? "border-red-500/30 bg-red-500/10 text-red-300"
-                            : urgency === "WATCH"
-                            ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
-                            : "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
-                        }`}>
-                          {urgency}
-                        </span>
+                        {urgency ? (
+                          <span className={`rounded-md border px-1.5 py-0.5 text-[8px] font-semibold ${
+                            urgency === "HIGH"
+                              ? "border-red-500/30 bg-red-500/10 text-red-300"
+                              : urgency === "WATCH"
+                                ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
+                                : "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                          }`}>
+                            {urgency}
+                          </span>
+                        ) : (
+                          <span className="text-slate-500">N/A</span>
+                        )}
                       </div>
                     </div>
                   );
