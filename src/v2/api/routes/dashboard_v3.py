@@ -66,11 +66,6 @@ METALS_STATE_PATH = Path("/opt/nsc/data/preprod/metals/metals_state.json")
 METALS_EXPOSURE_PATH = Path("/opt/nsc/app/data/metals/state/exposure_snapshot.json")
 METALS_FILLS_PATH = Path("/opt/nsc/app/data/metals/execution/simulated_fills.jsonl")
 
-OPTIONS_V2_DASHBOARD_PATH = Path("/opt/nsc/app/src/v2/options_v2/data/options_v2_dashboard.json")
-OPTIONS_V2_STATUS_PATH = Path("/opt/nsc/app/src/v2/options_v2/data/options_v2_status.json")
-OPTIONS_V2_DAILY_REPORT_PATH = Path("/opt/nsc/app/src/v2/options_v2/data/options_v2_daily_report.json")
-OPTIONS_V2_TRADES_PATH = Path("/opt/nsc/app/src/v2/options_v2/data/options_v2_trades.json")
-OPTIONS_V2_POSITIONS_PATH = Path("/opt/nsc/app/src/v2/options_v2/data/options_v2_positions.json")
 
 
 def utc_now_iso() -> str:
@@ -132,38 +127,90 @@ def compute_period_pnl() -> dict:
             if dt >= year_start:
                 ytd += pnl
 
-    options_v2 = load_json(OPTIONS_V2_DAILY_REPORT_PATH, default={}) or {}
-    perf = options_v2.get("performance", {}) if isinstance(options_v2, dict) else {}
-    delta = options_v2.get("delta", {}) if isinstance(options_v2, dict) else {}
+    # Options V3 is the sole Options authority for period PnL.
+    # Period metrics are realized-only by certified contract.
+    # Invalid or missing Options data must remain observable and
+    # must never fall back to Options V2.
+    options_performance_path = (
+        OPTIONS_V3_PATH / "options_v3_performance.json"
+    )
+    options_performance_status = "MISSING"
 
-    daily += safe_float(delta.get("realized_pnl_delta_eur", 0.0), 0.0)
-    daily += safe_float(delta.get("unrealized_pnl_delta_eur", 0.0), 0.0)
+    if options_performance_path.exists():
+        options_performance_status = "INVALID"
+        options_v3 = load_json(
+            options_performance_path,
+            default=None,
+        )
 
-    # Options V2 is cumulative since preprod start, so include in MTD/YTD for now.
-    options_total = safe_float(perf.get("realized_pnl_eur", 0.0), 0.0) + safe_float(perf.get("unrealized_pnl_eur", 0.0), 0.0)
-    mtd += options_total
-    ytd += options_total
+        if isinstance(options_v3, dict):
+            semantics = options_v3.get("semantics", {})
+            realized = options_v3.get("realized", {})
 
-    options_v3_closed = load_json(OPTIONS_V3_CLOSED_PATH, default=[]) or []
-    if isinstance(options_v3_closed, list):
-        for r in options_v3_closed:
-            if not isinstance(r, dict):
-                continue
-            dt = _parse_dt(r.get("closed_at"))
-            pnl = safe_float(r.get("pnl_eur", 0.0), 0.0)
-            if not dt:
-                continue
-            if dt.date() == today:
-                daily += pnl
-            if dt >= month_start:
-                mtd += pnl
-            if dt >= year_start:
-                ytd += pnl
+            contract_valid = (
+                options_v3.get("schema_version") == 1
+                and options_v3.get("currency") == "EUR"
+                and options_v3.get(
+                    "real_execution_allowed"
+                )
+                is False
+                and isinstance(semantics, dict)
+                and semantics.get("period_pnl_scope")
+                == "REALIZED_ONLY"
+                and semantics.get("unrealized_scope")
+                == "CURRENT_SNAPSHOT"
+                and semantics.get(
+                    "daily_unrealized_delta_available"
+                )
+                is False
+                and isinstance(realized, dict)
+            )
+
+            if contract_valid:
+                try:
+                    options_daily = float(
+                        realized["daily_pnl_eur"]
+                    )
+                    options_mtd = float(
+                        realized["mtd_pnl_eur"]
+                    )
+                    options_ytd = float(
+                        realized["ytd_pnl_eur"]
+                    )
+
+                    from math import isfinite
+
+                    if not all(
+                        isfinite(v)
+                        for v in (
+                            options_daily,
+                            options_mtd,
+                            options_ytd,
+                        )
+                    ):
+                        raise ValueError(
+                            "non-finite Options V3 PnL"
+                        )
+                except (
+                    KeyError,
+                    TypeError,
+                    ValueError,
+                    OverflowError,
+                ):
+                    pass
+                else:
+                    daily += options_daily
+                    mtd += options_mtd
+                    ytd += options_ytd
+                    options_performance_status = "OK"
 
     return {
         "pnlDaily": round(daily, 2),
         "pnlMTD": round(mtd, 2),
         "pnlYTD": round(ytd, 2),
+        "optionsPerformanceStatus": (
+            options_performance_status
+        ),
     }
 
 
@@ -1002,25 +1049,114 @@ def build_options_us_strategy(
 
 
 
-def build_recent_activity() -> List[Dict[str, Any]]:
-    trades = load_json(OPTIONS_V2_TRADES_PATH, default=[]) or []
-    if not isinstance(trades, list):
-        return []
+def build_recent_activity_from_positions(
+    open_positions: list,
+    closed_positions: list,
+) -> List[Dict[str, Any]]:
+    if not isinstance(open_positions, list):
+        open_positions = []
+
+    if not isinstance(closed_positions, list):
+        closed_positions = []
 
     activity: List[Dict[str, Any]] = []
-    for item in reversed(trades[-8:]):
+    opened_seen = set()
+
+    # Closed inventory is historical authority and contains both
+    # the original opening timestamp and the closing timestamp.
+    for item in closed_positions:
         if not isinstance(item, dict):
             continue
+
+        position_id = str(
+            item.get("position_id") or ""
+        ).strip()
+
+        opened_at = item.get("opened_at")
+        if (
+            position_id
+            and position_id not in opened_seen
+            and _parse_dt(opened_at) is not None
+        ):
+            activity.append({
+                "ts": opened_at,
+                "brick": "Options US",
+                "type": "OPEN",
+                "symbol": item.get("ticker", "N/A"),
+                "strategy": item.get("strategy", "N/A"),
+                "pnl_eur": 0.0,
+                "status": "OPEN",
+            })
+            opened_seen.add(position_id)
+
+        closed_at = item.get("closed_at")
+        if _parse_dt(closed_at) is not None:
+            activity.append({
+                "ts": closed_at,
+                "brick": "Options US",
+                "type": "CLOSE",
+                "symbol": item.get("ticker", "N/A"),
+                "strategy": item.get("strategy", "N/A"),
+                "pnl_eur": safe_float(
+                    item.get("pnl_eur", 0.0),
+                    0.0,
+                ),
+                "status": "CLOSED",
+            })
+
+    # Canonical open inventory contributes opening events that are
+    # not already represented by the closed historical inventory.
+    for item in open_positions:
+        if not isinstance(item, dict):
+            continue
+
+        position_id = str(
+            item.get("position_id") or ""
+        ).strip()
+
+        opened_at = item.get("opened_at")
+
+        if (
+            not position_id
+            or position_id in opened_seen
+            or _parse_dt(opened_at) is None
+        ):
+            continue
+
         activity.append({
-            "ts": item.get("ts"),
+            "ts": opened_at,
             "brick": "Options US",
-            "type": item.get("action", "TRADE"),
+            "type": "OPEN",
             "symbol": item.get("ticker", "N/A"),
             "strategy": item.get("strategy", "N/A"),
-            "pnl_eur": safe_float(item.get("pnl_eur", 0.0), 0.0),
-            "status": item.get("status", "ok"),
+            "pnl_eur": 0.0,
+            "status": "OPEN",
         })
-    return activity
+        opened_seen.add(position_id)
+
+    activity.sort(
+        key=lambda item: _parse_dt(item.get("ts")),
+        reverse=True,
+    )
+
+    return activity[:8]
+
+
+def build_recent_activity() -> List[Dict[str, Any]]:
+    open_positions = load_json(
+        OPTIONS_V3_PATH / "options_v3_positions.json",
+        default=[],
+    ) or []
+
+    closed_positions = load_json(
+        OPTIONS_V3_PATH / "options_v3_positions_closed.json",
+        default=[],
+    ) or []
+
+    return build_recent_activity_from_positions(
+        open_positions,
+        closed_positions,
+    )
 
 
 
@@ -1094,7 +1230,7 @@ def dashboard_v3() -> Dict[str, Any]:
     pnl_shadow = round(sum(
         safe_float(s.get("pnl", 0.0), 0.0)
         for s in strategies
-        if s.get("key") in {"options_v2_shadow", "options_v3_shadow"}
+        if s.get("key") in {"options_v3_shadow"}
     ), 2)
 
     pnl_long_term = round(sum(
@@ -1106,7 +1242,7 @@ def dashboard_v3() -> Dict[str, Any]:
     pnl_global = round(sum(
         safe_float(s.get("pnl", 0.0), 0.0)
         for s in strategies
-        if s.get("key") not in {"options_v2_shadow", "options_v3_shadow", "long_term"}
+        if s.get("key") not in {"options_v3_shadow", "long_term"}
     ), 2)
 
     pnl_total_including_shadow = round(pnl_global + pnl_shadow, 2)
@@ -1274,7 +1410,6 @@ def dashboard_v3() -> Dict[str, Any]:
     )
 
 
-
     global_payload = {
         "env": "PREPROD",
         "regime": portfolio_target.get("portfolio_regime", "unknown"),
@@ -1396,6 +1531,10 @@ def dashboard_v3() -> Dict[str, Any]:
         "pnlDailyActive": equity_daily_pnl if equity_daily_pnl is not None else period_pnl.get("pnlDaily"),
         "pnlMTDActive": equity_mtd_pnl if equity_mtd_pnl is not None else period_pnl.get("pnlMTD"),
         "pnlYTDActive": equity_ytd_pnl if equity_ytd_pnl is not None else period_pnl.get("pnlYTD"),
+        "optionsPerformanceStatus": period_pnl.get(
+            "optionsPerformanceStatus",
+            "MISSING",
+        ),
         "drawdown": drawdown_metrics.get("drawdown"),
         "drawdownValue": drawdown_metrics.get("drawdownValue"),
         "drawdownBasis": drawdown_metrics.get("drawdownBasis"),
