@@ -315,7 +315,9 @@ function normalizeProtectionStatus(value) {
 }
 
 function formatDashboardDateTime(value) {
-  const d = value ? new Date(value) : new Date();
+  if (value === null || value === undefined || value === "") return "—";
+
+  const d = new Date(value);
   if (Number.isNaN(d.getTime())) return "—";
   return d
     .toLocaleString("fr-FR", {
