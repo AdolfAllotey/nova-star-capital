@@ -1903,72 +1903,42 @@ const allocationRows = portfolioKeys.map((key) => {
                   portfolioState?.data?.funding_pools ||
                   {};
 
-                const capitalObserved = Number(global.capitalObserved || 0);
+                const pools = Object.entries(backendFundingPools);
 
-                const cryptoWeight = Number(finalWeights?.crypto ?? 0);
+              const poolNumber = (value) =>
+                value !== null &&
+                value !== undefined &&
+                Number.isFinite(Number(value))
+                  ? Number(value)
+                  : null;
 
-                const longTermWeight = Number(
-                  finalWeights?.long_term ?? 0
-                );
+              const targetValues = pools.map(([, v]) =>
+                poolNumber(v?.target_amount_eur ?? v?.target_amount)
+              );
 
-                const nonCryptoTradableWeight = Object.entries(
-                  finalWeights || {}
-                ).reduce((total, [key, rawWeight]) => {
-                  if (
-                    key === "crypto" ||
-                    key === "long_term" ||
-                    key === "cash" ||
-                    key === "cash_buffer" ||
-                    String(key).endsWith("_shadow")
-                  ) {
-                    return total;
-                  }
+              const availableValues = pools.map(([, v]) =>
+                poolNumber(v?.available_eur ?? v?.available_amount_eur)
+              );
 
-                  return total + Number(rawWeight || 0);
-                }, 0);
+              const utilizationValues = pools.map(([, v]) =>
+                poolNumber(v?.utilization_pct)
+              );
 
-                const cashBufferWeight = Number(
-                  portfolioTarget?.cash_buffer ??
-                  portfolioTarget?.data?.cash_buffer ??
-                  0
-                );
+              const totalTarget =
+                pools.length > 0 && targetValues.every((v) => v !== null)
+                  ? targetValues.reduce((sum, v) => sum + v, 0)
+                  : null;
 
-                const pools = Object.entries(backendFundingPools).length
-                  ? Object.entries(backendFundingPools)
-                  : [
-                      ["IBKR Pool", {
-                        target_amount_eur:
-                          capitalObserved * nonCryptoTradableWeight,
-                        available_eur:
-                          capitalObserved * nonCryptoTradableWeight,
-                        utilization_pct: 0
-                      }],
-                      ["Crypto Exchange Pool", {
-                        target_amount_eur:
-                          capitalObserved * cryptoWeight,
-                        available_eur:
-                          capitalObserved * cryptoWeight,
-                        utilization_pct: 0
-                      }],
-                      ["Long-Term Pool", {
-                        target_amount_eur:
-                          capitalObserved * longTermWeight,
-                        available_eur:
-                          capitalObserved * longTermWeight,
-                        utilization_pct: 0
-                      }],
-                      ["Cash Buffer", {
-                        target_amount_eur:
-                          capitalObserved * cashBufferWeight,
-                        available_eur:
-                          capitalObserved * cashBufferWeight,
-                        utilization_pct: 0
-                      }],
-                    ];
+              const totalAvailable =
+                pools.length > 0 && availableValues.every((v) => v !== null)
+                  ? availableValues.reduce((sum, v) => sum + v, 0)
+                  : null;
 
-                const totalTarget = pools.reduce((acc, [, v]) => acc + Number(v.target_amount_eur ?? v.target_amount ?? 0), 0);
-                const totalAvailable = pools.reduce((acc, [, v]) => acc + Number(v.available_eur ?? v.available_amount_eur ?? v.target_amount_eur ?? v.target_amount ?? 0), 0);
-                const utilization = totalTarget > 0 ? Math.round(((totalTarget - totalAvailable) / totalTarget) * 100) : 0;
+              const utilization =
+                pools.length > 0 && utilizationValues.every((v) => v !== null)
+                  ? utilizationValues.reduce((sum, v) => sum + v, 0) /
+                    utilizationValues.length
+                  : null;
   return (
                   <>
                     <div className="grid grid-cols-[1.15fr_0.9fr_0.9fr_0.65fr] gap-2 border-b border-[#1f2a37] pb-1.5 text-[9px] uppercase text-slate-400">
@@ -1978,22 +1948,48 @@ const allocationRows = portfolioKeys.map((key) => {
                     {pools.map(([k,v]) => (
                       <div key={k} className="grid grid-cols-[1.15fr_0.9fr_0.9fr_0.65fr] gap-2 border-b border-[#172231] py-1 text-[9px]">
                         <div className="truncate text-white">{k}</div>
-                        <div>{eur(v.target_amount_eur ?? v.target_amount ?? 0)}</div>
-                        <div className="text-emerald-400">{eur(v.available_eur ?? v.available_amount_eur ?? v.target_amount_eur ?? v.target_amount ?? 0)}</div>
+                        <div>
+                          {poolNumber(v.target_amount_eur ?? v.target_amount) !== null
+                            ? eur(poolNumber(v.target_amount_eur ?? v.target_amount))
+                            : "N/A"}
+                        </div>
+                        <div className="text-emerald-400">
+                          {poolNumber(v.available_eur ?? v.available_amount_eur) !== null
+                            ? eur(poolNumber(v.available_eur ?? v.available_amount_eur))
+                            : "N/A"}
+                        </div>
                         <div className="flex items-center gap-1">
-                          <div className="h-1.5 w-8 rounded bg-slate-800">
-                            <div className="h-1.5 rounded bg-emerald-400" style={{ width: `${Math.max(0, Math.min(100, Number(v.utilization_pct ?? 0)))}%` }} />
-                          </div>
-                          <span>{Math.round(Number(v.utilization_pct ?? 0))}%</span>
+                          {poolNumber(v.utilization_pct) !== null ? (
+                            <>
+                              <div className="h-1.5 w-8 rounded bg-slate-800">
+                                <div
+                                  className="h-1.5 rounded bg-emerald-400"
+                                  style={{
+                                    width: `${Math.max(
+                                      0,
+                                      Math.min(100, poolNumber(v.utilization_pct))
+                                    )}%`,
+                                  }}
+                                />
+                              </div>
+                              <span>{Math.round(poolNumber(v.utilization_pct))}%</span>
+                            </>
+                          ) : (
+                            <span className="text-slate-500">N/A</span>
+                          )}
                         </div>
                       </div>
                     ))}
 
                     <div className="grid grid-cols-[1.15fr_0.9fr_0.9fr_0.65fr] gap-2 pt-2 text-[9px] font-semibold">
                       <div className="text-white">TOTAL</div>
-                      <div className="text-blue-300">{eur(totalTarget)}</div>
-                      <div className="text-blue-300">{eur(totalAvailable)}</div>
-                      <div className="text-blue-300">{utilization}%</div>
+                      <div className="text-blue-300">
+                        {totalTarget !== null ? eur(totalTarget) : "N/A"}
+                      </div>
+                      <div className="text-blue-300">
+                        {totalAvailable !== null ? eur(totalAvailable) : "N/A"}
+                      </div>
+                      <div className="text-blue-300">N/A</div>
                     </div>
                   </>
                 );
