@@ -2006,7 +2006,13 @@ const allocationRows = portfolioKeys.map((key) => {
                 .filter((s) => !String(s?.key || "").endsWith("_shadow"))
                 .map((s) => {
                 const key = normalizeBrickKey(s.key);
-                const riskOk = Number(s.riskFlags ?? 0) === 0;
+
+                const riskFlags =
+                  s.riskFlags !== null &&
+                  s.riskFlags !== undefined &&
+                  Number.isFinite(Number(s.riskFlags))
+                    ? Number(s.riskFlags)
+                    : null;
 
                 const confSource =
                   s.confidence ??
@@ -2037,7 +2043,17 @@ const allocationRows = portfolioKeys.map((key) => {
                     <div>{s.currentExposure != null ? pct(s.currentExposure) : "N/A"}</div>
                     <div>{s.positions ?? s.openPositions ?? 0}</div>
                     <div className={s.pnl != null && Number(s.pnl) < 0 ? "text-red-400" : "text-emerald-400"}>{eur(s.pnl)}</div>
-                    <div className={riskOk ? "text-emerald-400" : "text-amber-300"}>●</div>
+                    <div
+                      className={
+                        riskFlags === null
+                          ? "text-slate-500"
+                          : riskFlags === 0
+                            ? "text-emerald-400"
+                            : "text-amber-300"
+                      }
+                    >
+                      {riskFlags === null ? "N/A" : "●"}
+                    </div>
                     <div className={confRaw !== null ? confidenceClass(confRaw) : "text-slate-500"}>
                       {conf !== null ? `${conf}%` : "N/A"}
                     </div>
