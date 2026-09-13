@@ -18,6 +18,9 @@ import os
 from pathlib import Path
 from datetime import datetime, timezone
 from options_portfolio_engine_v3 import allocate_portfolio
+from options_performance_v3 import (
+    build_options_performance_v3,
+)
 from options_position_manager_v3 import (
     calculate_open_risk_v3,
     open_selected_positions_v3,
@@ -1571,6 +1574,18 @@ def main():
         open_selected_positions_v3(
             portfolio.get("selected", [])
         )
+    )
+
+    options_v3_performance = (
+        build_options_performance_v3(
+            open_positions=open_positions,
+            closed_positions=closed_positions,
+            as_of=datetime.now(timezone.utc),
+        )
+    )
+    save(
+        "options_v3_performance.json",
+        options_v3_performance,
     )
 
     # Reconcile risk to the actual surviving OPEN inventory.
