@@ -726,12 +726,16 @@ const portfolioKeys = Array.from(
   const tradingPnl = dashboardOnline
     ? Number(global.pnlGlobal ?? 0)
     : null;
-  const optionsPnl = Number(
-    global.pnlOptionsUs ??
-    global.optionsUsPnl ??
-    global.pnlShadow ??
-    0
+  const optionsUsStrategy = strategies.find(
+    (s) => s?.key === "options_us"
   );
+
+  const optionsPnl =
+    optionsUsStrategy?.pnl !== null &&
+    optionsUsStrategy?.pnl !== undefined &&
+    Number.isFinite(Number(optionsUsStrategy.pnl))
+      ? Number(optionsUsStrategy.pnl)
+      : null;
   const longTermPnl = dashboardOnline
     ? Number(global.pnlLongTerm ?? 0)
     : null;
@@ -1626,7 +1630,13 @@ const allocationRows = portfolioKeys.map((key) => {
 
           <Box className="mb-2 grid grid-cols-8 gap-2">
             <Kpi icon={Activity} label="Trading PnL" value={eur(tradingPnl)} sub="Active strategies ex-LT" tone={tradingPnl >= 0 ? "green" : "red"} />
-            <Kpi icon={BarChart3} label="Options US PnL" value={eur(optionsPnl)} sub="Funded simulation" tone={optionsPnl >= 0 ? "green" : "red"} />
+            <Kpi
+              icon={BarChart3}
+              label="Options US PnL"
+              value={optionsPnl !== null ? eur(optionsPnl) : "N/A"}
+              sub="Funded simulation"
+              tone={optionsPnl === null ? undefined : optionsPnl >= 0 ? "green" : "red"}
+            />
             <Kpi icon={CircleCheck} label="LT PnL" value={eur(longTermPnl)} sub="Patrimonial assets" tone={longTermPnl >= 0 ? "green" : "red"} />
             <Kpi
               icon={LineChart}
@@ -1681,7 +1691,9 @@ const allocationRows = portfolioKeys.map((key) => {
               <div className="mb-1 flex items-center gap-2 text-[9px] text-slate-400">
                 <span className="h-1.5 w-4 rounded-full bg-blue-500"></span>
                 <span>Total patrimonial PnL incl. LT + Options US (EUR)</span>
-                <span className="text-slate-500">Trading {eur(tradingPnl)} · LT {eur(longTermPnl)} · Options US {eur(optionsPnl)}</span>
+                <span className="text-slate-500">
+                  Trading {eur(tradingPnl)} · LT {eur(longTermPnl)} · Options US {optionsPnl !== null ? eur(optionsPnl) : "N/A"}
+                </span>
               </div>
 
               <div className="h-[252px]">
