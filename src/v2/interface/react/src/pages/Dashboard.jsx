@@ -723,9 +723,13 @@ const portfolioKeys = Array.from(
   const dailyPnl = dashboardOnline
     ? Number(global.pnlDaily ?? global.pnlGlobal ?? 0)
     : null;
-  const tradingPnl = dashboardOnline
-    ? Number(global.pnlGlobal ?? 0)
-    : null;
+  const tradingPnl =
+    dashboardOnline &&
+    global?.pnlGlobal !== null &&
+    global?.pnlGlobal !== undefined &&
+    Number.isFinite(Number(global.pnlGlobal))
+      ? Number(global.pnlGlobal)
+      : null;
   const optionsUsStrategy = strategies.find(
     (s) => s?.key === "options_us"
   );
@@ -1632,7 +1636,13 @@ const allocationRows = portfolioKeys.map((key) => {
           </Box>
 
           <Box className="mb-2 grid grid-cols-8 gap-2">
-            <Kpi icon={Activity} label="Trading PnL" value={eur(tradingPnl)} sub="Active strategies ex-LT" tone={tradingPnl >= 0 ? "green" : "red"} />
+            <Kpi
+              icon={Activity}
+              label="Trading PnL"
+              value={eur(tradingPnl)}
+              sub="Active strategies ex-LT"
+              tone={tradingPnl === null ? undefined : tradingPnl >= 0 ? "green" : "red"}
+            />
             <Kpi
               icon={BarChart3}
               label="Options US PnL"
