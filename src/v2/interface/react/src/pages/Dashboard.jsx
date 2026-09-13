@@ -993,9 +993,34 @@ const allocationRows = portfolioKeys.map((key) => {
   ];
 
 
-  const riskFlagsCount = Number(global.riskFlags || 0);
-  const governancePolicy = String(global.masterAuditGovernancePolicy || global.governanceMode || "").toUpperCase();
-  const hardBlock = Boolean(global.masterAuditHardBlock || global.globalAuditBlocking);
+  const riskFlagsPresent =
+    global?.riskFlags !== null &&
+    global?.riskFlags !== undefined &&
+    Number.isFinite(Number(global.riskFlags));
+
+  const riskFlagsCount = riskFlagsPresent
+    ? Number(global.riskFlags)
+    : null;
+
+  const hardBlockPresent =
+    global?.masterAuditHardBlock !== null &&
+    global?.masterAuditHardBlock !== undefined &&
+    global?.globalAuditBlocking !== null &&
+    global?.globalAuditBlocking !== undefined;
+
+  const fundingApprovalPresent =
+    global?.masterFundingManualApprovalRequired !== null &&
+    global?.masterFundingManualApprovalRequired !== undefined;
+
+  const governancePolicy = String(
+    global.masterAuditGovernancePolicy ||
+    global.governanceMode ||
+    ""
+  ).toUpperCase();
+
+  const hardBlock = hardBlockPresent
+    ? Boolean(global.masterAuditHardBlock || global.globalAuditBlocking)
+    : null;
 
   const onlyShadowRisk =
     riskFlagsCount === 1 &&
@@ -1004,31 +1029,55 @@ const allocationRows = portfolioKeys.map((key) => {
       Array.isArray(x.softVetos) && x.softVetos.every((v) => String(v).toLowerCase().includes("shadow"))
     );
 
-  const actionableRiskFlagsCount = onlyShadowRisk ? 0 : riskFlagsCount;
-  const hasBlocking = Boolean(global?.globalAuditBlocking || global?.masterAuditHardBlock || hardBlock || governancePolicy === "BLOCKED");
-  const hasWarning = !hasBlocking && actionableRiskFlagsCount > 0;
+  const actionableRiskFlagsCount =
+    riskFlagsCount === null
+      ? null
+      : onlyShadowRisk
+        ? 0
+        : riskFlagsCount;
+
+  const hasBlocking =
+    hardBlock === null
+      ? governancePolicy === "BLOCKED"
+        ? true
+        : null
+      : hardBlock || governancePolicy === "BLOCKED";
+
+  const hasWarning =
+    hasBlocking === false && actionableRiskFlagsCount !== null
+      ? actionableRiskFlagsCount > 0
+      : false;
 
   const riskLevel =
     effectivePortfolioRegime === "BLOCKING" || effectivePortfolioRegime === "HARD_BLOCK"
       ? "BLOCKING"
-      : Boolean(global?.globalAuditBlocking || global?.masterAuditHardBlock)
+      : hasBlocking === true
         ? "HIGH"
-        : hasWarning
-          ? "WATCH"
-          : "LOW";
+        : hasBlocking === null || actionableRiskFlagsCount === null
+          ? "UNKNOWN"
+          : hasWarning
+            ? "WATCH"
+            : "LOW";
   const riskNeedleClass =
     riskLevel === "BLOCKING"
       ? "rotate-[62deg]"
       : riskLevel === "HIGH"
         ? "rotate-[50deg]"
-        : riskLevel === "WATCH"
+        : riskLevel === "WATCH" || riskLevel === "UNKNOWN"
           ? "rotate-[0deg]"
           : "-rotate-[58deg]";
 
   const riskGaugeArcClass =
     "border-l-emerald-400 border-t-amber-400 border-r-red-500";
 
-  const systemicStressLabel = Boolean(global?.globalAuditBlocking || global?.masterAuditHardBlock) ? "BLOCKING" : hasWarning ? "WATCH" : "NONE";
+  const systemicStressLabel =
+    hasBlocking === true
+      ? "BLOCKING"
+      : hasBlocking === null || actionableRiskFlagsCount === null
+        ? "UNKNOWN"
+        : hasWarning
+          ? "WATCH"
+          : "NONE";
 
   const brainSignals = [
     {
@@ -1054,12 +1103,34 @@ const allocationRows = portfolioKeys.map((key) => {
             : "amber",
     },
     {
-      label: global?.masterFundingManualApprovalRequired ? "FUNDING MANUAL" : "FUNDING OK",
-      tone: global?.masterFundingManualApprovalRequired ? "amber" : "green",
+      label: fundingApprovalPresent
+        ? global.masterFundingManualApprovalRequired
+          ? "FUNDING MANUAL"
+          : "FUNDING OK"
+        : "FUNDING UNKNOWN",
+      tone: fundingApprovalPresent
+        ? global.masterFundingManualApprovalRequired
+          ? "amber"
+          : "green"
+        : "amber",
     },
     {
-      label: hasBlocking ? "BLOCKING ALERT" : hasWarning ? "RISK WATCH" : "NO BLOCKING",
-      tone: hasBlocking ? "red" : hasWarning ? "amber" : "green",
+      label:
+        hasBlocking === null || actionableRiskFlagsCount === null
+          ? "RISK UNKNOWN"
+          : hasBlocking
+            ? "BLOCKING ALERT"
+            : hasWarning
+              ? "RISK WATCH"
+              : "NO BLOCKING",
+      tone:
+        hasBlocking === null || actionableRiskFlagsCount === null
+          ? "amber"
+          : hasBlocking
+            ? "red"
+            : hasWarning
+              ? "amber"
+              : "green",
     },
   ];
 
@@ -1312,27 +1383,73 @@ const allocationRows = portfolioKeys.map((key) => {
                 },
                 {
                   title: "Governance",
-                  value: hasBlocking ? "BLOCKED" : "OPEN",
+                  value: hasBlocking === null ? "UNKNOWN" : hasBlocking ? "BLOCKED" : "OPEN",
                   meta1: `Policy ${safetyMode}`,
                   meta2: global?.masterAuditGovernancePolicy || "UNAVAILABLE",
-                  badge: hasBlocking ? "BLOCKED" : "SAFE",
-                  tone: hasBlocking ? "red" : "green",
+                  badge: hasBlocking === null ? "UNKNOWN" : hasBlocking ? "BLOCKED" : "SAFE",
+                  tone: hasBlocking === null ? "amber" : hasBlocking ? "red" : "green",
                 },
                 {
                   title: "Risk",
-                  value: hasBlocking ? "HIGH" : hasWarning ? "WATCH" : "LOW",
-                  meta1: `Flags ${Number(global?.riskFlags || 0)}`,
-                  meta2: systemicStressLabel === "NONE" ? "Stress NONE" : `Stress ${systemicStressLabel}`,
-                  badge: hasBlocking ? "ALERT" : hasWarning ? "WATCH" : "NO ALERT",
-                  tone: hasBlocking ? "red" : hasWarning ? "amber" : "green",
+                  value:
+                    riskFlagsCount === null || hasBlocking === null
+                      ? "UNKNOWN"
+                      : hasBlocking
+                        ? "HIGH"
+                        : hasWarning
+                          ? "WATCH"
+                          : "LOW",
+                  meta1: `Flags ${riskFlagsCount !== null ? riskFlagsCount : "N/A"}`,
+                  meta2:
+                    systemicStressLabel === "UNKNOWN"
+                      ? "Stress UNKNOWN"
+                      : systemicStressLabel === "NONE"
+                        ? "Stress NONE"
+                        : `Stress ${systemicStressLabel}`,
+                  badge:
+                    riskFlagsCount === null || hasBlocking === null
+                      ? "UNKNOWN"
+                      : hasBlocking
+                        ? "ALERT"
+                        : hasWarning
+                          ? "WATCH"
+                          : "NO ALERT",
+                  tone:
+                    riskFlagsCount === null || hasBlocking === null
+                      ? "amber"
+                      : hasBlocking
+                        ? "red"
+                        : hasWarning
+                          ? "amber"
+                          : "green",
                 },
                 {
                   title: "Funding",
-                  value: global?.masterFundingManualApprovalRequired ? "MANUAL" : "OPEN",
+                  value:
+                    fundingApprovalPresent
+                      ? global.masterFundingManualApprovalRequired
+                        ? "MANUAL"
+                        : "OPEN"
+                      : "UNKNOWN",
                   meta1: `Cash Buffer ${pct(cashBufferPct)}`,
-                  meta2: global?.masterFundingAutoTransferAllowed ? "Transfers Auto" : "Transfers Controlled",
-                  badge: global?.masterFundingManualApprovalRequired ? "CONTROLLED" : "OPEN",
-                  tone: global?.masterFundingManualApprovalRequired ? "amber" : "green",
+                  meta2:
+                    global?.masterFundingAutoTransferAllowed === true
+                      ? "Transfers Auto"
+                      : global?.masterFundingAutoTransferAllowed === false
+                        ? "Transfers Controlled"
+                        : "Transfers N/A",
+                  badge:
+                    fundingApprovalPresent
+                      ? global.masterFundingManualApprovalRequired
+                        ? "CONTROLLED"
+                        : "OPEN"
+                      : "UNKNOWN",
+                  tone:
+                    fundingApprovalPresent
+                      ? global.masterFundingManualApprovalRequired
+                        ? "amber"
+                        : "green"
+                      : "amber",
                 },
               ].map((d) => (
                 <div key={d.title} className="rounded-xl border border-white/5 bg-white/[0.025] p-3">
@@ -1705,13 +1822,19 @@ const allocationRows = portfolioKeys.map((key) => {
 </div>
 
                   <span className={
-                    Boolean(global?.globalAuditBlocking || global?.masterAuditHardBlock)
+                    riskLevel === "BLOCKING" || riskLevel === "HIGH"
                       ? "rounded-md border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-[8px] font-bold uppercase text-red-300"
-                      : Number(global?.riskFlags || 0) > 0
+                      : riskLevel === "WATCH" || riskLevel === "UNKNOWN"
                         ? "rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[8px] font-bold uppercase text-amber-300"
                         : "rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[8px] font-bold uppercase text-emerald-300"
                   }>
-                    {Boolean(global?.globalAuditBlocking || global?.masterAuditHardBlock) ? "Blocking" : Number(global?.riskFlags || 0) > 0 ? "Watch" : "Stable"}
+                    {riskLevel === "BLOCKING" || riskLevel === "HIGH"
+                      ? "Blocking"
+                      : riskLevel === "WATCH"
+                        ? "Watch"
+                        : riskLevel === "UNKNOWN"
+                          ? "Unknown"
+                          : "Stable"}
                   </span>
                 </div>
 
@@ -1720,7 +1843,7 @@ const allocationRows = portfolioKeys.map((key) => {
                   <span className={
                     riskLevel === "LOW"
                       ? "text-lg font-semibold text-emerald-400"
-                      : riskLevel === "WATCH"
+                      : riskLevel === "WATCH" || riskLevel === "UNKNOWN"
                       ? "text-lg font-semibold text-amber-300"
                       : "text-lg font-semibold text-red-400"
                   }>
@@ -1733,7 +1856,9 @@ const allocationRows = portfolioKeys.map((key) => {
 
                   </span>
                   <span className="pb-0.5 text-[9px] text-slate-500">
-                    {riskFlagsCount || 0} active flag{Number(riskFlagsCount || 0) > 1 ? "s" : ""}
+                    {riskFlagsCount !== null
+                      ? `${riskFlagsCount} active flag${riskFlagsCount > 1 ? "s" : ""}`
+                      : "risk flags N/A"}
                   </span>
                 </div>
 
@@ -1752,7 +1877,7 @@ const allocationRows = portfolioKeys.map((key) => {
                     <div className={`mt-1 text-sm font-semibold ${
                       riskLevel === "BLOCKING" || riskLevel === "HIGH"
                         ? "text-red-400"
-                        : riskLevel === "WATCH"
+                        : riskLevel === "WATCH" || riskLevel === "UNKNOWN"
                         ? "text-amber-300"
                         : "text-emerald-400"
                     }`}>
@@ -1764,10 +1889,31 @@ const allocationRows = portfolioKeys.map((key) => {
 
                 {[
                   ["Protection", global.protectionLevel || "—"],
-                  ["Hard Block", global.masterAuditHardBlock ? "ON" : "OFF"],
+                  [
+                    "Hard Block",
+                    global?.masterAuditHardBlock === true
+                      ? "ON"
+                      : global?.masterAuditHardBlock === false
+                        ? "OFF"
+                        : "UNKNOWN",
+                  ],
                   ["Governance", global.masterAuditGovernancePolicy === "SIMULATED_ONLY" ? "SIM ONLY" : (global.governanceMode || "—")],
-                  ["Supervision", global.supervisionGateOpen ? (global.supervisionGateMode || "OPEN") : "CLOSED"],
-                  ["Systemic Stress", effectivePortfolioRegime === "BLOCKING" || effectivePortfolioRegime === "HARD_BLOCK" ? "BLOCKING" : effectivePortfolioRegime === "SAFE_MODE" ? "SAFE_MODE" : Number(global?.riskFlags || 0) > 0 ? `WATCH (${global.riskFlagsDetails?.[0]?.softVetos?.[0] || "flag"})` : "NONE"],
+                  [
+                    "Supervision",
+                    global?.supervisionGateOpen === true
+                      ? (global.supervisionGateMode || "OPEN")
+                      : global?.supervisionGateOpen === false
+                        ? "CLOSED"
+                        : "UNKNOWN",
+                  ],
+                  [
+                    "Systemic Stress",
+                    effectivePortfolioRegime === "SAFE_MODE"
+                      ? "SAFE_MODE"
+                      : systemicStressLabel === "WATCH"
+                        ? `WATCH (${global.riskFlagsDetails?.[0]?.softVetos?.[0] || "flag"})`
+                        : systemicStressLabel,
+                  ],
                 ].map(([a,b]) => {
                   const bad = String(b).includes("BLOCKING") || String(b).includes("ON") || String(b).includes("CLOSED");
                   const watch = String(b).includes("WATCH") || String(b).includes("SIM");
