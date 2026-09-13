@@ -739,15 +739,18 @@ const portfolioKeys = Array.from(
   const longTermPnl = dashboardOnline
     ? Number(global.pnlLongTerm ?? 0)
     : null;
-  const totalPatrimonialPnl = Number(
+  const totalPatrimonialPnlRaw =
     global.pnlTotalPatrimonial ??
     global.pnlTotalIncludingLongTermAndOptions ??
     global.pnlTotalIncludingLongTerm ??
-    global.pnlTotalIncludingLongTermAndShadow ??
-    global.pnlTotalIncludingShadow ??
-    global.pnlGlobal ??
-    0
-  );
+    null;
+
+  const totalPatrimonialPnl =
+    totalPatrimonialPnlRaw !== null &&
+    totalPatrimonialPnlRaw !== undefined &&
+    Number.isFinite(Number(totalPatrimonialPnlRaw))
+      ? Number(totalPatrimonialPnlRaw)
+      : null;
   const mtdPnl = dashboardOnline
     ? Number(global.pnlMTD ?? global.pnlGlobal ?? 0)
     : null;
