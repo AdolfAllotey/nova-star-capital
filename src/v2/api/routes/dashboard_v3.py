@@ -50,6 +50,7 @@ CRYPTO_SIMULATION_PATH = Path("/opt/nsc/data/preprod/trading/trade_simulation.js
 CRYPTO_SIGNAL_CANDIDATES_PATH = Path("/opt/nsc/data/preprod/analysis/signal_candidates.json")
 CRYPTO_OPEN_POSITIONS_PATH = Path("/opt/nsc/data/preprod/trading/open_positions.json")
 CRYPTO_EXECUTION_PLAN_PATH = Path("/opt/nsc/data/preprod/trading/execution_plan.json")
+RISK_LIMITS_PATH = Path("/opt/nsc/data/preprod/trading/risk_limits.json")
 EQUITY_CURVE_STATE_PATH = Path("/opt/nsc/data/preprod/analysis/equity_curve_state.json")
 CONFIDENCE_HISTORY_PATH = Path("/opt/nsc/data/preprod/portfolio/audit/confidence_history.jsonl")
 PNL_STATE_PATH = Path("/opt/nsc/data/preprod/analysis/pnl_state.json")
@@ -586,7 +587,25 @@ def build_crypto_placeholder(portfolio_state: Dict[str, Any]) -> Dict[str, Any]:
         "pnl": pnl["total"],
         "realizedPnl": pnl["realized"],
         "unrealizedPnl": pnl["unrealized"],
-        "limitsOk": True,
+        "limitsOk": (
+            False
+            if (
+                isinstance(risk_limits := load_json(RISK_LIMITS_PATH, default=None), dict)
+                and (
+                    risk_limits.get("risk_console_flag") not in (None, "ok")
+                    or bool((risk_limits.get("kill_switch") or {}).get("hard_block"))
+                    or bool((risk_limits.get("kill_switch") or {}).get("soft_block"))
+                )
+            )
+            else (
+                True
+                if (
+                    isinstance(risk_limits, dict)
+                    and risk_limits.get("risk_console_flag") == "ok"
+                )
+                else None
+            )
+        ),
         "softVetos": [],
         "source": str(CRYPTO_OPEN_POSITIONS_PATH),
         "note": "Crypto candidates are displayed from signal_candidates.json; open positions are displayed from open_positions.json.",
