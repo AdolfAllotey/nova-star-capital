@@ -80,7 +80,8 @@ def get_total_curve():
     if lt_market_value and lt_updated_at:
         lt_raw[lt_updated_at] = lt_market_value
 
-    options_us_raw = {}
+    # Options US has no certified historical PnL series yet.
+    # Do not synthesize a zero-valued history.
 
     all_dates = sorted(
         set(crypto_raw)
@@ -89,7 +90,6 @@ def get_total_curve():
         | set(bonds_raw)
         | set(metals_raw)
         | set(lt_raw)
-        | set(options_us_raw)
     )
 
     crypto_map = _carry_forward(all_dates, crypto_raw)
@@ -98,7 +98,6 @@ def get_total_curve():
     bonds_map = _carry_forward(all_dates, bonds_raw)
     metals_map = _carry_forward(all_dates, metals_raw)
     lt_map = _carry_forward(all_dates, lt_raw)
-    options_us_map = _carry_forward(all_dates, options_us_raw)
 
     points = []
     for d in all_dates:
@@ -108,7 +107,6 @@ def get_total_curve():
         bonds_val = float(bonds_map.get(d, 0.0))
         metals_val = float(metals_map.get(d, 0.0))
         lt_val_d = float(lt_map.get(d, 0.0))
-        options_us_val = float(options_us_map.get(d, 0.0))
 
         total_val = (
             crypto_val
@@ -117,7 +115,6 @@ def get_total_curve():
             + bonds_val
             + metals_val
             + lt_val_d
-            + options_us_val
         )
 
         points.append({
@@ -130,7 +127,6 @@ def get_total_curve():
                 "bonds": round(bonds_val, 2),
                 "metals": round(metals_val, 2),
                 "lt": round(lt_val_d, 2),
-                "options_us": round(options_us_val, 2),
             },
         })
 
@@ -149,14 +145,15 @@ def get_total_curve():
             "bonds": str(BONDS_PATH),
             "metals": str(METALS_PATH),
             "lt": str(LT_VAL_PATH),
-            "options_us": "placeholder_zero_until_brick_ready",
+            "options_us": "unavailable_no_certified_historical_pnl_series",
         },
         "source_status": {
             "real": ["crypto", "offensive", "lt"],
-            "pending": ["defensive", "bonds", "metals", "options_us"],
+            "pending": ["defensive", "bonds", "metals"],
+            "unavailable": ["options_us"],
         },
         "notes": [
             "TOTAL v7 uses carry-forward by date for each brick.",
-            "TOTAL = crypto + offensive + defensive + bonds + metals + long_term + options_us(placeholder=0)"
+            "TOTAL excludes Options US until a certified historical PnL series is available."
         ],
     }
