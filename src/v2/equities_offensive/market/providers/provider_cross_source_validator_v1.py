@@ -31,6 +31,9 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import exchange_calendars as xcals
+import pandas as pd
+
 
 ROOT = Path(
     "/opt/nsc/data/preprod/equities_offensive/"
@@ -107,6 +110,31 @@ def parse_date(value: Any) -> date | None:
     try:
         return date.fromisoformat(text[:10])
     except ValueError:
+        return None
+
+
+def market_session_gap(
+    left: date | None,
+    right: date | None,
+) -> int | None:
+    if left is None or right is None:
+        return None
+
+    try:
+        calendar = xcals.get_calendar("XNYS")
+        sessions = calendar.sessions
+
+        left_index = sessions.get_loc(
+            pd.Timestamp(left.isoformat())
+        )
+        right_index = sessions.get_loc(
+            pd.Timestamp(right.isoformat())
+        )
+
+        return abs(
+            int(right_index) - int(left_index)
+        )
+    except Exception:
         return None
 
 
@@ -220,6 +248,7 @@ def validate_symbol(
     warning_threshold_percent: float,
     blocking_threshold_percent: float,
     maximum_date_gap_days: int,
+    maximum_market_session_gap: int,
     maximum_age_days: int,
     reference_date: date,
 ) -> dict[str, Any]:
@@ -261,27 +290,6 @@ def validate_symbol(
         maximum_age_days,
     )
 
-    absolute_difference = None
-    relative_difference = None
-    relative_difference_percent = None
-
-    if (
-        primary_price is not None
-        and secondary_price is not None
-        and primary_price != 0
-    ):
-        absolute_difference = abs(
-            primary_price - secondary_price
-        )
-
-        relative_difference = (
-            absolute_difference / abs(primary_price)
-        )
-
-        relative_difference_percent = (
-            relative_difference * 100.0
-        )
-
     primary_parsed_date = parse_date(
         primary_date
     )
@@ -300,6 +308,35 @@ def validate_symbol(
                 primary_parsed_date
                 - secondary_parsed_date
             ).days
+        )
+
+    session_gap = market_session_gap(
+        primary_parsed_date,
+        secondary_parsed_date,
+    )
+
+    absolute_difference = None
+    relative_difference = None
+    relative_difference_percent = None
+
+    # Prices are comparable only when both providers
+    # refer to the same XNYS market session.
+    if (
+        session_gap == 0
+        and primary_price is not None
+        and secondary_price is not None
+        and primary_price != 0
+    ):
+        absolute_difference = abs(
+            primary_price - secondary_price
+        )
+
+        relative_difference = (
+            absolute_difference / abs(primary_price)
+        )
+
+        relative_difference_percent = (
+            relative_difference * 100.0
         )
 
     reasons: list[str] = []
@@ -400,6 +437,47 @@ def validate_symbol(
             "Les deux sources sont obsolètes."
         )
 
+    elif (
+        session_gap is not None
+        and session_gap
+        > maximum_market_session_gap
+    ):
+        status = "blocked"
+        confidence = 30.0
+
+        blockers.append(
+            f"Écart de {session_gap} séance(s) XNYS, "
+            f"supérieur au maximum autorisé de "
+            f"{maximum_market_session_gap}."
+        )
+
+    elif (
+        session_gap is not None
+        and session_gap > 0
+    ):
+        status = "warning"
+        confidence = 60.0
+
+        warnings.append(
+            f"Les sources diffèrent de "
+            f"{session_gap} séance(s) XNYS ; "
+            "comparaison de prix désactivée."
+        )
+
+    elif (
+        session_gap is None
+        and date_gap_days is not None
+        and date_gap_days > maximum_date_gap_days
+    ):
+        status = "blocked"
+        confidence = 30.0
+
+        blockers.append(
+            f"Écart de dates de "
+            f"{date_gap_days} jour(s), "
+            f"supérieur au maximum autorisé."
+        )
+
     elif relative_difference_percent is None:
         status = "blocked"
         confidence = 0.0
@@ -428,19 +506,6 @@ def validate_symbol(
             f"{relative_difference_percent:.4f} %, "
             f"supérieur au seuil bloquant de "
             f"{blocking_threshold_percent:.4f} %."
-        )
-
-    elif (
-        date_gap_days is not None
-        and date_gap_days > maximum_date_gap_days
-    ):
-        status = "blocked"
-        confidence = 30.0
-
-        blockers.append(
-            f"Écart de dates de "
-            f"{date_gap_days} jour(s), "
-            f"supérieur au maximum autorisé."
         )
 
     elif (
@@ -560,6 +625,7 @@ def validate_symbol(
             "primary": primary_date,
             "secondary": secondary_date,
             "gap_calendar_days": date_gap_days,
+            "gap_market_sessions": session_gap,
         },
         "freshness": {
             "primary": primary_freshness,
@@ -605,6 +671,7 @@ def build_report(
     warning_threshold_percent: float,
     blocking_threshold_percent: float,
     maximum_date_gap_days: int,
+    maximum_market_session_gap: int,
     maximum_age_days: int,
 ) -> dict[str, Any]:
     primary_name = str(
@@ -688,6 +755,9 @@ def build_report(
             ),
             maximum_date_gap_days=(
                 maximum_date_gap_days
+            ),
+            maximum_market_session_gap=(
+                maximum_market_session_gap
             ),
             maximum_age_days=maximum_age_days,
             reference_date=reference_date,
@@ -804,6 +874,9 @@ def build_report(
             "maximum_date_gap_days": (
                 maximum_date_gap_days
             ),
+            "maximum_market_session_gap": (
+                maximum_market_session_gap
+            ),
             "maximum_age_calendar_days": (
                 maximum_age_days
             ),
@@ -912,6 +985,12 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--maximum-market-session-gap",
+        type=int,
+        default=1,
+    )
+
+    parser.add_argument(
         "--maximum-age-calendar-days",
         type=int,
         default=4,
@@ -956,6 +1035,10 @@ def main() -> int:
             ),
             maximum_date_gap_days=max(
                 args.maximum_date_gap_days,
+                0,
+            ),
+            maximum_market_session_gap=max(
+                args.maximum_market_session_gap,
                 0,
             ),
             maximum_age_days=max(
