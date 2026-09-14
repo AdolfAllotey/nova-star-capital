@@ -709,7 +709,7 @@ def build_defensive_strategy(portfolio_state: Dict[str, Any]) -> Dict[str, Any]:
         "pnl": round(total_pnl, 2),
         "realizedPnl": round(realized, 2),
         "unrealizedPnl": round(unrealized, 2),
-        "limitsOk": bool(score_summary.get("constraints_respected", True)),
+        "limitsOk": score_summary.get("constraints_respected"),
         "softVetos": [],
         "source": str(DEFENSIVE_STATE_PATH if state else DEFENSIVE_SIGNAL_PATH),
         "targetExposure": _target_from_brick(defensive, safe_float(state.get("target_exposure", signal.get("target_exposure", 0.20)), 0.20)),
