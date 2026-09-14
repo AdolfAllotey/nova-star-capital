@@ -54,7 +54,7 @@ def offensive_overview() -> Dict[str, Any]:
             "orders": kpis.get("orders_count", 0),
             "openPositions": kpis.get("open_positions", 0),
             "totalNotionalUsd": kpis.get("total_notional_usd", 0),
-            "limitsOk": kpis.get("limits_ok", True),
+            "limitsOk": kpis.get("limits_ok"),
             "softVetos": kpis.get("soft_vetos", []) or [],
         },
         "pipeline": {

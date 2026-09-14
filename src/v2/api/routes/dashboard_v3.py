@@ -664,7 +664,7 @@ def build_equities_strategy(portfolio_state: Dict[str, Any]) -> Dict[str, Any]:
         "pnl": total_pnl,
         "realizedPnl": round(realized_pnl, 2),
         "unrealizedPnl": round(unrealized_pnl, 2),
-        "limitsOk": kpis.get("limits_ok", True),
+        "limitsOk": kpis.get("limits_ok"),
         "softVetos": kpis.get("soft_vetos", []) or [],
         "source": str(EQUITIES_UI_BUNDLE),
         "regime": offensive.get("regime", kpis.get("market_regime", "UNKNOWN")),
