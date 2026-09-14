@@ -28,6 +28,7 @@ def main() -> int:
     os.environ.setdefault("NSC_EQU_ACTION_POLICY", "SIMULATED_EXECUTION")
 
     steps = [
+        Step("refresh_us_market_session", [sys.executable, "src/v2/equities_offensive/ops/us_market_session.py"]),
         Step("sync_ops", [sys.executable, "src/v2/equities_offensive/ops/sync_ops.py"]),
         Step("sync_governance", [sys.executable, "src/v2/equities_offensive/governance/sync_governance.py"]),
         Step("sync_market_regime", [sys.executable, "src/v2/equities_offensive/market/sync_market_regime.py"]),

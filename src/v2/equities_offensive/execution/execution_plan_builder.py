@@ -160,12 +160,21 @@ def gate_trading_window() -> Tuple[bool, List[str]]:
     doc = load_json(TRADING_WINDOW_PATH, default=None)
     if not isinstance(doc, dict):
         return False, ["missing trading_window.json"]
-    allowed = bool(doc.get("allowed", False))
+
+    # Canonical session contract is `is_open`.
+    # Keep `allowed` only as backward-compatible fallback for legacy artifacts.
+    if "is_open" in doc:
+        allowed = bool(doc.get("is_open"))
+    else:
+        allowed = bool(doc.get("allowed", False))
+
     reasons = doc.get("reasons") or []
     if not isinstance(reasons, list):
         reasons = [str(reasons)]
+
     if not allowed:
         return False, ["trading window blocked"] + [str(x) for x in reasons]
+
     return True, ["trading window allowed"]
 
 

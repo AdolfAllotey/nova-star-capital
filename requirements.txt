@@ -9,3 +9,4 @@ ccxt
 requests
 openpyxl
 scikit-learn
+exchange-calendars

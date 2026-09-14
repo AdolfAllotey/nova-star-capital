@@ -39,8 +39,9 @@ def build_with_exchange_calendars(now: datetime) -> dict[str, Any] | None:
 
         try:
             session = calendar.minute_to_session(minute, direction="previous")
-            market_open = calendar.session_open(session)
-            market_close = calendar.session_close(session)
+            schedule_row = calendar.schedule.loc[session]
+            market_open = schedule_row["open"]
+            market_close = schedule_row["close"]
         except Exception:
             pass
 
