@@ -50,33 +50,6 @@ YAHOO_TICKERS = {
     "NOVO_B": {"ticker": "NOVO-B.CO", "fallback_currency": "DKK"},
 }
 
-FALLBACK_PRICES = {
-    "BTC": {"price": 60000.0, "currency": "EUR"},
-    "ETH": {"price": 3000.0, "currency": "EUR"},
-    "SOL": {"price": 150.0, "currency": "EUR"},
-    "BNB": {"price": 520.0, "currency": "EUR"},
-    "XRP": {"price": 0.60, "currency": "EUR"},
-    "AVAX": {"price": 35.0, "currency": "EUR"},
-    "QQQ": {"price": 430.0, "currency": "USD"},
-    "MSFT": {"price": 390.0, "currency": "USD"},
-    "NVDA": {"price": 120.0, "currency": "USD"},
-    "META": {"price": 480.0, "currency": "USD"},
-    "AMZN": {"price": 175.0, "currency": "USD"},
-    "SPY": {"price": 510.0, "currency": "USD"},
-    "COST": {"price": 725.0, "currency": "USD"},
-    "BRK.B": {"price": 410.0, "currency": "USD"},
-    "VIG": {"price": 190.0, "currency": "USD"},
-    "KO": {"price": 60.0, "currency": "USD"},
-    "JNJ": {"price": 155.0, "currency": "USD"},
-    "ASML": {"price": 950.0, "currency": "USD"},
-    "TSMC": {"price": 145.0, "currency": "USD"},
-    "LVMH": {"price": 820.0, "currency": "EUR"},
-    "VWCE": {"price": 125.0, "currency": "EUR"},
-    "IEUR": {"price": 58.0, "currency": "USD"},
-    "NESN": {"price": 115.0, "currency": "CHF"},
-    "AI": {"price": 185.0, "currency": "EUR"},
-    "NOVO_B": {"price": 95.0, "currency": "DKK"},
-}
 
 
 def utc_now() -> str:
@@ -159,17 +132,9 @@ def fetch_fx_to_eur(currency: str) -> tuple[float, str]:
     except Exception:
         pass
 
-    fallback_rates = {
-        "USD": 0.92,
-        "CHF": 1.04,
-        "DKK": 0.134,
-        "GBP": 1.17,
-    }
-
-    if currency in fallback_rates:
-        return fallback_rates[currency], f"fallback_{currency}_eur"
-
-    raise RuntimeError(f"No FX conversion available for currency={currency}")
+    raise RuntimeError(
+        f"No live FX conversion available for currency={currency}"
+    )
 
 
 def resolve_price_eur(symbol: str, asset_class: str) -> dict[str, Any]:
@@ -213,26 +178,9 @@ def resolve_price_eur(symbol: str, asset_class: str) -> dict[str, Any]:
         except Exception:
             pass
 
-    fallback = FALLBACK_PRICES.get(symbol)
-
-    if not fallback:
-        raise RuntimeError(f"No price provider or fallback configured for symbol={symbol}")
-
-    native_price = safe_float(fallback.get("price"), 0.0)
-    native_currency = str(fallback.get("currency") or "EUR").upper()
-    fx_rate, fx_source = fetch_fx_to_eur(native_currency)
-
-    if native_price <= 0:
-        raise RuntimeError(f"Invalid fallback price for symbol={symbol}")
-
-    return {
-        "price_eur": native_price * fx_rate,
-        "native_price": native_price,
-        "native_currency": native_currency,
-        "fx_to_eur": fx_rate,
-        "price_source": f"fallback:{symbol}:{fx_source}",
-        "fallback_used": True,
-    }
+    raise RuntimeError(
+        f"No live price provider available for symbol={symbol}"
+    )
 
 
 def normalize_crypto_positions(payload: Any) -> list[dict[str, Any]]:
