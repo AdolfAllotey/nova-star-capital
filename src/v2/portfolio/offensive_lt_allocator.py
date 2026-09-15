@@ -161,6 +161,8 @@ def main():
             continue
         if row.get("brick") != "equities_offensive":
             continue
+        if str(row.get("status") or "").lower() != "approved":
+            continue
 
         transfer_id = f'{row.get("brick","unknown")}::{row.get("ts","")}::{row.get("amount_eur",0)}'
         if transfer_id in processed_transfer_ids:

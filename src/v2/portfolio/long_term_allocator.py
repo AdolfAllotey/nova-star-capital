@@ -93,6 +93,7 @@ def run():
     new_flows = [
         t for t in transfers
         if t.get("to_pocket") == "lt"
+        and str(t.get("status") or "").lower() == "approved"
         and t.get("ts") not in processed_ids
     ]
 
