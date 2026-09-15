@@ -1,0 +1,13 @@
+[Unit]
+Description=NSC Offensive Equities Provider Refresh Timer
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=30min
+AccuracySec=1min
+RandomizedDelaySec=30s
+Persistent=true
+Unit=nsc-equities-provider-refresh.service
+
+[Install]
+WantedBy=timers.target
