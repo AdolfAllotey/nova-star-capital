@@ -121,26 +121,45 @@ def compute_exposure(positions: Dict[str, Dict[str, Any]]) -> Tuple[Dict[str, An
         if qty <= 0:
             continue
 
-        px = get_price(sym, fallback=(avg or 100.0))
-        notional = px * qty
+        market_px = get_price(sym, fallback=0.0)
+        market_price_available = market_px > 0
+
+        # Preserve exposure conservatively at historical cost when the current
+        # market price is unavailable, but do not fabricate market PnL or stops.
+        valuation_px = market_px if market_price_available else avg
+
+        if valuation_px <= 0:
+            continue
+
+        notional = valuation_px * qty
         by_symbol[sym] = notional
         total += notional
 
-        pnl_pct = 0.0
-        if avg > 0:
-            pnl_pct = (px - avg) / avg
-
+        pnl_pct = None
         trailing_stop_price = None
-        if px > 0:
-            trailing_stop_price = round(px * (1.0 - trailing_pct), 4)
+
+        if market_price_available:
+            if avg > 0:
+                pnl_pct = round((market_px - avg) / avg, 4)
+            trailing_stop_price = round(
+                market_px * (1.0 - trailing_pct),
+                4,
+            )
 
         lines.append({
             "symbol": sym,
             "qty": qty,
-            "price": px,
+            "price": market_px if market_price_available else None,
             "avg_price": avg,
+            "valuation_price": valuation_px,
+            "valuation_source": (
+                "market"
+                if market_price_available
+                else "avg_price_degraded"
+            ),
+            "market_price_available": market_price_available,
             "notional_usd": round(notional, 2),
-            "pnl_pct": round(pnl_pct, 4),
+            "pnl_pct": pnl_pct,
             "regime": regime,
             "trailing_pct": round(trailing_pct, 4),
             "trailing_stop_price": trailing_stop_price,
