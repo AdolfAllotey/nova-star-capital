@@ -728,11 +728,16 @@ def build_orders_from_candidates(cands: Dict[str, Any], action_policy: str) -> T
             max_reinforce_qty = existing_qty * 0.50
             reinforce_qty = min(qty, max_reinforce_qty)
 
+            px = get_market_price(sym, fallback=0.0)
+            if px <= 0:
+                reasons.append(
+                    f"skip {sym} BUY reinforcement: market_price_unavailable"
+                )
+                continue
+
             if target_exposure > 0 and current_exposure > 0:
-                px = get_market_price(sym, fallback=0.0)
                 remaining_gap = max(0.0, target_exposure - current_exposure)
-                if px > 0:
-                    reinforce_qty = min(reinforce_qty, remaining_gap / px)
+                reinforce_qty = min(reinforce_qty, remaining_gap / px)
 
             if reinforce_qty <= 0:
                 reasons.append(f"skip {sym} BUY already in position qty={existing_qty} reinforce_qty<=0")
