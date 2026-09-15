@@ -825,10 +825,21 @@ def build_orders_from_candidates(cands: Dict[str, Any], action_policy: str) -> T
             if already_has_sell:
                 continue
 
-            current_price = get_market_price(symbol, fallback=avg_price if avg_price > 0 else 0.0)
-            pnl_pct = 0.0
-            if avg_price > 0 and current_price > 0:
-                pnl_pct = (current_price - avg_price) / avg_price
+            current_price = get_market_price(symbol, fallback=0.0)
+
+            if avg_price <= 0:
+                reasons.append(
+                    f"skip {symbol} smart reduction: avg_price_unavailable"
+                )
+                continue
+
+            if current_price <= 0:
+                reasons.append(
+                    f"skip {symbol} smart reduction: market_price_unavailable"
+                )
+                continue
+
+            pnl_pct = (current_price - avg_price) / avg_price
 
             if pnl_pct > 0.03:
                 reduce_ratio = 0.25
