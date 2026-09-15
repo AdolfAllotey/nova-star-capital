@@ -18,6 +18,7 @@ ROOT = data_root()
 
 PLAN_PATH = ROOT / "equities_offensive/execution/execution_plan.json"
 FILLS_PATH = ROOT / "equities_offensive/execution/simulated_fills.jsonl"
+REJECTED_PATH = ROOT / "equities_offensive/execution/rejected_orders.jsonl"
 POSITIONS_PATH = ROOT / "equities_offensive/state/positions.json"
 EXPOSURE_PATH = ROOT / "equities_offensive/state/exposure_snapshot.json"
 
@@ -209,8 +210,6 @@ def _validate_orders_with_plan(plan: dict, plan_id: str, scope: str):
     Returns:
         (orders, rejected_events)
     """
-    from pathlib import Path
-
     orders = plan.get("orders") or []
     if not isinstance(orders, list):
         orders = []
@@ -218,9 +217,8 @@ def _validate_orders_with_plan(plan: dict, plan_id: str, scope: str):
     rejected_events = []
 
     # Ensure reject journal exists (brick-only)
-    rejected_path = Path("/opt/nsc/data/preprod/equities_offensive/execution/rejected_orders.jsonl")
-    rejected_path.parent.mkdir(parents=True, exist_ok=True)
-    rejected_path.touch(exist_ok=True)
+    REJECTED_PATH.parent.mkdir(parents=True, exist_ok=True)
+    REJECTED_PATH.touch(exist_ok=True)
 
     try:
         # Shared validator (should exist)
@@ -387,7 +385,6 @@ def main():
         FILLS_PATH.parent.mkdir(parents=True, exist_ok=True)
         FILLS_PATH.touch(exist_ok=True)
 
-        REJECTED_PATH = Path("/opt/nsc/data/preprod/equities_offensive/execution/rejected_orders.jsonl")
         REJECTED_PATH.parent.mkdir(parents=True, exist_ok=True)
         REJECTED_PATH.touch(exist_ok=True)
 
@@ -554,8 +551,29 @@ def main():
                 continue
 
             # In SIMULATED_ONLY mode, fills remain strictly simulated.
-            # The fill ledger records the quantity actually applied to the position.
-            price = get_price(symbol, fallback=100.0)
+            # Missing market data must fail closed: never fabricate a fill price.
+            price = get_price(symbol, fallback=0.0)
+
+            if price <= 0:
+                append_jsonl(
+                    REJECTED_PATH,
+                    {
+                        "ts": utc_now_iso(),
+                        "engine": "simulated_broker_v1",
+                        "plan_id": plan_id,
+                        "order_id": oid,
+                        "policy": policy,
+                        "status": "REJECTED",
+                        "reason": "market_price_unavailable",
+                        "symbol": symbol,
+                        "side": side,
+                        "requested_qty": requested_qty,
+                        "effective_qty": effective_qty,
+                        "order": o,
+                    },
+                )
+                _mark_order_seen(store, state, oid)
+                continue
 
             fill = {
                 "ts": utc_now_iso(),
