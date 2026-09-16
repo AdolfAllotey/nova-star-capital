@@ -91,8 +91,24 @@ def run_rebalance_plan_builder():
     for brick, fallback_target_weight in final_brick_weights.items():
         state_info = brick_states.get(brick, {}) or {}
         target_weight = float(state_info.get("target_weight_snapshot", fallback_target_weight) or 0.0)
-        current_weight = float(state_info.get("current_weight_estimate", target_weight) or 0.0)
-        requested_delta = round(target_weight - current_weight, 6)
+
+        current_weight_raw = state_info.get("current_weight_estimate")
+        real_state_unavailable = (
+            current_weight_raw is None
+            or state_info.get("state_origin") == "real_state_unavailable"
+        )
+
+        current_weight = (
+            float(current_weight_raw)
+            if not real_state_unavailable
+            else None
+        )
+
+        requested_delta = (
+            round(target_weight - current_weight, 6)
+            if current_weight is not None
+            else 0.0
+        )
 
         inertia = brick_inertia.get(brick, {}) or {}
         min_threshold = float(inertia.get("min_threshold_to_rebalance", 0.03) or 0.03)
@@ -113,7 +129,16 @@ def run_rebalance_plan_builder():
         manual_transfer_required = False
         inter_pool_blocked = False
 
-        if abs(requested_delta) < min_threshold:
+        if real_state_unavailable:
+            status = "blocked"
+            action_type = "hold"
+            approved_delta = 0.0
+            constraints_active.append("real_state_unavailable")
+            reason = "Rebalance blocked because real brick state is unavailable."
+            rationale.append(
+                "current exposure/weight could not be resolved from a real runtime state"
+            )
+        elif abs(requested_delta) < min_threshold:
             constraints_active.append("below_rebalance_threshold")
             rationale.append(
                 f"abs(requested_delta)={abs(requested_delta):.6f} below threshold={min_threshold:.6f}"
@@ -177,7 +202,11 @@ def run_rebalance_plan_builder():
             "execution_bucket": execution_bucket,
             "action": action_type,
             "target_weight": round(target_weight, 6),
-            "current_weight_estimate": round(current_weight, 6),
+            "current_weight_estimate": (
+                round(current_weight, 6)
+                if current_weight is not None
+                else None
+            ),
             "requested_delta": requested_delta,
             "approved_delta": round(approved_delta, 6),
             "priority_score": priority_score,
