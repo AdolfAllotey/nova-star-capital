@@ -1552,8 +1552,12 @@ def update_positions(
                 except Exception:
                     current_notional = 0.0
 
+            # Ignore sub-cent notional drift to avoid reinforcement/downscale
+            # oscillation caused only by floating-point precision.
+            notional_tolerance_eur = 0.01
+
             # PREPROD paper-position alignment:
-            # if the current simulated position is above the new target,
+            # if the current simulated position is materially above the new target,
             # downscale it to keep portfolio exposure coherent with sizing.
             if (
                 (
@@ -1561,7 +1565,7 @@ def update_positions(
                     or "/preprod" in str(data_dir).lower()
                 )
                 and target_notional > 0
-                and current_notional > target_notional
+                and current_notional > target_notional + notional_tolerance_eur
                 and bool(existing.get("paper", False))
             ):
                 ratio = target_notional / current_notional
@@ -1580,7 +1584,7 @@ def update_positions(
                 )
                 continue
 
-            if target_notional > current_notional > 0:
+            if target_notional > current_notional + notional_tolerance_eur and current_notional > 0:
                 gap = target_notional - current_notional
                 max_add = current_notional * 0.50
                 add_notional = min(gap, max_add)
