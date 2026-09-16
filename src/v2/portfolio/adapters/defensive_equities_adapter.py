@@ -123,6 +123,9 @@ def export_defensive_equities_to_portfolio_input(
         },
         "risk_flags": {
             "constraints_respected": score_summary.get("constraints_respected", False),
+            "execution_blocked": not bool(
+                score_summary.get("constraints_respected", False)
+            ),
             "portfolio_beta_estimate": score_summary.get("portfolio_beta_estimate", None)
         },
         "inertia_profile": {
