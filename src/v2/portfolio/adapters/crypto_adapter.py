@@ -26,10 +26,10 @@ def compute_dynamic_crypto_confidence(regime: str, signal_votes):
     base = base_by_regime.get(regime, 0.50)
 
     if not isinstance(signal_votes, list) or not signal_votes:
-        return round(base, 4), {
-            "method": "regime_fallback",
+        return 0.0, {
+            "method": "signal_unavailable",
             "reason": "no_signal_votes",
-            "base": base,
+            "regime_base_reference": base,
         }
 
     meta_scores = []
@@ -55,10 +55,10 @@ def compute_dynamic_crypto_confidence(regime: str, signal_votes):
             strong_count += 1
 
     if not meta_scores:
-        return round(base, 4), {
-            "method": "regime_fallback",
+        return 0.0, {
+            "method": "signal_unavailable",
             "reason": "no_valid_meta_scores",
-            "base": base,
+            "regime_base_reference": base,
         }
 
     avg_meta = mean(meta_scores)
