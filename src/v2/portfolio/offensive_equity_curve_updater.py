@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
+STATE_PATH = Path("/opt/nsc/data/preprod/equities_offensive/state/state.json")
 POSITIONS_PATH = Path("/opt/nsc/data/preprod/equities_offensive/state/positions.json")
 PRICES_PATH = Path("/opt/nsc/data/preprod/equities_offensive/market/prices.json")
 FILLS_PATH = Path("/opt/nsc/data/preprod/equities_offensive/execution/simulated_fills.jsonl")
@@ -120,6 +121,7 @@ def compute_realized_pnl_from_fills(rows: List[Dict[str, Any]]) -> float:
 
 
 def run() -> None:
+    state_doc = load_json(STATE_PATH, {})
     positions_doc = load_json(POSITIONS_PATH, {})
     prices_doc = load_json(PRICES_PATH, {})
     fills = load_jsonl(FILLS_PATH)
@@ -165,6 +167,28 @@ def run() -> None:
     points = curve.get("points", [])
     if not isinstance(points, list):
         points = []
+
+    meta = state_doc.get("meta") if isinstance(state_doc, dict) else {}
+    clean_restart_at = (
+        meta.get("clean_restart_at")
+        if isinstance(meta, dict)
+        else None
+    )
+    clean_restart_date = (
+        str(clean_restart_at)[:10]
+        if clean_restart_at
+        else None
+    )
+
+    if clean_restart_date:
+        points = [
+            row
+            for row in points
+            if (
+                isinstance(row, dict)
+                and str(row.get("date") or "") >= clean_restart_date
+            )
+        ]
 
     updated = False
     for row in points:
