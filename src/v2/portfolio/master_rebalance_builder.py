@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from math import isfinite
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any, Dict
@@ -42,6 +43,45 @@ def f(x: Any, default: float = 0.0) -> float:
         return default
 
 
+def require_deployable_capital_eur(state: Any) -> float:
+    if not isinstance(state, dict):
+        raise RuntimeError(
+            "portfolio_state must be a JSON object"
+        )
+
+    context = state.get("capital_context")
+    if not isinstance(context, dict):
+        raise RuntimeError(
+            "portfolio_state.capital_context is missing or invalid"
+        )
+
+    raw = context.get("deployable_capital_eur")
+
+    if isinstance(raw, bool):
+        raise RuntimeError(
+            "deployable_capital_eur must be numeric"
+        )
+
+    try:
+        capital = float(raw)
+    except (TypeError, ValueError):
+        raise RuntimeError(
+            "deployable_capital_eur must be numeric"
+        )
+
+    if not isfinite(capital):
+        raise RuntimeError(
+            "deployable_capital_eur must be finite"
+        )
+
+    if capital <= 0.0:
+        raise RuntimeError(
+            "deployable_capital_eur must be strictly positive"
+        )
+
+    return capital
+
+
 def main() -> int:
     target = load(TARGET_PATH, {})
     state = load(STATE_PATH, {})
@@ -69,10 +109,7 @@ def main() -> int:
     ]
 
     regime = target.get("portfolio_regime") or state.get("portfolio_regime") or "unknown"
-    capital = f(
-        state.get("capital_context", {}).get("deployable_capital_eur"),
-        10000.0,
-    )
+    capital = require_deployable_capital_eur(state)
 
     target_weights = target.get("final_brick_weights", {}) if isinstance(target, dict) else {}
     bricks_state = state.get("bricks", {}) if isinstance(state, dict) else {}
