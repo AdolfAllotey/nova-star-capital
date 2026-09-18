@@ -44,6 +44,9 @@ from options_iv_history_v3 import (
     observe_and_update_iv_history,
 )
 from options_contract_selector_v3 import ContractSelectionError, select_contract_structure_v3
+from src.v2.equities_offensive.ops.us_market_session import (
+    build_with_exchange_calendars,
+)
 
 OUT = Path("/opt/nsc/data/preprod/options_v3")
 OUT.mkdir(parents=True, exist_ok=True)
@@ -455,7 +458,9 @@ def enrich_candidate_contract_selection_v3(
         "mid": primary_leg.get("mid"),
         "premium": normalized_premium,
         "premium_per_share": normalized_premium,
-        "premium_per_contract": normalized_premium,
+        "premium_per_contract": (
+            normalized_premium * 100
+        ),
         "contract_symbol": primary_leg.get(
             "contract_symbol"
         ),
@@ -783,12 +788,39 @@ def build_candidate(signal, volatility_context=None):
             strategy,
             spot,
         )
+        role_bonus = (
+            10
+            if role in ["alpha", "hedge"]
+            else 5
+        )
+
+        iv_rank = vol.get("iv_rank")
+        iv_rank_status = vol.get(
+            "iv_rank_status",
+            "WARMING_UP",
+        )
+
+        iv_score_component = None
+
+        if (
+            iv_rank_status == "AVAILABLE"
+            and isinstance(iv_rank, (int, float))
+        ):
+            bounded_iv_rank = max(
+                0.0,
+                min(float(iv_rank), 100.0),
+            )
+            iv_score_component = (
+                bounded_iv_rank * 0.25
+            )
+
         score = round(
             confidence * 60
+            + role_bonus
             + (
-                10
-                if role in ["alpha", "hedge"]
-                else 5
+                iv_score_component
+                if iv_score_component is not None
+                else 0.0
             ),
             2,
         )
@@ -803,6 +835,26 @@ def build_candidate(signal, volatility_context=None):
         ),
         "role": role,
         "score": score,
+        "score_policy": (
+            "CERTIFIED_IV_COMPLETE"
+            if (
+                vol.get("iv_rank_status")
+                == "AVAILABLE"
+                and isinstance(
+                    vol.get("iv_rank"),
+                    (int, float),
+                )
+            )
+            else "IV_MATURITY_GATE_BYPASS"
+        ),
+        "score_iv_component": (
+            round(iv_score_component, 4)
+            if (
+                strategy is not None
+                and iv_score_component is not None
+            )
+            else None
+        ),
         "confidence": confidence,
         "estimated_risk_eur": risk,
         "vol_regime": vol_regime,
@@ -898,8 +950,42 @@ def validate(candidate):
     except (TypeError, ValueError):
         return False, "invalid_score"
 
-    if score < 55:
-        return False, "score_below_threshold"
+    iv_rank_status = candidate.get(
+        "iv_rank_status"
+    )
+
+    score_policy = candidate.get(
+        "score_policy"
+    )
+
+    if iv_rank_status == "AVAILABLE":
+        if score_policy != "CERTIFIED_IV_COMPLETE":
+            return False, "certified_iv_score_policy_incomplete"
+
+        if score < 55:
+            return False, "score_below_threshold"
+
+    elif iv_rank_status in {
+        "WARMING_UP",
+        "PROVISIONAL",
+    }:
+        if score_policy != "IV_MATURITY_GATE_BYPASS":
+            return False, "iv_maturity_score_policy_invalid"
+
+        source_signal = (
+            candidate.get("source_signal")
+            if isinstance(
+                candidate.get("source_signal"),
+                dict,
+            )
+            else {}
+        )
+
+        if source_signal.get("source_allowed") is not True:
+            return False, "source_signal_not_authorized"
+
+    else:
+        return False, "iv_provenance_not_eligible"
 
     estimated_risk_eur = candidate.get(
         "estimated_risk_eur"
@@ -1062,6 +1148,41 @@ def main():
     open_positions = []
     closed_positions = []
     print("===== OPTIONS V3 AUTONOMOUS SHADOW RUN =====")
+
+    cycle_started_at = datetime.now(
+        timezone.utc
+    )
+
+    market_session = (
+        build_with_exchange_calendars(
+            cycle_started_at
+        )
+    )
+
+    if not isinstance(
+        market_session,
+        dict,
+    ):
+        raise RuntimeError(
+            "options_v3_market_session_unavailable"
+        )
+
+    if (
+        market_session.get("quality")
+        != "authoritative"
+        or market_session.get("fallback")
+        is not False
+    ):
+        raise RuntimeError(
+            "options_v3_market_session_not_authoritative"
+        )
+
+    if market_session.get("is_open") is not True:
+        print(
+            "options_v3_market_session_closed:"
+            " governed_no_op"
+        )
+        return
 
     offensive_execution = load(
         PATHS["offensive_execution"],

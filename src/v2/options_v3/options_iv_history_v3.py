@@ -9,6 +9,10 @@ from providers.yfinance_option_chain_provider_v3 import (
     fetch_normalized_option_chain,
 )
 
+from src.v2.equities_offensive.ops.us_market_session import (
+    build_with_exchange_calendars,
+)
+
 
 IV_HISTORY_VERSION = "3.0.0"
 IV_OBSERVATION_TARGET_DTE = 30
@@ -22,6 +26,47 @@ IV_AVAILABLE_MIN_OBSERVATIONS = 60
 
 class IVObservationError(RuntimeError):
     """Fail-closed error for canonical IV observation."""
+
+
+def require_open_us_market_session_v3(
+    now_value=None,
+):
+    current = (
+        now_value
+        if now_value is not None
+        else datetime.now(timezone.utc)
+    )
+
+    if current.tzinfo is None:
+        current = current.replace(
+            tzinfo=timezone.utc
+        )
+
+    session = build_with_exchange_calendars(
+        current
+    )
+
+    if not isinstance(session, dict):
+        raise IVObservationError(
+            "market_session_unavailable"
+        )
+
+    if session.get("quality") != "authoritative":
+        raise IVObservationError(
+            "market_session_not_authoritative"
+        )
+
+    if session.get("fallback") is not False:
+        raise IVObservationError(
+            "market_session_fallback_forbidden"
+        )
+
+    if session.get("is_open") is not True:
+        raise IVObservationError(
+            "market_session_closed"
+        )
+
+    return session
 
 
 def _iso_utc():
@@ -159,6 +204,7 @@ def derive_canonical_iv_observation(
     ticker,
     *,
     cache_dir,
+    valuation_datetime=None,
 ):
     ticker_symbol = str(
         ticker or ""
@@ -166,6 +212,16 @@ def derive_canonical_iv_observation(
 
     if not ticker_symbol:
         raise IVObservationError("missing_ticker")
+
+    current = (
+        valuation_datetime
+        if valuation_datetime is not None
+        else datetime.now(timezone.utc)
+    )
+
+    require_open_us_market_session_v3(
+        current
+    )
 
     payload = fetch_normalized_option_chain(
         ticker_symbol,
@@ -177,6 +233,7 @@ def derive_canonical_iv_observation(
             IV_CACHE_MAXIMUM_AGE_MINUTES
         ),
         force_refresh=False,
+        valuation_datetime=current,
     )
 
     if not isinstance(payload, dict):

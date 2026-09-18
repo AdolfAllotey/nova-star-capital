@@ -4,7 +4,10 @@ from options_data_adapter_v3 import (
     adapt_expiration_input_v3,
 )
 from options_expiration_policy_v3 import evaluate_pre_expiry_close_v3
-from options_assignment_guard_v3 import evaluate_assignment_risk_v3
+from options_assignment_guard_v3 import (
+    evaluate_assignment_risk_v3,
+    evaluate_structure_assignment_risk_v3,
+)
 
 #!/usr/bin/env python3
 import json
@@ -75,19 +78,39 @@ def evaluate_position_capabilities_v3(
             valuation_timestamp=valuation_timestamp,
         )
 
-        assignment_decision = evaluate_assignment_risk_v3(
-            option_type=assignment_input.option_type,
-            strategy=str(
-                enriched.get("strategy") or ""
-            ),
-            days_to_expiry=int(
-                assignment_input.days_to_expiry
-            ),
-            moneyness=assignment_input.moneyness,
-            position_status=str(
-                enriched.get("status") or "OPEN"
-            ),
+        contract_legs = enriched.get(
+            "contract_legs"
         )
+
+        if isinstance(contract_legs, list) and contract_legs:
+            assignment_decision = (
+                evaluate_structure_assignment_risk_v3(
+                    contract_legs=contract_legs,
+                    underlying_price=enriched.get(
+                        "underlying_price"
+                    ),
+                    days_to_expiry=int(
+                        assignment_input.days_to_expiry
+                    ),
+                    position_status=str(
+                        enriched.get("status") or "OPEN"
+                    ),
+                )
+            )
+        else:
+            assignment_decision = evaluate_assignment_risk_v3(
+                option_type=assignment_input.option_type,
+                strategy=str(
+                    enriched.get("strategy") or ""
+                ),
+                days_to_expiry=int(
+                    assignment_input.days_to_expiry
+                ),
+                moneyness=assignment_input.moneyness,
+                position_status=str(
+                    enriched.get("status") or "OPEN"
+                ),
+            )
 
         if hasattr(expiry_decision, "to_dict"):
             expiry_payload = expiry_decision.to_dict()

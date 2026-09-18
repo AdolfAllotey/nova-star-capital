@@ -17,6 +17,170 @@ class AssignmentGuardResultV3:
         return asdict(self)
 
 
+def evaluate_structure_assignment_risk_v3(
+    *,
+    contract_legs,
+    underlying_price,
+    days_to_expiry,
+    position_status,
+    exercise_style="american",
+    assignment_close_threshold_days=3,
+):
+    """
+    Evaluate assignment/exercise semantics for an entire option structure.
+
+    Any SELL leg may be assigned. Any BUY leg may be exercised.
+    The aggregate risk is the highest risk across short legs.
+    """
+    if not isinstance(contract_legs, list) or not contract_legs:
+        return {
+            "assignment_risk": "unknown",
+            "assignment_possible": False,
+            "exercise_possible": False,
+            "mandatory_close": True,
+            "guard_reason": "missing_contract_legs",
+            "guard_valid": False,
+            "short_leg_count": 0,
+            "long_leg_count": 0,
+            "leg_assessments": [],
+        }
+
+    try:
+        spot = float(underlying_price)
+    except (TypeError, ValueError):
+        return {
+            "assignment_risk": "unknown",
+            "assignment_possible": False,
+            "exercise_possible": False,
+            "mandatory_close": True,
+            "guard_reason": "invalid_underlying_price",
+            "guard_valid": False,
+            "short_leg_count": 0,
+            "long_leg_count": 0,
+            "leg_assessments": [],
+        }
+
+    risk_order = {
+        "none": 0,
+        "low": 1,
+        "medium": 2,
+        "high": 3,
+        "critical": 4,
+        "unknown": 5,
+    }
+
+    short_results = []
+    long_leg_count = 0
+
+    for leg in contract_legs:
+        if not isinstance(leg, dict):
+            continue
+
+        side = str(leg.get("side") or "").strip().upper()
+        option_type = str(
+            leg.get("option_type") or ""
+        ).strip().lower()
+
+        try:
+            strike = float(leg.get("strike"))
+        except (TypeError, ValueError):
+            continue
+
+        if option_type in {"c", "call"}:
+            normalized_type = "call"
+            moneyness = spot - strike
+        elif option_type in {"p", "put"}:
+            normalized_type = "put"
+            moneyness = strike - spot
+        else:
+            continue
+
+        if side == "BUY":
+            long_leg_count += 1
+            continue
+
+        if side != "SELL":
+            continue
+
+        result = evaluate_assignment_risk_v3(
+            option_type=normalized_type,
+            strategy=(
+                "short_call"
+                if normalized_type == "call"
+                else "short_put"
+            ),
+            days_to_expiry=days_to_expiry,
+            moneyness=moneyness,
+            position_status=position_status,
+            exercise_style=exercise_style,
+            assignment_close_threshold_days=(
+                assignment_close_threshold_days
+            ),
+        )
+
+        result = dict(result)
+        result["contract_symbol"] = leg.get(
+            "contract_symbol"
+        )
+        result["side"] = side
+        result["strike"] = strike
+        result["moneyness"] = moneyness
+
+        short_results.append(result)
+
+    if not short_results:
+        return {
+            "assignment_risk": "none",
+            "assignment_possible": False,
+            "exercise_possible": long_leg_count > 0,
+            "mandatory_close": False,
+            "guard_reason": (
+                "long_structure_exercise_possible"
+                if long_leg_count > 0
+                else "no_assignable_short_option_leg"
+            ),
+            "guard_valid": True,
+            "short_leg_count": 0,
+            "long_leg_count": long_leg_count,
+            "leg_assessments": [],
+        }
+
+    highest = max(
+        short_results,
+        key=lambda row: risk_order.get(
+            str(row.get("assignment_risk")),
+            5,
+        ),
+    )
+
+    mandatory_close = any(
+        bool(row.get("mandatory_close"))
+        for row in short_results
+    )
+
+    return {
+        "assignment_risk": highest.get(
+            "assignment_risk",
+            "unknown",
+        ),
+        "assignment_possible": True,
+        "exercise_possible": long_leg_count > 0,
+        "mandatory_close": mandatory_close,
+        "guard_reason": (
+            highest.get("guard_reason")
+            or "short_leg_assignment_possible"
+        ),
+        "guard_valid": all(
+            row.get("guard_valid") is True
+            for row in short_results
+        ),
+        "short_leg_count": len(short_results),
+        "long_leg_count": long_leg_count,
+        "leg_assessments": short_results,
+    }
+
+
+
 def evaluate_assignment_risk_v3(
     *,
     option_type: str,
