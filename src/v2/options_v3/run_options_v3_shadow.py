@@ -497,14 +497,40 @@ def load(path, default):
 def save(name, data):
     (OUT / name).write_text(json.dumps(data, indent=2))
 
-def build_live_offensive_signals(document):
+OPTIONS_V3_OFFENSIVE_SOURCE_MAX_AGE_MINUTES = 30.0
+
+
+def _parse_source_timestamp_utc(value):
+    if not isinstance(value, str) or not value.strip():
+        return None
+
+    try:
+        parsed = datetime.fromisoformat(
+            value.strip().replace("Z", "+00:00")
+        )
+    except ValueError:
+        return None
+
+    if parsed.tzinfo is None:
+        return None
+
+    return parsed.astimezone(timezone.utc)
+
+
+def build_live_offensive_signals(
+    document,
+    *,
+    observed_at=None,
+):
     """
     Convert the canonical Offensive Equities execution contract into
     Options V3 directional signals.
 
-    Only risk-approved execution candidates are accepted. Market price is
-    deliberately not copied into the signal: the Options V3 provider owns
-    the canonical underlying market price during contract selection.
+    Only risk-approved and fresh execution candidates are accepted.
+    Offensive source timestamps are mandatory and must be between zero
+    and 30 minutes old. Market price is deliberately not copied into the
+    signal: the Options V3 provider owns the canonical underlying market
+    price during contract selection.
     """
     if not isinstance(document, dict):
         return []
@@ -512,6 +538,21 @@ def build_live_offensive_signals(document):
     candidates = document.get("candidates", [])
     if not isinstance(candidates, list):
         return []
+
+    if observed_at is None:
+        observed_at = datetime.now(timezone.utc)
+
+    if (
+        not isinstance(observed_at, datetime)
+        or observed_at.tzinfo is None
+    ):
+        raise ValueError(
+            "observed_at must be timezone-aware"
+        )
+
+    observed_at = observed_at.astimezone(
+        timezone.utc
+    )
 
     direction_map = {
         "long": "bullish",
@@ -526,7 +567,27 @@ def build_live_offensive_signals(document):
         if not isinstance(item, dict):
             continue
 
-        if item.get("allowed") is not True:
+        source_allowed = item.get("allowed")
+        if source_allowed is not True:
+            continue
+
+        source_ts = item.get("ts")
+        source_dt = _parse_source_timestamp_utc(
+            source_ts
+        )
+
+        if source_dt is None:
+            continue
+
+        source_age_minutes = (
+            observed_at - source_dt
+        ).total_seconds() / 60.0
+
+        if not (
+            0.0
+            <= source_age_minutes
+            <= OPTIONS_V3_OFFENSIVE_SOURCE_MAX_AGE_MINUTES
+        ):
             continue
 
         ticker = str(
@@ -557,9 +618,15 @@ def build_live_offensive_signals(document):
             "confidence": confidence,
             "setup": item.get("setup"),
             "source": "equities_offensive_execution_candidates",
-            "source_ts": item.get("ts"),
+            "source_ts": source_ts,
+            "source_age_minutes": round(
+                source_age_minutes,
+                6,
+            ),
+            "source_max_age_minutes":
+                OPTIONS_V3_OFFENSIVE_SOURCE_MAX_AGE_MINUTES,
             "source_meta_score": raw_score,
-            "source_allowed": True,
+            "source_allowed": source_allowed,
             "source_engine": item.get("engine"),
             "source_regime": item.get("regime"),
         })
