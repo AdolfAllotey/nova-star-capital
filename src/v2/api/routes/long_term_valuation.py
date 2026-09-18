@@ -4,7 +4,7 @@ import json
 
 router = APIRouter()
 
-VAL_PATH = Path("/opt/nsc/src/v2/data/reports/long_term_valuation.json")
+VAL_PATH = Path("/opt/nsc/data/preprod/long_term/state/valuation.json")
 
 def _read_json(path: Path):
     try:

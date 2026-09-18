@@ -6,7 +6,7 @@ from src.v2.portfolio.capital_flow_engine import compute_profit_flow
 
 
 BRICK_FLOWS_PATH = Path("/opt/nsc/app/data/portfolio/brick_flows.json")
-TRANSFER_INSTR_PATH = Path("/opt/nsc/app/data/portfolio/transfer_instructions.jsonl")
+TRANSFER_INSTR_PATH = Path("/opt/nsc/data/preprod/portfolio/transfer_instructions.jsonl")
 
 
 def utc_now():

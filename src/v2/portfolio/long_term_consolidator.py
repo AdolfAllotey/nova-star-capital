@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -9,15 +8,10 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 
-CRYPTO_PATH = Path("/opt/nsc/app/data/portfolio/lt_portfolio.json")
-EQUITIES_PATH = Path("/opt/nsc/app/data/portfolio/long_term_positions.json")
+CRYPTO_PATH = Path("/opt/nsc/data/preprod/long_term/state/crypto_positions.json")
+EQUITIES_PATH = Path("/opt/nsc/data/preprod/long_term/state/equity_positions.json")
 
-OUTPUT_PATH = Path("/opt/nsc/app/data/portfolio/long_term_valuation.json")
-
-COMPATIBILITY_OUTPUTS = [
-    Path("/opt/nsc/app/data/portfolio/lt_portfolio_valuation.json"),
-    Path("/opt/nsc/src/v2/data/reports/long_term_valuation.json"),
-]
+OUTPUT_PATH = Path("/opt/nsc/data/preprod/long_term/state/valuation.json")
 
 BINANCE_SYMBOLS = {
     "BTC": "BTCEUR",
@@ -394,16 +388,6 @@ def main() -> dict[str, Any]:
     }
 
     write_json_atomic(OUTPUT_PATH, result)
-
-    for compatibility_path in COMPATIBILITY_OUTPUTS:
-        compatibility_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(OUTPUT_PATH, compatibility_path)
-
-        copied = read_json(compatibility_path, {})
-        if copied.get("engine") != "long_term_consolidator_v2":
-            raise RuntimeError(
-                f"Compatibility publication failed: {compatibility_path}"
-            )
 
     return result
 

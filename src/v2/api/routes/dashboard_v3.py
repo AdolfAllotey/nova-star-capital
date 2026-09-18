@@ -727,7 +727,7 @@ def build_long_term_strategy(portfolio_state: Dict[str, Any]) -> Dict[str, Any]:
     bricks = _bricks_map(portfolio_state)
     long_term = bricks.get("long_term", {}) if isinstance(bricks, dict) else {}
 
-    lt_path = Path("/opt/nsc/app/data/portfolio/lt_portfolio_valuation.json")
+    lt_path = Path("/opt/nsc/data/preprod/long_term/state/valuation.json")
     lt = load_json(lt_path, default={}) or {}
     totals = lt.get("totals", {}) if isinstance(lt, dict) else {}
     positions_raw = lt.get("positions", []) if isinstance(lt, dict) else []

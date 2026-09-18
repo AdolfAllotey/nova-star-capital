@@ -24,9 +24,7 @@ SIMULATED_PLAN = Path(
 )
 
 LONG_TERM_FILES = [
-    ROOT / "data/portfolio/long_term_valuation.json",
-    ROOT / "data/portfolio/lt_portfolio_valuation.json",
-    Path("/opt/nsc/src/v2/data/reports/long_term_valuation.json"),
+    Path("/opt/nsc/data/preprod/long_term/state/valuation.json"),
 ]
 
 stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -175,74 +173,259 @@ def check_execution_plan(path: Path, expected_status: str):
 
 
 def check_long_term():
-    results = {}
-    hashes = []
+    transfer_path = Path(
+        "/opt/nsc/data/preprod/portfolio/transfer_instructions.jsonl"
+    )
+    funding_path = Path(
+        "/opt/nsc/app/data/capital/funding_plan.json"
+    )
 
-    for path in LONG_TERM_FILES:
-        payload = read_json(path)
-        digest = sha256(path)
+    path = LONG_TERM_FILES[0]
+    payload = read_json(path)
+    digest = sha256(path)
 
-        if digest:
-            hashes.append(digest)
+    positions = (
+        payload.get("positions", [])
+        if isinstance(payload, dict)
+        else []
+    )
 
-        positions = (
-            payload.get("positions", [])
-            if isinstance(payload, dict)
-            else []
+    if not isinstance(positions, list):
+        positions = []
+
+    quality = (
+        payload.get("data_quality", {})
+        if isinstance(payload, dict)
+        else {}
+    )
+
+    totals = (
+        payload.get("totals", {})
+        if isinstance(payload, dict)
+        else {}
+    )
+
+    expected_positions = int(
+        quality.get(
+            "expected_positions",
+            len(positions),
         )
-        quality = (
-            payload.get("data_quality", {})
-            if isinstance(payload, dict)
-            else {}
+        or 0
+    )
+
+    valued_positions = int(
+        quality.get(
+            "valued_positions",
+            len(positions),
         )
+        or 0
+    )
 
-        results[str(path)] = {
-            "ok": (
-                isinstance(payload, dict)
-                and payload.get("engine")
-                == "long_term_consolidator_v2"
-                and len(positions) == 17
-                and quality.get("complete") is True
-                and int(
-                    quality.get("fallback_count", 0) or 0
-                ) == 0
-            ),
-            "exists": path.exists(),
-            "engine": (
-                payload.get("engine")
-                if isinstance(payload, dict)
-                else None
-            ),
-            "positions_count": (
-                len(positions)
-                if isinstance(positions, list)
-                else 0
-            ),
-            "complete": quality.get("complete"),
-            "fallback_count": quality.get(
-                "fallback_count"
-            ),
-            "provider_error_count": len(
-                quality.get("provider_errors", []) or []
-            ),
-            "age_seconds": age_seconds(path),
-            "sha256": digest,
-        }
+    provider_errors = (
+        quality.get(
+            "provider_errors",
+            [],
+        )
+        or []
+    )
 
-    alignment = len(hashes) == 3 and len(set(hashes)) == 1
+    transfer_rows = []
 
-    return {
+    if transfer_path.exists():
+        try:
+            for line in transfer_path.read_text(
+                encoding="utf-8"
+            ).splitlines():
+                line = line.strip()
+
+                if not line:
+                    continue
+
+                row = json.loads(line)
+
+                if isinstance(row, dict):
+                    transfer_rows.append(row)
+        except Exception:
+            transfer_rows = [{
+                "__invalid_transfer_registry__": True
+            }]
+
+    approved_lt = []
+
+    for row in transfer_rows:
+        if not isinstance(row, dict):
+            continue
+
+        status = str(
+            row.get("status") or ""
+        ).lower()
+
+        target = str(
+            row.get(
+                "to_pocket",
+                row.get("to", ""),
+            )
+            or ""
+        ).lower()
+
+        if (
+            status == "approved"
+            and target
+            in {
+                "lt",
+                "long_term",
+                "crypto_lt",
+                "equities_lt",
+            }
+        ):
+            approved_lt.append(row)
+
+    funding = read_json(
+        funding_path
+    )
+
+    guardrails = (
+        funding.get("guardrails", {})
+        if isinstance(funding, dict)
+        else {}
+    )
+
+    manual_only = (
+        guardrails.get(
+            "automatic_transfers_allowed"
+        )
+        is False
+        and guardrails.get(
+            "requires_governance_approval"
+        )
+        is True
+    )
+
+    authority_ok = (
+        isinstance(payload, dict)
+        and payload.get("status") == "ok"
+        and payload.get("engine")
+        == "long_term_consolidator_v2"
+        and payload.get("environment")
+        == "PREPROD"
+        and payload.get("execution_mode")
+        == "SIMULATED_ONLY"
+        and quality.get("complete") is True
+        and int(
+            quality.get(
+                "fallback_count",
+                0,
+            )
+            or 0
+        )
+        == 0
+        and len(provider_errors) == 0
+        and expected_positions
+        == valued_positions
+        == len(positions)
+    )
+
+    zero_state = (
+        len(positions) == 0
+        and expected_positions == 0
+        and valued_positions == 0
+        and float(
+            totals.get(
+                "market_value_eur",
+                0.0,
+            )
+            or 0.0
+        )
+        == 0.0
+        and float(
+            totals.get(
+                "cost_basis_eur",
+                0.0,
+            )
+            or 0.0
+        )
+        == 0.0
+    )
+
+    ready_empty = (
+        authority_ok
+        and zero_state
+        and len(approved_lt) == 0
+        and manual_only
+    )
+
+    funded_ok = (
+        authority_ok
+        and len(positions) > 0
+        and manual_only
+    )
+
+    result = {
         "ok": (
-            alignment
-            and all(
-                item["ok"]
-                for item in results.values()
+            digest is not None
+            and (
+                ready_empty
+                or funded_ok
             )
         ),
-        "hash_alignment": alignment,
-        "files": results,
+        "exists": path.exists(),
+        "path": str(path),
+        "engine": (
+            payload.get("engine")
+            if isinstance(payload, dict)
+            else None
+        ),
+        "environment": (
+            payload.get("environment")
+            if isinstance(payload, dict)
+            else None
+        ),
+        "execution_mode": (
+            payload.get("execution_mode")
+            if isinstance(payload, dict)
+            else None
+        ),
+        "operational_state": (
+            "READY_EMPTY"
+            if ready_empty
+            else (
+                "FUNDED"
+                if funded_ok
+                else "INVALID"
+            )
+        ),
+        "positions_count": len(positions),
+        "expected_positions":
+            expected_positions,
+        "valued_positions":
+            valued_positions,
+        "complete":
+            quality.get("complete"),
+        "fallback_count":
+            quality.get(
+                "fallback_count"
+            ),
+        "provider_error_count":
+            len(provider_errors),
+        "approved_lt_transfers":
+            len(approved_lt),
+        "manual_funding_only":
+            manual_only,
+        "age_seconds":
+            age_seconds(path),
+        "sha256":
+            digest,
     }
 
+    return {
+        "ok": result["ok"],
+        "canonical_source_count": 1,
+        "operational_state":
+            result["operational_state"],
+        "files": {
+            str(path): result,
+        },
+    }
 
 def active_frontend_files():
     for path in REACT_SRC.rglob("*"):

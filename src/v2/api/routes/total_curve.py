@@ -9,7 +9,9 @@ OFFENSIVE_PATH = Path("/opt/nsc/data/preprod/equities_offensive/reporting/equity
 DEFENSIVE_PATH = Path("/opt/nsc/app/data/defensive/reporting/equity_curve.json")
 BONDS_PATH = Path("/opt/nsc/app/data/bonds/reporting/equity_curve.json")
 METALS_PATH = Path("/opt/nsc/app/data/metals/reporting/equity_curve.json")
-LT_VAL_PATH = Path("/opt/nsc/src/v2/data/reports/long_term_valuation.json")
+LT_HISTORY_PATH = Path(
+    "/opt/nsc/data/preprod/long_term/reporting/nav_history.json"
+)
 
 
 def _load_json(path: Path):
@@ -64,7 +66,7 @@ def get_total_curve():
     defensive = _load_json(DEFENSIVE_PATH) or {}
     bonds = _load_json(BONDS_PATH) or {}
     metals = _load_json(METALS_PATH) or {}
-    lt_val = _load_json(LT_VAL_PATH) or {}
+    lt_history = _load_json(LT_HISTORY_PATH) or {}
 
     crypto_raw = _points_to_map(crypto.get("points", []))
     offensive_raw = _points_to_map(offensive.get("points", []))
@@ -72,13 +74,37 @@ def get_total_curve():
     bonds_raw = _points_to_map(bonds.get("points", []))
     metals_raw = _points_to_map(metals.get("points", []))
 
-    lt_totals = lt_val.get("totals", {}) or {}
-    lt_market_value = float(lt_totals.get("market_value_eur", 0.0) or 0.0)
-    lt_updated_at = str(lt_val.get("updated_at") or lt_val.get("timestamp") or "")[:10]
-
     lt_raw = {}
-    if lt_market_value and lt_updated_at:
-        lt_raw[lt_updated_at] = lt_market_value
+
+    lt_rows = (
+        lt_history.get("history", [])
+        if isinstance(lt_history, dict)
+        else []
+    )
+
+    if isinstance(lt_rows, list):
+        for row in lt_rows:
+            if not isinstance(row, dict):
+                continue
+
+            ts = (
+                row.get("ts")
+                or row.get("timestamp")
+                or row.get("date")
+            )
+
+            if not ts:
+                continue
+
+            date = str(ts)[:10]
+
+            lt_raw[date] = float(
+                row.get(
+                    "unrealized_pnl_eur",
+                    0.0,
+                )
+                or 0.0
+            )
 
     # Options US has no certified historical PnL series yet.
     # Do not synthesize a zero-valued history.
@@ -144,7 +170,7 @@ def get_total_curve():
             "defensive": str(DEFENSIVE_PATH),
             "bonds": str(BONDS_PATH),
             "metals": str(METALS_PATH),
-            "lt": str(LT_VAL_PATH),
+            "lt": str(LT_HISTORY_PATH),
             "options_us": "unavailable_no_certified_historical_pnl_series",
         },
         "source_status": {

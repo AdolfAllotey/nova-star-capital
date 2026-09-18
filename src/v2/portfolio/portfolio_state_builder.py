@@ -13,7 +13,7 @@ PORTFOLIO_DIR = DATA_DIR / "portfolio"
 INPUT_DIR = "/opt/nsc/data/preprod/portfolio/inputs"
 TARGET_PATH = PORTFOLIO_DIR / "portfolio_target.json"
 OUTPUT_PATH = PORTFOLIO_DIR / "state" / "portfolio_state.json"
-LT_PATH = Path("/opt/nsc/app/data/portfolio/lt_portfolio_valuation.json")
+LT_PATH = Path("/opt/nsc/data/preprod/long_term/state/valuation.json")
 CAPITAL_STATE_PATH = DATA_DIR / "portfolio" / "capital_state.json"
 
 

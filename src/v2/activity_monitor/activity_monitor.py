@@ -72,7 +72,7 @@ def engine_execution_artifacts(eid):
             "fills": ROOT / "data/defensive/execution/simulated_fills.jsonl",
         },
         "long_term": {
-            "positions": ROOT / "data/portfolio/long_term_positions.json",
+            "positions": PREPROD / "long_term/state/valuation.json",
         },
         "options_v2_shadow": {
             "positions": ROOT / "src/v2/options_v2/data/options_v2_positions.json",

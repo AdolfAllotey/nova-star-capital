@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 from datetime import datetime, timezone
 
-VALUATION_PATH = Path("/opt/nsc/src/v2/data/reports/long_term_valuation.json")
-OUT_PATH = Path("/opt/nsc/src/v2/data/reports/long_term_nav_history.json")
+VALUATION_PATH = Path("/opt/nsc/data/preprod/long_term/state/valuation.json")
+OUT_PATH = Path("/opt/nsc/data/preprod/long_term/reporting/nav_history.json")
 
 
 def utc_now() -> str:

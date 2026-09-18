@@ -4,8 +4,8 @@ set -euo pipefail
 cd /opt/nsc/app
 
 PYTHON="/opt/nsc/.venv/bin/python3"
-VALUATION="/opt/nsc/app/data/portfolio/long_term_valuation.json"
-HISTORY="/opt/nsc/src/v2/data/reports/long_term_nav_history.json"
+VALUATION="/opt/nsc/data/preprod/long_term/state/valuation.json"
+HISTORY="/opt/nsc/data/preprod/long_term/reporting/nav_history.json"
 
 TMP_VAL="$(mktemp)"
 TMP_NAV="$(mktemp)"
@@ -28,10 +28,10 @@ from pathlib import Path
 import json
 
 valuation_path = Path(
-    "/opt/nsc/app/data/portfolio/long_term_valuation.json"
+    "/opt/nsc/data/preprod/long_term/state/valuation.json"
 )
 history_path = Path(
-    "/opt/nsc/src/v2/data/reports/long_term_nav_history.json"
+    "/opt/nsc/data/preprod/long_term/reporting/nav_history.json"
 )
 
 valuation = json.loads(

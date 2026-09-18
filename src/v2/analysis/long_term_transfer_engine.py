@@ -139,7 +139,23 @@ def simulate_buy_quantity(symbol: str, amount_eur: float) -> float:
     return amount_eur / px if px > 0 else 0
 
 
-def create_long_term_transfer(source_brick: str, amount_eur: float, symbol: str | None = None):
+def create_long_term_transfer(
+    source_brick: str,
+    amount_eur: float,
+    symbol: str | None = None,
+    *,
+    approved: bool = False,
+):
+    if approved is not True:
+        raise RuntimeError(
+            "Long Term legacy transfer blocked: explicit approval required"
+        )
+
+    if float(amount_eur or 0.0) <= 0:
+        raise RuntimeError(
+            "Long Term transfer amount must be > 0"
+        )
+
     targets = read_json(
         TARGETS_PATH,
         {
@@ -182,5 +198,7 @@ def create_long_term_transfer(source_brick: str, amount_eur: float, symbol: str 
 
 
 if __name__ == "__main__":
-    result = create_long_term_transfer(source_brick="crypto", amount_eur=1000.0)
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    raise SystemExit(
+        "DIRECT_LONG_TERM_TRANSFER_DISABLED: "
+        "use governed approved funding flow"
+    )

@@ -72,7 +72,7 @@ def process_long_term_funding_queue():
     processed = []
 
     for item in items:
-        if item.get("status") != "pending":
+        if item.get("status") != "approved":
             continue
 
         try:
@@ -80,6 +80,7 @@ def process_long_term_funding_queue():
                 source_brick=item["source_brick"],
                 amount_eur=float(item["amount_eur"]),
                 symbol=item.get("symbol"),
+                approved=True,
             )
             item["status"] = "processed"
             item["processed_at"] = utc_now()
