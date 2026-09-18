@@ -875,11 +875,29 @@ def build_orders_from_candidates(cands: Dict[str, Any], action_policy: str) -> T
         return exit_orders, reasons
 
     if action_policy == "SIMULATED_EXECUTION":
-        max_new_entries = int(os.getenv("NSC_EQU_MAX_NEW_ENTRIES_PER_RUN", "2"))
-        limited_orders = cand_orders[:max_new_entries]
+        max_new_entries = int(
+            os.getenv("NSC_EQU_MAX_NEW_ENTRIES_PER_RUN", "2")
+        )
+
+        exit_orders = [
+            order
+            for order in cand_orders
+            if str(order.get("side", "")).upper() == "SELL"
+        ]
+        entry_orders = [
+            order
+            for order in cand_orders
+            if str(order.get("side", "")).upper() == "BUY"
+        ]
+
+        limited_entries = entry_orders[:max_new_entries]
+        limited_orders = exit_orders + limited_entries
+
         reasons.append(
-            f"policy=SIMULATED_EXECUTION => orders=candidates "
-            f"({len(limited_orders)}/{len(cand_orders)}, max_new_entries={max_new_entries})"
+            f"policy=SIMULATED_EXECUTION => "
+            f"SELL={len(exit_orders)} preserved, "
+            f"BUY={len(limited_entries)}/{len(entry_orders)} "
+            f"(max_new_entries={max_new_entries})"
         )
         return limited_orders, reasons
 
