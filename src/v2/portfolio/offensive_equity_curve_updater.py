@@ -9,6 +9,7 @@ STATE_PATH = Path("/opt/nsc/data/preprod/equities_offensive/state/state.json")
 POSITIONS_PATH = Path("/opt/nsc/data/preprod/equities_offensive/state/positions.json")
 PRICES_PATH = Path("/opt/nsc/data/preprod/equities_offensive/market/prices.json")
 FILLS_PATH = Path("/opt/nsc/data/preprod/equities_offensive/execution/simulated_fills.jsonl")
+TRADE_LEDGER_PATH = Path("/opt/nsc/data/preprod/equities_offensive/state/trade_ledger.json")
 CURVE_PATH = Path("/opt/nsc/data/preprod/equities_offensive/reporting/equity_curve.json")
 
 
@@ -104,27 +105,34 @@ def normalize_positions(doc: Any) -> Dict[str, Dict[str, float]]:
     return out
 
 
-def compute_realized_pnl_from_fills(rows: List[Dict[str, Any]]) -> float:
-    total = 0.0
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        for field in ("realized_pnl", "realized_pnl_usd", "realized_pnl_eur", "pnl", "pnl_usd", "pnl_eur"):
-            try:
-                val = row.get(field)
-                if val is not None:
-                    total += float(val)
-                    break
-            except Exception:
-                continue
-    return round(total, 2)
+def realized_pnl_from_trade_ledger(doc: Any) -> float:
+    if not isinstance(doc, dict):
+        raise RuntimeError("trade ledger unavailable or invalid")
+
+    if doc.get("ok") is not True:
+        raise RuntimeError("trade ledger is not healthy")
+
+    summary = doc.get("summary")
+    if not isinstance(summary, dict):
+        raise RuntimeError("trade ledger summary missing")
+
+    value = summary.get("realized_pnl_usd")
+    if value is None:
+        raise RuntimeError("trade ledger realized_pnl_usd missing")
+
+    try:
+        return round(float(value), 2)
+    except Exception as exc:
+        raise RuntimeError(
+            "trade ledger realized_pnl_usd invalid"
+        ) from exc
 
 
 def run() -> None:
     state_doc = load_json(STATE_PATH, {})
     positions_doc = load_json(POSITIONS_PATH, {})
     prices_doc = load_json(PRICES_PATH, {})
-    fills = load_jsonl(FILLS_PATH)
+    trade_ledger_doc = load_json(TRADE_LEDGER_PATH, {})
 
     positions = normalize_positions(positions_doc)
     prices = normalize_prices(prices_doc)
@@ -149,7 +157,7 @@ def run() -> None:
             }
         )
 
-    realized = compute_realized_pnl_from_fills(fills)
+    realized = realized_pnl_from_trade_ledger(trade_ledger_doc)
     cumulative_profit = round(realized + unrealized, 2)
 
     curve = load_json(
