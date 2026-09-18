@@ -37,7 +37,7 @@ POLICY_PATH = Path(
 
 SOURCE_MAX_AGE_HOURS = {
     "crypto": 12.0,
-    "equities_offensive": 96.0,
+    "equities_offensive": 3.0,
     "equities_defensive": 96.0,
     "bonds": 96.0,
     "precious_metals": 96.0,

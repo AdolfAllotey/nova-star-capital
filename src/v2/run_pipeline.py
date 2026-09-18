@@ -111,11 +111,17 @@ def _run_preprod() -> int:
             text=True,
         )
         if r.returncode != 0:
-            log.warning("equities_offensive_pipeline=failed rc=%s stderr=%s", r.returncode, r.stderr[-1000:])
+            log.error(
+                "equities_offensive_pipeline=failed rc=%s stderr=%s",
+                r.returncode,
+                r.stderr[-1000:],
+            )
+            return int(r.returncode or 1)
         else:
             log.info("equities_offensive_pipeline=ok")
     except Exception as e:
         log.exception("equities_offensive_pipeline=exception %s", e)
+        return 1
 
     # 3) Risk controller
     _try_call("src.v2.monitoring.risk_controller", "main")
