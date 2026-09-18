@@ -5,6 +5,7 @@ cd /opt/nsc/app
 
 echo "[run_defensive_preprod] start $(date -Is)"
 /opt/nsc/.venv/bin/python -m src.v2.defensive_equities.defensive_pipeline
+/opt/nsc/.venv/bin/python -m src.v2.defensive_equities.defensive_simulated_broker
 /opt/nsc/.venv/bin/python -m src.v2.defensive_equities.defensive_state_updater
 
 # Refresh modern portfolio artifacts after defensive signal update
