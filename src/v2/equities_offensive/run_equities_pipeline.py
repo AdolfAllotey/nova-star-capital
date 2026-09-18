@@ -59,6 +59,6 @@ if __name__ == "__main__":
     rc = main()
     subprocess.run(
         [sys.executable, "src/v2/portfolio/offensive_equity_curve_updater.py"],
-        check=False,
+        check=True,
     )
     raise SystemExit(rc)
