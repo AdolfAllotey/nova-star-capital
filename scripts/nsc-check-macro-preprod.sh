@@ -27,8 +27,8 @@ file_age() {
 
 BONDS_SIGNAL="/opt/nsc/app/src/v2/data/bonds/bond_signal.json"
 BONDS_INPUT="/opt/nsc/app/src/v2/data/portfolio/inputs/bonds_portfolio_input.json"
-METALS_SIGNAL="/opt/nsc/app/src/v2/data/precious_metals/metals_signal.json"
-METALS_INPUT="/opt/nsc/app/src/v2/data/portfolio/inputs/precious_metals_portfolio_input.json"
+METALS_SIGNAL="/opt/nsc/data/preprod/metals/metals_signal.json"
+METALS_INPUT="/opt/nsc/data/preprod/portfolio/inputs/precious_metals_portfolio_input.json"
 PORTFOLIO_TARGET="/opt/nsc/data/preprod/portfolio/portfolio_target.json"
 NSC_LOG="/opt/nsc/app/src/v2/logs/nsc.log"
 

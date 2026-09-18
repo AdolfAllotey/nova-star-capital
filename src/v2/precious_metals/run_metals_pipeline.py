@@ -14,9 +14,6 @@ from src.v2.precious_metals.metals_signal_engine import (
 from src.v2.precious_metals.metals_portfolio_adapter import (
     export_metals_signal_to_portfolio_input,
 )
-from src.v2.precious_metals.metals_state_updater import (
-    main as update_metals_state,
-)
 from src.v2.precious_metals.metals_utils import (
     load_and_validate_macro_inputs,
 )
@@ -86,9 +83,6 @@ def run_metals_pipeline():
                 ),
             )
         )
-
-        logger.info("Updating precious metals state")
-        update_metals_state()
 
         logger.info(
             "Precious metals pipeline completed successfully"

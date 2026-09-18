@@ -62,10 +62,10 @@ BOND_STATE_PATH = Path("/opt/nsc/data/preprod/bonds/bond_state.json")
 BONDS_STATE_PATH = BOND_STATE_PATH
 BONDS_EXPOSURE_PATH = Path("/opt/nsc/data/preprod/bonds/state/exposure_snapshot.json")
 BONDS_FILLS_PATH = Path("/opt/nsc/data/preprod/bonds/execution/simulated_fills.jsonl")
-METALS_SIGNAL_PATH = Path("/opt/nsc/app/data/metals/metals_signal.json")
+METALS_SIGNAL_PATH = Path("/opt/nsc/data/preprod/metals/metals_signal.json")
 METALS_STATE_PATH = Path("/opt/nsc/data/preprod/metals/metals_state.json")
-METALS_EXPOSURE_PATH = Path("/opt/nsc/app/data/metals/state/exposure_snapshot.json")
-METALS_FILLS_PATH = Path("/opt/nsc/app/data/metals/execution/simulated_fills.jsonl")
+METALS_EXPOSURE_PATH = Path("/opt/nsc/data/preprod/metals/state/exposure_snapshot.json")
+METALS_FILLS_PATH = Path("/opt/nsc/data/preprod/metals/execution/simulated_fills.jsonl")
 
 
 

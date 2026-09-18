@@ -78,8 +78,8 @@ def engine_execution_artifacts(eid):
             "positions": ROOT / "src/v2/options_v2/data/options_v2_positions.json",
         },
         "precious_metals": {
-            "positions": ROOT / "data/metals/state/exposure_snapshot.json",
-            "fills": ROOT / "data/metals/execution/simulated_fills.jsonl",
+            "positions": PREPROD / "metals/state/exposure_snapshot.json",
+            "fills": PREPROD / "metals/execution/simulated_fills.jsonl",
         },
         "bonds": {
             "positions": Path(
@@ -113,7 +113,7 @@ def score_from_freshness(is_fresh=True):
 def build_engine_snapshot(engine):
     eid = engine["id"]
 
-    portfolio = read_json("src/v2/data/portfolio/state/portfolio_state.json", {})
+    portfolio = read_json(PREPROD / "portfolio/state/portfolio_state.json", {})
     artifacts = engine_execution_artifacts(eid)
     execution_plan = read_json(artifacts.get("orders", "data/preprod/execution/execution_plan.json"), {})
     discovery = read_json("data/preprod/discovery/market_discovery_summary.json", {})
