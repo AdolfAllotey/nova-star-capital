@@ -1,112 +1,634 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
-from src.v2.market.preprod_price_contract import load_fresh_prices
+from typing import Any, Dict, List
 
-SIGNAL_PATH = Path("/opt/nsc/data/preprod/bonds/bond_signal.json")
-STATE_PATH = Path("/opt/nsc/data/preprod/portfolio/state/portfolio_state.json")
-PRICES_PATH = Path("/opt/nsc/data/preprod/bonds/prices.json")
-EXPECTED_PRICE_SYMBOLS = ("SHY", "IEF", "TLT", "LQD")
+from src.v2.bonds.eur_pricing import build_eur_prices
+from src.v2.market.preprod_price_contract import (
+    load_fresh_prices,
+)
+
+
+ROOT = Path(
+    os.getenv(
+        "NSC_DATA_DIR",
+        "/opt/nsc/data/preprod",
+    )
+)
+
+SIGNAL_PATH = ROOT / "bonds/bond_signal.json"
+PORTFOLIO_STATE_PATH = (
+    ROOT
+    / "portfolio/state/portfolio_state.json"
+)
+
+PRICES_PATH = ROOT / "bonds/prices.json"
+
+POSITIONS_PATH = (
+    ROOT
+    / "bonds/state/positions.json"
+)
+FILLS_PATH = (
+    ROOT
+    / "bonds/execution/simulated_fills.jsonl"
+)
+EXPOSURE_PATH = (
+    ROOT
+    / "bonds/state/exposure_snapshot.json"
+)
+
+OUT_PATH = ROOT / "bonds/bond_state.json"
+
+EXPECTED_PRICE_SYMBOLS = (
+    "SHY",
+    "IEF",
+    "TLT",
+    "LQD",
+)
+
 MAX_PRICE_AGE_SECONDS = 6 * 60 * 60
-OUT_PATH = Path("/opt/nsc/data/preprod/bonds/bond_state.json")
 
 
-def load_json(path: Path, default=None):
+def load_json(
+    path: Path,
+    default=None,
+):
     try:
         if path.exists():
-            return json.loads(path.read_text(encoding="utf-8"))
+            return json.loads(
+                path.read_text(
+                    encoding="utf-8"
+                )
+            )
     except Exception:
         pass
+
     return default
 
 
-def save_json(path: Path, payload):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+def load_jsonl(
+    path: Path,
+) -> List[Dict[str, Any]]:
+    if not path.exists():
+        return []
+
+    rows: List[
+        Dict[str, Any]
+    ] = []
+
+    for line_no, line in enumerate(
+        path.read_text(
+            encoding="utf-8"
+        ).splitlines(),
+        start=1,
+    ):
+        if not line.strip():
+            continue
+
+        try:
+            row = json.loads(line)
+        except Exception as exc:
+            raise RuntimeError(
+                "invalid bond fill JSON "
+                f"at line {line_no}: {exc}"
+            ) from exc
+
+        if not isinstance(
+            row,
+            dict,
+        ):
+            raise RuntimeError(
+                "invalid bond fill "
+                f"at line {line_no}: "
+                "expected object"
+            )
+
+        rows.append(row)
+
+    return rows
 
 
-def now_iso():
-    return datetime.now(timezone.utc).isoformat()
+def save_json(
+    path: Path,
+    payload,
+):
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    path.write_text(
+        json.dumps(
+            payload,
+            indent=2,
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def now_iso() -> str:
+    return datetime.now(
+        timezone.utc
+    ).isoformat()
+
+
+def realized_pnl_from_fills(
+    fills: List[
+        Dict[str, Any]
+    ],
+) -> float:
+    total = 0.0
+
+    for row in fills:
+        if (
+            str(
+                row.get("status")
+                or ""
+            ).upper()
+            != "FILLED"
+        ):
+            continue
+
+        if (
+            str(
+                row.get("side")
+                or ""
+            ).upper()
+            != "SELL"
+        ):
+            continue
+
+        try:
+            total += float(
+                row.get(
+                    "realized_pnl_eur",
+                    0.0,
+                )
+                or 0.0
+            )
+        except (
+            TypeError,
+            ValueError,
+        ) as exc:
+            raise RuntimeError(
+                "invalid "
+                "realized_pnl_eur "
+                "in bond fills"
+            ) from exc
+
+    return round(
+        total,
+        8,
+    )
 
 
 def main():
-    signal = load_json(SIGNAL_PATH, {}) or {}
-    portfolio_state = load_json(STATE_PATH, {}) or {}
-    prices = load_fresh_prices(
-        sleeve="bonds" if "bonds" in str(PRICES_PATH) else "metals",
-        prices_path=PRICES_PATH,
-        expected_symbols=EXPECTED_PRICE_SYMBOLS,
-        max_age_seconds=MAX_PRICE_AGE_SECONDS,
-    ).prices
+    signal = load_json(
+        SIGNAL_PATH,
+        default=None,
+    )
+    portfolio_state = load_json(
+        PORTFOLIO_STATE_PATH,
+        default=None,
+    )
+    broker_positions = load_json(
+        POSITIONS_PATH,
+        default=None,
+    )
+    exposure_snapshot = load_json(
+        EXPOSURE_PATH,
+        default=None,
+    )
 
-    bonds = (portfolio_state.get("bricks", {}) or {}).get("bonds", {}) or {}
-    target_amount = float(bonds.get("target_amount_eur", 0.0) or 0.0)
-    allocation = signal.get("allocation", {}) or {}
+    if not isinstance(
+        signal,
+        dict,
+    ):
+        raise RuntimeError(
+            "bond signal missing "
+            "or invalid"
+        )
+
+    if not isinstance(
+        portfolio_state,
+        dict,
+    ):
+        raise RuntimeError(
+            "portfolio state missing "
+            "or invalid"
+        )
+
+    if not isinstance(
+        broker_positions,
+        dict,
+    ):
+        raise RuntimeError(
+            "bond broker positions "
+            "missing or invalid; "
+            "state updater refuses "
+            "synthetic reconstruction"
+        )
+
+    if not isinstance(
+        exposure_snapshot,
+        dict,
+    ):
+        raise RuntimeError(
+            "bond broker exposure "
+            "snapshot missing or invalid"
+        )
+
+    native_prices = (
+        load_fresh_prices(
+            sleeve="bonds",
+            prices_path=PRICES_PATH,
+            expected_symbols=
+                EXPECTED_PRICE_SYMBOLS,
+            max_age_seconds=
+                MAX_PRICE_AGE_SECONDS,
+        ).prices
+    )
+
+    eur_pricing = build_eur_prices(
+        native_prices
+    )
+
+    prices = {
+        symbol: row.price_eur
+        for symbol, row
+        in eur_pricing.items()
+    }
+
+    fills = load_jsonl(
+        FILLS_PATH
+    )
+
+    realized_pnl = (
+        realized_pnl_from_fills(
+            fills
+        )
+    )
+
+    bonds = (
+        (
+            portfolio_state.get(
+                "bricks"
+            )
+            or {}
+        ).get(
+            "bonds",
+            {},
+        )
+        or {}
+    )
+
+    target_amount = float(
+        bonds.get(
+            "target_amount_eur",
+            0.0,
+        )
+        or 0.0
+    )
+
+    allocation = (
+        signal.get("allocation")
+        or {}
+    )
+
+    if not isinstance(
+        allocation,
+        dict,
+    ):
+        raise RuntimeError(
+            "bond allocation "
+            "must be a dict"
+        )
 
     positions = []
     total_value = 0.0
+    total_cost_basis = 0.0
+    total_unrealized = 0.0
 
-    for symbol, weight in allocation.items():
-        try:
-            w = float(weight or 0.0)
-            px = float(prices.get(symbol, 0.0) or 0.0)
-            if w <= 0 or px <= 0:
-                continue
+    for symbol, row in sorted(
+        broker_positions.items()
+    ):
+        if not isinstance(
+            row,
+            dict,
+        ):
+            raise RuntimeError(
+                "invalid bond broker "
+                f"position for {symbol}"
+            )
 
-            amount_eur = round(target_amount * w, 2)
-            qty = round(amount_eur / px, 8)
+        qty = float(
+            row.get(
+                "qty",
+                0.0,
+            )
+            or 0.0
+        )
 
-            previous_positions = load_json(OUT_PATH, {}) or {}
-            previous_rows = previous_positions.get("positions", []) if isinstance(previous_positions, dict) else []
-            previous_by_symbol = {
-                str(r.get("symbol", "")).upper(): r
-                for r in previous_rows
-                if isinstance(r, dict)
-            }
-            prev = previous_by_symbol.get(symbol, {})
-            avg_price = float(prev.get("avg_price", prev.get("price", px)) or px)
-            cost_basis = round(qty * avg_price, 2)
-            current_value = round(qty * px, 2)
-            unrealized_pnl = round(current_value - cost_basis, 2)
-            pnl_pct = round((unrealized_pnl / cost_basis) if cost_basis > 0 else 0.0, 6)
+        avg_price = float(
+            row.get(
+                "avg_price",
+                0.0,
+            )
+            or 0.0
+        )
 
-            positions.append({
-                "symbol": symbol,
-                "weight": round(w, 6),
-                "price": px,
-                "avg_price": round(avg_price, 6),
-                "qty": qty,
-                "cost_basis_eur": cost_basis,
-                "value_eur": current_value,
-                "unrealized_pnl_eur": unrealized_pnl,
-                "pnl_pct": pnl_pct,
-            })
-            total_value += current_value
-        except Exception:
+        if qty <= 0:
             continue
+
+        if avg_price <= 0:
+            raise RuntimeError(
+                "invalid bond avg_price "
+                f"for {symbol}"
+            )
+
+        px = float(
+            prices.get(
+                symbol,
+                0.0,
+            )
+            or 0.0
+        )
+
+        if px <= 0:
+            raise RuntimeError(
+                "missing valid bond "
+                f"mark price for {symbol}"
+            )
+
+        pricing = (
+            eur_pricing.get(symbol)
+        )
+
+        if pricing is None:
+            raise RuntimeError(
+                "missing bond EUR "
+                f"pricing for {symbol}"
+            )
+
+        cost_basis = (
+            qty * avg_price
+        )
+
+        current_value = (
+            qty * px
+        )
+
+        unrealized_pnl = (
+            current_value
+            - cost_basis
+        )
+
+        pnl_pct = (
+            unrealized_pnl
+            / cost_basis
+            if cost_basis > 0
+            else 0.0
+        )
+
+        weight = allocation.get(
+            symbol
+        )
+
+        positions.append({
+            "symbol": symbol,
+            "weight": (
+                round(
+                    float(weight),
+                    6,
+                )
+                if weight is not None
+                else None
+            ),
+            "price": round(
+                px,
+                8,
+            ),
+            "price_eur": round(
+                px,
+                8,
+            ),
+            "avg_price": round(
+                avg_price,
+                8,
+            ),
+            "avg_price_eur": round(
+                avg_price,
+                8,
+            ),
+            "native_price": round(
+                pricing.native_price,
+                8,
+            ),
+            "native_currency":
+                pricing.native_currency,
+            "yahoo_symbol":
+                pricing.yahoo_symbol,
+            "fx_to_eur": round(
+                pricing.fx_to_eur,
+                12,
+            ),
+            "fx_pair":
+                pricing.fx.get(
+                    "pair"
+                ),
+            "fx_provider":
+                pricing.fx.get(
+                    "provider"
+                ),
+            "fx_market_timestamp":
+                pricing.fx.get(
+                    "market_timestamp"
+                ),
+            "qty": round(
+                qty,
+                8,
+            ),
+            "cost_basis_eur":
+                round(
+                    cost_basis,
+                    2,
+                ),
+            "value_eur": round(
+                current_value,
+                2,
+            ),
+            "unrealized_pnl_eur":
+                round(
+                    unrealized_pnl,
+                    2,
+                ),
+            "pnl_pct": round(
+                pnl_pct,
+                6,
+            ),
+        })
+
+        total_value += (
+            current_value
+        )
+        total_cost_basis += (
+            cost_basis
+        )
+        total_unrealized += (
+            unrealized_pnl
+        )
+
+    snapshot_positions = int(
+        exposure_snapshot.get(
+            "open_positions",
+            -1,
+        )
+    )
+
+    snapshot_notional = float(
+        exposure_snapshot.get(
+            "total_notional_eur",
+            -1.0,
+        )
+    )
+
+    if (
+        snapshot_positions
+        != len(positions)
+    ):
+        raise RuntimeError(
+            "bond exposure snapshot "
+            "position count mismatch: "
+            f"snapshot={snapshot_positions} "
+            f"state={len(positions)}"
+        )
+
+    # Snapshot sums values already rounded
+    # per position. State sums full precision
+    # then rounds globally.
+    snapshot_cents = round(
+        snapshot_notional * 100
+    )
+    state_cents = round(
+        total_value * 100
+    )
+
+    reconciliation_tolerance_cents = max(
+        1,
+        len(positions),
+    )
+
+    if (
+        abs(
+            snapshot_cents
+            - state_cents
+        )
+        > reconciliation_tolerance_cents
+    ):
+        raise RuntimeError(
+            "bond exposure snapshot "
+            "notional mismatch: "
+            f"snapshot={snapshot_notional} "
+            f"state={round(total_value, 2)} "
+            "delta_cents="
+            f"{abs(snapshot_cents - state_cents)} "
+            "tolerance_cents="
+            f"{reconciliation_tolerance_cents}"
+        )
 
     payload = {
         "status": "ok",
-        "engine": "bond_state_updater_v1",
-        "generated_at": now_iso(),
+        "engine":
+            "bond_state_updater_v2",
+        "generated_at":
+            now_iso(),
         "brick": "bonds",
-        "regime": signal.get("regime", "unknown"),
-        "confidence": signal.get("confidence", 0.0),
-        "target_exposure": signal.get("target_exposure", 0.0),
-        "target_amount_eur": round(target_amount, 2),
-        "current_exposure_eur": round(total_value, 2),
-        "cost_basis_eur": round(sum(float(p.get("cost_basis_eur", 0.0) or 0.0) for p in positions), 2),
-        "realized_pnl_eur": 0.0,
-        "unrealized_pnl_eur": round(sum(float(p.get("unrealized_pnl_eur", 0.0) or 0.0) for p in positions), 2),
-        "pnl_eur": round(sum(float(p.get("unrealized_pnl_eur", 0.0) or 0.0) for p in positions), 2),
+        "state_origin":
+            "simulated_broker",
+        "execution_mode":
+            exposure_snapshot.get(
+                "execution_mode"
+            ),
+        "regime":
+            signal.get(
+                "regime",
+                "unknown",
+            ),
+        "confidence":
+            signal.get(
+                "confidence",
+                0.0,
+            ),
+        "target_exposure":
+            signal.get(
+                "target_exposure",
+                0.0,
+            ),
+        "target_amount_eur":
+            round(
+                target_amount,
+                2,
+            ),
+        "current_exposure_eur":
+            round(
+                total_value,
+                2,
+            ),
+        "cost_basis_eur":
+            round(
+                total_cost_basis,
+                2,
+            ),
+        "realized_pnl_eur":
+            round(
+                realized_pnl,
+                2,
+            ),
+        "unrealized_pnl_eur":
+            round(
+                total_unrealized,
+                2,
+            ),
+        "pnl_eur":
+            round(
+                realized_pnl
+                + total_unrealized,
+                2,
+            ),
         "mark_to_market": True,
-        "positions": positions,
+        "positions":
+            positions,
+        "positions_count":
+            len(positions),
+        "fills_count":
+            len(fills),
+        "broker_positions_source":
+            str(POSITIONS_PATH),
+        "fills_source":
+            str(FILLS_PATH),
+        "exposure_source":
+            str(EXPOSURE_PATH),
     }
 
-    save_json(OUT_PATH, payload)
-    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    save_json(
+        OUT_PATH,
+        payload,
+    )
+
+    print(
+        json.dumps(
+            payload,
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
+
+    return payload
 
 
 if __name__ == "__main__":

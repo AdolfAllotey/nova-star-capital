@@ -8,7 +8,6 @@ from src.v2.bonds.bond_volatility_engine import run_bond_volatility_engine
 from src.v2.bonds.duration_engine import run_duration_engine
 from src.v2.bonds.bond_signal_engine import run_bond_signal_engine
 from src.v2.bonds.bond_portfolio_adapter import export_bond_signal_to_portfolio_input
-from src.v2.bonds.bond_state_updater import main as update_bond_state
 
 try:
     from src.v2.utils.logger import get_logger
@@ -66,8 +65,9 @@ def run_bonds_pipeline():
             f"{PORTFOLIO_INPUT_DIR}/bonds_portfolio_input.json"
         )
 
-        logger.info("Updating bonds state")
-        update_bond_state()
+        logger.info(
+            "Bond signal and Portfolio input generated successfully"
+        )
 
         logger.info("Bonds pipeline completed successfully")
         logger.info(f"Final bond signal: {result}")

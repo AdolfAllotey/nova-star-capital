@@ -82,8 +82,12 @@ def engine_execution_artifacts(eid):
             "fills": ROOT / "data/metals/execution/simulated_fills.jsonl",
         },
         "bonds": {
-            "positions": ROOT / "data/bonds/state/exposure_snapshot.json",
-            "fills": ROOT / "data/bonds/execution/simulated_fills.jsonl",
+            "positions": Path(
+                "/opt/nsc/data/preprod/bonds/state/exposure_snapshot.json"
+            ),
+            "fills": Path(
+                "/opt/nsc/data/preprod/bonds/execution/simulated_fills.jsonl"
+            ),
         },
         "funding": {
             "orders": ROOT / "src/v2/data/portfolio/rebalance/funding_plan.json",
