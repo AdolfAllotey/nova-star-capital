@@ -127,9 +127,12 @@ for name, brick in bricks.items():
     current_weight = float(brick.get("current_weight_estimate") or 0)
     drift = round(current_weight - target_weight, 6)
 
-    if abs(drift) >= 0.05:
+    # Health doctrine is intentionally asymmetric:
+    # over-allocation is a safety risk, while under-allocation can be
+    # a normal consequence of opportunity-driven PREPROD deployment.
+    if drift >= 0.05:
         drift_status = "critical"
-    elif abs(drift) >= 0.02:
+    elif drift >= 0.02:
         drift_status = "warning"
     else:
         drift_status = "ok"
