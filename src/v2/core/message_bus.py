@@ -38,10 +38,38 @@ def ensure_dir(path: Path) -> None:
 
 
 def append_jsonl(file_path: Path, obj: dict) -> None:
-    """Ajoute une ligne JSON dans un fichier JSONL."""
+    """
+    Ajoute une ligne JSON dans un fichier JSONL.
+
+    The event bus is shared by PREPROD processes running under both
+    root and the nsc service account. Keep the file group-writable so
+    one producer cannot lock out another after creating/recreating it.
+    """
     ensure_dir(file_path.parent)
-    with file_path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(obj) + "\n")
+
+    fd = os.open(
+        file_path,
+        os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+        0o664,
+    )
+
+    try:
+        # os.open() creation mode is still affected by the process umask.
+        # Normalize the effective file mode explicitly while the creator
+        # owns the file.
+        try:
+            os.fchmod(fd, 0o664)
+        except PermissionError:
+            # Existing files can be owned by another shared producer.
+            # In that case writability is provided by the nsc group.
+            pass
+
+        with os.fdopen(fd, "a", encoding="utf-8") as f:
+            fd = -1
+            f.write(json.dumps(obj) + "\n")
+    finally:
+        if fd >= 0:
+            os.close(fd)
 
 
 logger = get_logger("message_bus")
