@@ -25,6 +25,7 @@ AUDITS = {
     "runtime_consistency": DATA / "audits/runtime_consistency_audit.json",
     "runtime_telemetry": DATA / "audits/runtime_telemetry_audit.json",
     "dynamic_signal_activity": DATA / "audits/dynamic_signal_activity_audit.json",
+    "rc2_end_to_end": PREPROD / "audits/rc2_end_to_end_certification.json",
 }
 
 
