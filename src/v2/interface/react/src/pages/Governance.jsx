@@ -376,7 +376,7 @@ export default function Governance() {
             </div>
 
             <div className="mt-3 rounded-xl border border-amber-400/20 bg-amber-400/5 p-3 text-sm leading-5 text-amber-100">
-              No automatic capital bridge is authorized between crypto exchanges and IBKR. Options shadow modules remain observe-only.
+              No automatic capital bridge is authorized between crypto exchanges and IBKR. Options US is a governed active allocation in PREPROD, with execution restricted to simulated-only mode and real-money execution disabled.
             </div>
           </Box>
         </div>
