@@ -15,7 +15,7 @@ OUTPUT = DATA / "audits" / "bonds_master_strategy_audit.json"
 PATHS = {
     "capital_context": DATA / "capital/config/capital_context.json",
     "portfolio_input": PREPROD / "portfolio/inputs/bonds_portfolio_input.json",
-    "bond_signal": ROOT / "data/bonds/bond_signal.json",
+    "bond_signal": PREPROD / "bonds/bond_signal.json",
     "bond_state": PREPROD / "bonds/bond_state.json",
     "funding_plan": DATA / "capital/funding_plan.json",
     "family_office_bundle": DATA / "capital/family_office_bundle.json",

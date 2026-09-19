@@ -19,8 +19,8 @@ WATCHED_ARTIFACTS = {
     "execution_plan": PREPROD / "trading/execution_plan.json",
     "open_positions": PREPROD / "trading/open_positions.json",
     "governance_crypto": PREPROD / "analysis/governance_engine_pro.json",
-    "risk_engine_crypto": DATA / "analysis/risk_engine_pro.json",
-    "offensive_governance": DATA / "equities_offensive/governance/governance_engine_pro.json",
+    "risk_engine_crypto": PREPROD / "analysis/risk_engine_pro.json",
+    "offensive_governance": PREPROD / "equities_offensive/governance/governance_engine_pro.json",
     "defensive_input": PREPROD / "portfolio/inputs/equities_defensive_portfolio_input.json",
     "bonds_input": PREPROD / "portfolio/inputs/bonds_portfolio_input.json",
     "metals_input": PREPROD / "portfolio/inputs/precious_metals_portfolio_input.json",
@@ -251,7 +251,17 @@ for name, now_data in current["artifacts"].items():
     if hash_changed and signals_changed:
         status = "dynamic"
     elif hash_changed and not signals_changed:
-        if name in {"portfolio_target", "portfolio_state", "execution_plan", "governance_crypto", "offensive_governance"}:
+        if name in {
+            "portfolio_target",
+            "portfolio_state",
+            "execution_plan",
+            "governance_crypto",
+            "offensive_governance",
+            "defensive_input",
+            "bonds_input",
+            "metals_input",
+            "crypto_input",
+        }:
             status = "metadata_only_refresh"
         else:
             status = "fake_refresh_possible"

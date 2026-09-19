@@ -14,7 +14,7 @@ OUTPUT = DATA / "audits" / "precious_metals_master_strategy_audit.json"
 PATHS = {
     "capital_context": DATA / "capital/config/capital_context.json",
     "portfolio_input": PREPROD / "portfolio/inputs/precious_metals_portfolio_input.json",
-    "metals_signal": ROOT / "data/metals/metals_signal.json",
+    "metals_signal": PREPROD / "metals/metals_signal.json",
     "metals_state": PREPROD / "metals/metals_state.json",
     "funding_plan": DATA / "capital/funding_plan.json",
     "family_office_bundle": DATA / "capital/family_office_bundle.json",
