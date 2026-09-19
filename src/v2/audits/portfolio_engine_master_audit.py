@@ -49,6 +49,7 @@ EXPECTED_ROLES = {
     "equities_defensive": "stabilization",
     "bonds": "macro_stabilizer",
     "precious_metals": "systemic_hedge",
+    "options_us": "active_options",
 }
 
 EXPECTED_POOLS = {
@@ -57,6 +58,7 @@ EXPECTED_POOLS = {
     "equities_defensive": "ibkr_pool",
     "bonds": "ibkr_pool",
     "precious_metals": "ibkr_pool",
+    "options_us": "ibkr_pool",
 }
 
 
@@ -319,7 +321,7 @@ if missing_bricks:
         failed_checks,
         "required_governed_bricks",
         "critical",
-        "Required RC1 bricks are missing from the governed target.",
+        "Required governed bricks are missing from the current target.",
         {
             "missing": missing_bricks,
             "actual": sorted(actual_bricks),
@@ -331,21 +333,19 @@ if unexpected_bricks:
         failed_checks,
         "unexpected_governed_bricks",
         "critical",
-        "Unexpected bricks are present in the RC1 governed target.",
+        "Unexpected bricks are present in the current governed target.",
         {
             "unexpected": unexpected_bricks,
             "actual": sorted(actual_bricks),
         },
     )
 
-if excluded_inputs.get("options_us") != (
-    "not_allowed_by_master_policy"
-):
+if "options_us" in excluded_inputs:
     add_failure(
         failed_checks,
-        "options_us_rc1_exclusion",
+        "options_us_unexpected_exclusion",
         "critical",
-        "Options US is not correctly excluded from RC1 allocation.",
+        "Options US is governed and must not be excluded.",
         {
             "actual_reason": excluded_inputs.get(
                 "options_us"
@@ -353,17 +353,17 @@ if excluded_inputs.get("options_us") != (
         },
     )
 
-if excluded_inputs.get("options_v2_shadow") != (
+if excluded_inputs.get("options_v3_shadow") != (
     "shadow_observation_only"
 ):
     add_failure(
         failed_checks,
-        "options_v2_shadow_exclusion",
+        "options_v3_shadow_exclusion",
         "critical",
-        "Options V2 Shadow is not correctly classified.",
+        "Options V3 Shadow is not correctly classified.",
         {
             "actual_reason": excluded_inputs.get(
-                "options_v2_shadow"
+                "options_v3_shadow"
             ),
         },
     )
@@ -373,6 +373,46 @@ state_bricks = (
     if isinstance(state, dict)
     else {}
 )
+
+options_us_state = state_bricks.get(
+    "options_us",
+    {},
+)
+
+if not isinstance(options_us_state, dict) or not options_us_state:
+    add_failure(
+        failed_checks,
+        "options_us_state_missing",
+        "critical",
+        "Governed Options US state is missing.",
+        {},
+    )
+else:
+    if options_us_state.get("governed_target") is not True:
+        add_failure(
+            failed_checks,
+            "options_us_governed_target",
+            "critical",
+            "Options US is not marked as a governed target.",
+            {
+                "governed_target": options_us_state.get(
+                    "governed_target"
+                ),
+            },
+        )
+
+    if options_us_state.get("portfolio_role") != "active_options":
+        add_failure(
+            failed_checks,
+            "options_us_portfolio_role",
+            "critical",
+            "Options US portfolio role is incorrect.",
+            {
+                "portfolio_role": options_us_state.get(
+                    "portfolio_role"
+                ),
+            },
+        )
 
 for brick, reason in excluded_inputs.items():
     state_entry = state_bricks.get(brick, {})
