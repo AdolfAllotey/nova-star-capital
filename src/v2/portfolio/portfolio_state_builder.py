@@ -503,7 +503,7 @@ def run_portfolio_state_builder():
             "target_weight_snapshot aligns with portfolio_target.final_brick_weights.",
             "current_weight_estimate uses brick state when available; otherwise falls back to signal-derived estimates.",
             "Long Term is injected as a passive patrimonial pocket when lt_portfolio.json is available.",
-            "options_us current exposure represents funded pocket capital, while internal risk usage remains separately reported."
+            "options_us current exposure represents simulated risk/exposure currently engaged, while pocket capital and maximum risk capacity remain separately reported."
         ]
     }
 
