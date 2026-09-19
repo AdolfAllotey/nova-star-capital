@@ -83,11 +83,6 @@ AUDITS = {
         / "audits"
         / "master_semantic_audit.json"
     ),
-    "preprod_go_nogo": (
-        DATA
-        / "audits"
-        / "preprod_go_nogo_master_audit.json"
-    ),
 }
 
 PORTFOLIO_STATE = (
@@ -336,25 +331,6 @@ def main() -> int:
         evidence=kill.get("hard_block"),
     )
 
-    gonogo = audit_docs.get(
-        "preprod_go_nogo",
-        {},
-    )
-
-    gonogo_decision = (
-        (gonogo.get("summary") or {}).get("go_nogo")
-    )
-
-    add_check(
-        checks,
-        name="preprod_go_nogo_continuation",
-        ok=(
-            gonogo_decision
-            == "GO_FOR_CONTINUED_PREPROD_OBSERVATION"
-        ),
-        evidence=gonogo_decision,
-    )
-
     failed_checks = [
         row
         for row in checks
@@ -428,7 +404,12 @@ def main() -> int:
             ),
             (
                 "RC2 certification consumes current "
-                "master audits and canonical PREPROD state."
+                "base master audits and canonical PREPROD state."
+            ),
+            (
+                "RC2 certification is intentionally independent "
+                "from the PREPROD Go/No-Go audit to prevent "
+                "circular certification dependencies."
             ),
             (
                 "PASS certifies continued PREPROD "
