@@ -1146,29 +1146,93 @@ def build_recent_activity() -> List[Dict[str, Any]]:
 def read_confidence_history() -> dict:
     try:
         if not CONFIDENCE_HISTORY_PATH.exists():
-            return {"status": "missing", "latest": None, "previous": None, "delta": None, "history_len": 0}
+            return {
+                "status": "missing",
+                "latest": None,
+                "previous": None,
+                "delta": None,
+                "history_len": 0,
+            }
 
         rows = []
-        for line in CONFIDENCE_HISTORY_PATH.read_text(encoding="utf-8").splitlines()[-200:]:
+        for line in CONFIDENCE_HISTORY_PATH.read_text(
+            encoding="utf-8"
+        ).splitlines()[-200:]:
             try:
                 rows.append(json.loads(line))
             except Exception:
                 pass
 
         if not rows:
-            return {"status": "empty", "latest": None, "previous": None, "delta": None, "history_len": 0}
+            return {
+                "status": "empty",
+                "latest": None,
+                "previous": None,
+                "delta": None,
+                "history_len": 0,
+            }
 
         latest_row = rows[-1]
-        latest = latest_row.get("confidence_value", latest_row.get("confidence"))
+        latest_timestamp = latest_row.get("timestamp")
+        max_age_seconds = 86400
+
+        try:
+            parsed_timestamp = datetime.fromisoformat(
+                str(latest_timestamp).replace("Z", "+00:00")
+            )
+            if parsed_timestamp.tzinfo is None:
+                parsed_timestamp = parsed_timestamp.replace(
+                    tzinfo=timezone.utc
+                )
+
+            age_seconds = max(
+                0.0,
+                (
+                    datetime.now(timezone.utc)
+                    - parsed_timestamp.astimezone(timezone.utc)
+                ).total_seconds(),
+            )
+        except Exception:
+            age_seconds = None
+
+        if (
+            age_seconds is None
+            or age_seconds > max_age_seconds
+        ):
+            return {
+                "status": "stale",
+                "latest": None,
+                "previous": None,
+                "delta": None,
+                "history_len": len(rows),
+                "last_sample_timestamp": latest_timestamp,
+                "age_seconds": (
+                    None
+                    if age_seconds is None
+                    else round(age_seconds, 3)
+                ),
+                "max_age_seconds": max_age_seconds,
+            }
+
+        latest = latest_row.get(
+            "confidence_value",
+            latest_row.get("confidence"),
+        )
 
         previous = None
         if len(rows) >= 2:
             prev_row = rows[-2]
-            previous = prev_row.get("confidence_value", prev_row.get("confidence"))
+            previous = prev_row.get(
+                "confidence_value",
+                prev_row.get("confidence"),
+            )
 
         delta = None
         if latest is not None and previous is not None:
-            delta = round(float(latest) - float(previous), 6)
+            delta = round(
+                float(latest) - float(previous),
+                6,
+            )
 
         return {
             "status": "online",
@@ -1176,9 +1240,20 @@ def read_confidence_history() -> dict:
             "previous": previous,
             "delta": delta,
             "history_len": len(rows),
+            "last_sample_timestamp": latest_timestamp,
+            "age_seconds": round(age_seconds, 3),
+            "max_age_seconds": max_age_seconds,
         }
+
     except Exception as e:
-        return {"status": "error", "error": str(e), "latest": None, "previous": None, "delta": None, "history_len": 0}
+        return {
+            "status": "error",
+            "error": str(e),
+            "latest": None,
+            "previous": None,
+            "delta": None,
+            "history_len": 0,
+        }
 
 @router.get("/dashboard/v3")
 def dashboard_v3() -> Dict[str, Any]:
