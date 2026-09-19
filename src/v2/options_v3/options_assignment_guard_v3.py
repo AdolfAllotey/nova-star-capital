@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from math import isfinite
 from typing import Any
 
 
@@ -48,6 +49,9 @@ def evaluate_structure_assignment_risk_v3(
     try:
         spot = float(underlying_price)
     except (TypeError, ValueError):
+        spot = float("nan")
+
+    if not isfinite(spot) or spot <= 0:
         return {
             "assignment_risk": "unknown",
             "assignment_possible": False,
@@ -72,9 +76,20 @@ def evaluate_structure_assignment_risk_v3(
     short_results = []
     long_leg_count = 0
 
-    for leg in contract_legs:
+    for leg_index, leg in enumerate(contract_legs):
         if not isinstance(leg, dict):
-            continue
+            return {
+                "assignment_risk": "unknown",
+                "assignment_possible": False,
+                "exercise_possible": False,
+                "mandatory_close": True,
+                "guard_reason": "invalid_contract_leg",
+                "guard_valid": False,
+                "short_leg_count": len(short_results),
+                "long_leg_count": long_leg_count,
+                "invalid_leg_index": leg_index,
+                "leg_assessments": short_results,
+            }
 
         side = str(leg.get("side") or "").strip().upper()
         option_type = str(
@@ -84,7 +99,21 @@ def evaluate_structure_assignment_risk_v3(
         try:
             strike = float(leg.get("strike"))
         except (TypeError, ValueError):
-            continue
+            strike = float("nan")
+
+        if not isfinite(strike) or strike <= 0:
+            return {
+                "assignment_risk": "unknown",
+                "assignment_possible": False,
+                "exercise_possible": False,
+                "mandatory_close": True,
+                "guard_reason": "invalid_contract_leg_strike",
+                "guard_valid": False,
+                "short_leg_count": len(short_results),
+                "long_leg_count": long_leg_count,
+                "invalid_leg_index": leg_index,
+                "leg_assessments": short_results,
+            }
 
         if option_type in {"c", "call"}:
             normalized_type = "call"
@@ -93,14 +122,36 @@ def evaluate_structure_assignment_risk_v3(
             normalized_type = "put"
             moneyness = strike - spot
         else:
-            continue
+            return {
+                "assignment_risk": "unknown",
+                "assignment_possible": False,
+                "exercise_possible": False,
+                "mandatory_close": True,
+                "guard_reason": "unsupported_contract_leg_option_type",
+                "guard_valid": False,
+                "short_leg_count": len(short_results),
+                "long_leg_count": long_leg_count,
+                "invalid_leg_index": leg_index,
+                "leg_assessments": short_results,
+            }
 
         if side == "BUY":
             long_leg_count += 1
             continue
 
         if side != "SELL":
-            continue
+            return {
+                "assignment_risk": "unknown",
+                "assignment_possible": False,
+                "exercise_possible": False,
+                "mandatory_close": True,
+                "guard_reason": "unsupported_contract_leg_side",
+                "guard_valid": False,
+                "short_leg_count": len(short_results),
+                "long_leg_count": long_leg_count,
+                "invalid_leg_index": leg_index,
+                "leg_assessments": short_results,
+            }
 
         result = evaluate_assignment_risk_v3(
             option_type=normalized_type,
