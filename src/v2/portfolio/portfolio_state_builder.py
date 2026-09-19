@@ -265,28 +265,6 @@ def get_real_brick_state(brick: str, deployable_capital_eur: float):
             ),
         }
 
-    if brick == "options_v2_shadow":
-        v2_dashboard_path = Path(
-            "/opt/nsc/app/src/v2/options_v2/data/options_v2_dashboard.json"
-        )
-
-        v2_dashboard = load_json(v2_dashboard_path, default={}) or {}
-        v2_kpis = (
-            v2_dashboard.get("kpis", {})
-            if isinstance(v2_dashboard, dict)
-            else {}
-        )
-        v2_open_count = int(v2_kpis.get("positions_open", 0) or 0)
-
-        # Shadow positions are observed but never counted as deployable exposure.
-        return {
-            "current_exposure_eur": 0.0,
-            "current_weight_estimate": 0.0,
-            "state_origin": "options_v2_shadow_dashboard",
-            "positions_count": v2_open_count,
-            "state_source": str(v2_dashboard_path),
-        }
-
 
     return None
 

@@ -182,22 +182,6 @@ def health() -> Dict[str, Any]:
         "twitter_enabled": os.getenv("TWITTER_ENABLED"),
     }
 
-@app.get("/options/v2/dashboard")
-def get_options_v2_dashboard():
-    path = Path("/opt/nsc/app/src/v2/options_v2/data/options_v2_dashboard.json")
-    if not path.exists():
-        return {
-            "status": "missing",
-            "message": "options_v2_dashboard.json absent"
-        }
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": str(e)
-        }
-
 # Family Office API
 app.include_router(family_office_router, prefix="/api")
 
