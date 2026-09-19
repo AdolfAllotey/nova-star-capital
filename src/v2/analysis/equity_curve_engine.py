@@ -12,7 +12,6 @@ from datetime import datetime, timezone
 
 ANALYSIS_DIR = Path("/opt/nsc/data/preprod/analysis")
 PNL_STATE_PATH = ANALYSIS_DIR / "pnl_state.json"
-OPTIONS_V2_DAILY_REPORT_PATH = Path("/opt/nsc/app/src/v2/options_v2/data/options_v2_daily_report.json")
 CAPITAL_ALLOCATOR_STATE_PATH = ANALYSIS_DIR / "capital_allocator_state.json"
 PORTFOLIO_STATE_PATH = Path("/opt/nsc/data/preprod/portfolio/state/portfolio_state.json")
 OUTPUT_PATH = ANALYSIS_DIR / "equity_curve_state.json"
@@ -88,13 +87,8 @@ def build_equity_curve_state() -> dict:
     pnl = pnl_state.get("summary", {}) if isinstance(pnl_state, dict) else {}
     totals = allocator_state.get("totals", {}) if isinstance(allocator_state, dict) else {}
 
-    options_v2 = load_json(OPTIONS_V2_DAILY_REPORT_PATH, {}) or {}
-    options_perf = options_v2.get("performance", {}) if isinstance(options_v2, dict) else {}
-
     crypto_total = float(pnl.get("total_pnl_eur", 0.0) or 0.0)
     crypto_realized = float(pnl.get("realized_pnl_eur", 0.0) or 0.0)
-    options_realized = float(options_perf.get("realized_pnl_eur", 0.0) or 0.0)
-    options_unrealized = float(options_perf.get("unrealized_pnl_eur", 0.0) or 0.0)
 
     dashboard_pnl = get_dashboard_global_pnl()
 
@@ -105,9 +99,15 @@ def build_equity_curve_state() -> dict:
         global_realized_pnl = dashboard_pnl.get("realized_active", 0.0)
         global_unrealized_pnl = dashboard_pnl.get("unrealized_active", global_total_pnl - global_realized_pnl)
     else:
-        shadow_pnl = options_realized + options_unrealized
+        # Dashboard V3 is the authoritative aggregate PnL surface.
+        #
+        # Fail closed when it is unavailable: do not resurrect historical
+        # Options V2 shadow PnL as a substitute for the governed Options US
+        # / V3 runtime. The legacy V2 book is not part of the current active
+        # portfolio and must never contaminate the current equity curve.
+        shadow_pnl = 0.0
         global_total_pnl = crypto_total
-        global_total_including_shadow = crypto_total + shadow_pnl
+        global_total_including_shadow = global_total_pnl
         global_realized_pnl = crypto_realized
         global_unrealized_pnl = global_total_pnl - global_realized_pnl
 
@@ -149,7 +149,8 @@ def build_equity_curve_state() -> dict:
         "latest": point,
         "sources": {
             "pnl_state": str(PNL_STATE_PATH),
-            "options_v2_daily_report": str(OPTIONS_V2_DAILY_REPORT_PATH),
+            "dashboard_v3": DASHBOARD_V3_URL,
+            "options_legacy_fallback": "disabled",
             "capital_allocator_state": str(CAPITAL_ALLOCATOR_STATE_PATH),
             "portfolio_state": str(PORTFOLIO_STATE_PATH),
         },
