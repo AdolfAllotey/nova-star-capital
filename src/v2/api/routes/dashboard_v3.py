@@ -846,43 +846,6 @@ def build_metals_strategy(portfolio_state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 
-def build_options_v3_shadow_strategy(portfolio_state: Dict[str, Any]) -> Dict[str, Any]:
-    dashboard = load_options_v3_dashboard() or {}
-
-    status = dashboard.get("status", {}) if isinstance(dashboard, dict) else {}
-    kpis = dashboard.get("kpis", {}) if isinstance(dashboard, dict) else {}
-    portfolio = dashboard.get("portfolio", {}) if isinstance(dashboard, dict) else {}
-    positions = dashboard.get("positions", {}) if isinstance(dashboard, dict) else {}
-
-    return {
-        "key": "options_v3_shadow",
-        "name": "Options V3 Shadow",
-        "strategy": "options_v3_shadow",
-        "label": "Options V3 Shadow",
-        "mode": "SHADOW",
-        "regime": "shadow_mode",
-        "targetExposure": 0.0,
-        "openPositions": int(positions.get("open", 0) or 0),
-        "orders": int(kpis.get("approved_count", 0) or 0),
-        "pnl": 0.0,
-        "winRate": float(
-            dashboard.get("comparison_reference", {}).get("v2_win_rate_pct", 0) or 0
-        ),
-        "shadowComparisonPnL": float(
-            dashboard.get("comparison_reference", {}).get("v2_realized_pnl_eur", 0) or 0
-        ),
-        "signalsValidated": int(kpis.get("candidates_validated", 0) or 0),
-        "signalsRejected": int(kpis.get("rejected_count", 0) or 0),
-        "pipelineStatus": status.get("pipeline_status", "unknown"),
-        "source": str(OPTIONS_V3_PATH / "options_v3_dashboard.json"),
-        "currentExposure": 0.0,
-        "currentExposureEur": 0.0,
-        "positions": int(positions.get("open", 0) or 0),
-        "stateOrigin": "options_v3_shadow_dashboard",
-    }
-
-
-
 def build_options_us_strategy(
     portfolio_state: Dict[str, Any],
 ) -> Dict[str, Any]:
@@ -1228,7 +1191,6 @@ def dashboard_v3() -> Dict[str, Any]:
     defensive = build_defensive_strategy(portfolio_state)
     long_term = build_long_term_strategy(portfolio_state)
     options_us = build_options_us_strategy(portfolio_state)
-    options_v3_shadow = build_options_v3_shadow_strategy(portfolio_state)
     bonds = build_bonds_strategy(portfolio_state)
     metals = build_metals_strategy(portfolio_state)
 
@@ -1238,7 +1200,6 @@ def dashboard_v3() -> Dict[str, Any]:
         defensive,
         long_term,
         options_us,
-        options_v3_shadow,
         bonds,
         metals,
     ]
@@ -1246,11 +1207,7 @@ def dashboard_v3() -> Dict[str, Any]:
     avg_brick_confidence = compute_avg_brick_confidence(portfolio_target)
     confidence_history = read_confidence_history()
 
-    pnl_shadow = round(sum(
-        safe_float(s.get("pnl", 0.0), 0.0)
-        for s in strategies
-        if s.get("key") in {"options_v3_shadow"}
-    ), 2)
+    pnl_shadow = 0.0
 
     pnl_long_term = round(sum(
         safe_float(s.get("pnl", 0.0), 0.0)
@@ -1261,7 +1218,7 @@ def dashboard_v3() -> Dict[str, Any]:
     pnl_global = round(sum(
         safe_float(s.get("pnl", 0.0), 0.0)
         for s in strategies
-        if s.get("key") not in {"options_v3_shadow", "long_term"}
+        if s.get("key") not in {"long_term"}
     ), 2)
 
     pnl_total_including_shadow = round(pnl_global + pnl_shadow, 2)
