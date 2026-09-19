@@ -287,42 +287,6 @@ def get_real_brick_state(brick: str, deployable_capital_eur: float):
             "state_source": str(v2_dashboard_path),
         }
 
-    if brick == "options_v3_shadow":
-        v3_dashboard_path = (
-            DATA_DIR / "options_v3" / "options_v3_dashboard.json"
-        )
-        v3_positions_path = (
-            DATA_DIR / "options_v3" / "options_v3_positions.json"
-        )
-
-        v3_dashboard = load_json(v3_dashboard_path, default={}) or {}
-        v3_positions = load_json(v3_positions_path, default=[]) or []
-
-        v3_positions_summary = (
-            v3_dashboard.get("positions", {})
-            if isinstance(v3_dashboard, dict)
-            else {}
-        )
-
-        if not isinstance(v3_positions_summary, dict):
-            v3_positions_summary = {}
-
-        if not isinstance(v3_positions, list):
-            v3_positions = []
-
-        v3_open_count = int(
-            v3_positions_summary.get("open", len(v3_positions)) or 0
-        )
-
-        # V3 remains a strictly observational Shadow overlay during RC2.
-        # Its simulated risk must not become portfolio capital exposure.
-        return {
-            "current_exposure_eur": 0.0,
-            "current_weight_estimate": 0.0,
-            "state_origin": "options_v3_shadow_dashboard",
-            "positions_count": v3_open_count,
-            "state_source": str(v3_dashboard_path),
-        }
 
     return None
 

@@ -353,14 +353,12 @@ if "options_us" in excluded_inputs:
         },
     )
 
-if excluded_inputs.get("options_v3_shadow") != (
-    "shadow_observation_only"
-):
+if "options_v3_shadow" in excluded_inputs:
     add_failure(
         failed_checks,
-        "options_v3_shadow_exclusion",
+        "options_v3_shadow_portfolio_identity",
         "critical",
-        "Options V3 Shadow is not correctly classified.",
+        "Options V3 Shadow must not exist as a Portfolio Brain input.",
         {
             "actual_reason": excluded_inputs.get(
                 "options_v3_shadow"
