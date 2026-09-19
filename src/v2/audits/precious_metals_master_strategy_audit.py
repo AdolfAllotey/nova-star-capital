@@ -13,7 +13,7 @@ OUTPUT = DATA / "audits" / "precious_metals_master_strategy_audit.json"
 
 PATHS = {
     "capital_context": DATA / "capital/config/capital_context.json",
-    "portfolio_input": ROOT / "src/v2/data/portfolio/inputs/precious_metals_portfolio_input.json",
+    "portfolio_input": PREPROD / "portfolio/inputs/precious_metals_portfolio_input.json",
     "metals_signal": ROOT / "data/metals/metals_signal.json",
     "metals_state": PREPROD / "metals/metals_state.json",
     "funding_plan": DATA / "capital/funding_plan.json",
@@ -106,18 +106,65 @@ def main() -> None:
             allocation,
         ),
         check(
-            "gold_silver_assets_present",
-            len(assets & EXPECTED_ASSETS) >= 2,
-            "warning",
-            "Metals allocation should include GLD and SLV.",
-            sorted(assets),
+            "metals_assets_valid",
+            bool(assets)
+            and "GLD" in assets
+            and assets.issubset(EXPECTED_ASSETS),
+            "critical",
+            "Metals allocation must contain GLD and may only use the supported GLD/SLV instruments.",
+            {
+                "assets": sorted(assets),
+                "supported_assets": sorted(
+                    EXPECTED_ASSETS
+                ),
+            },
         ),
         check(
-            "gold_dominant",
-            float(allocation.get("GLD", 0)) >= float(allocation.get("SLV", 0)),
-            "warning",
-            "Gold should normally dominate silver in systemic hedge mode.",
-            allocation,
+            "metals_regime_allocation_coherent",
+            (
+                (
+                    float(
+                        portfolio_input.get(
+                            "target_weight", 0
+                        )
+                        or 0
+                    )
+                    == 0.0
+                    and portfolio_input.get(
+                        "regime"
+                    )
+                    == "inactive"
+                    and assets == {"GLD"}
+                )
+                or (
+                    float(
+                        portfolio_input.get(
+                            "target_weight", 0
+                        )
+                        or 0
+                    )
+                    > 0.0
+                    and float(
+                        allocation.get("GLD", 0)
+                        or 0
+                    )
+                    >= float(
+                        allocation.get("SLV", 0)
+                        or 0
+                    )
+                )
+            ),
+            "critical",
+            "Metals allocation must match the signal-engine regime contract.",
+            {
+                "regime": portfolio_input.get(
+                    "regime"
+                ),
+                "target_weight": portfolio_input.get(
+                    "target_weight"
+                ),
+                "allocation": allocation,
+            },
         ),
         check(
             "drivers_present",

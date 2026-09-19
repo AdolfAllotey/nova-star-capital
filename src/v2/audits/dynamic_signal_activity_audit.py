@@ -21,10 +21,10 @@ WATCHED_ARTIFACTS = {
     "governance_crypto": PREPROD / "analysis/governance_engine_pro.json",
     "risk_engine_crypto": DATA / "analysis/risk_engine_pro.json",
     "offensive_governance": DATA / "equities_offensive/governance/governance_engine_pro.json",
-    "defensive_input": ROOT / "src/v2/data/portfolio/inputs/equities_defensive_portfolio_input.json",
-    "bonds_input": ROOT / "src/v2/data/portfolio/inputs/bonds_portfolio_input.json",
-    "metals_input": ROOT / "src/v2/data/portfolio/inputs/precious_metals_portfolio_input.json",
-    "crypto_input": ROOT / "src/v2/data/portfolio/inputs/crypto_portfolio_input.json",
+    "defensive_input": PREPROD / "portfolio/inputs/equities_defensive_portfolio_input.json",
+    "bonds_input": PREPROD / "portfolio/inputs/bonds_portfolio_input.json",
+    "metals_input": PREPROD / "portfolio/inputs/precious_metals_portfolio_input.json",
+    "crypto_input": PREPROD / "portfolio/inputs/crypto_portfolio_input.json",
     "options_v3_dashboard": PREPROD / "options_v3/options_v3_dashboard.json",
     "options_v3_positions": PREPROD / "options_v3/options_v3_positions.json",
 }
@@ -67,10 +67,56 @@ def file_age_seconds(path):
 
 
 def extract_signal_fields(name, doc):
+    fields = {}
+
+    if name == "open_positions":
+        positions = []
+
+        if isinstance(doc, list):
+            positions = doc
+        elif isinstance(doc, dict):
+            raw_positions = doc.get("positions") or []
+            if isinstance(raw_positions, list):
+                positions = raw_positions
+
+        normalized_positions = []
+
+        for row in positions:
+            if not isinstance(row, dict):
+                continue
+
+            normalized_positions.append({
+                "symbol": (
+                    row.get("symbol")
+                    or row.get("token")
+                    or row.get("ticker")
+                ),
+                "side": row.get("side"),
+                "strategy": row.get("strategy"),
+                "remaining_size": row.get("remaining_size"),
+                "entry_price": row.get("entry_price"),
+                "last_price": row.get("last_price"),
+                "realized_pnl": row.get("realized_pnl"),
+                "unrealized_pnl": row.get("unrealized_pnl"),
+                "tp1_done": row.get("tp1_done"),
+                "tp2_done": row.get("tp2_done"),
+                "trailing_active": row.get(
+                    "trailing_active"
+                ),
+                "execution_mode": row.get(
+                    "execution_mode"
+                ),
+            })
+
+        return {
+            "positions_count": len(
+                normalized_positions
+            ),
+            "positions": normalized_positions,
+        }
+
     if not isinstance(doc, dict):
         return {}
-
-    fields = {}
 
     if name == "portfolio_target":
         fields = {
@@ -116,18 +162,6 @@ def extract_signal_fields(name, doc):
             ],
         }
 
-    elif name == "open_positions":
-        positions = doc.get("positions") if isinstance(doc, dict) else []
-        if not isinstance(positions, list):
-            positions = []
-        fields = {
-            "positions_count": len(positions),
-            "symbols": [
-                p.get("symbol") or p.get("token") or p.get("ticker")
-                for p in positions if isinstance(p, dict)
-            ],
-        }
-
     elif name.startswith("options_v3"):
         fields = {
             "status": doc.get("status"),
@@ -144,8 +178,18 @@ def extract_signal_fields(name, doc):
             "target_weight": doc.get("target_weight"),
             "portfolio_role": doc.get("portfolio_role"),
             "allocation": doc.get("allocation"),
+            "drivers": doc.get("drivers"),
+            "risk_flags": doc.get("risk_flags"),
+            "inertia_profile": doc.get(
+                "inertia_profile"
+            ),
+            "execution_mode": doc.get(
+                "execution_mode"
+            ),
             "hard_block": doc.get("hard_block"),
-            "action_policy": doc.get("action_policy"),
+            "action_policy": doc.get(
+                "action_policy"
+            ),
             "mode": doc.get("mode"),
         }
 

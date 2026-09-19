@@ -14,7 +14,7 @@ OUTPUT = DATA / "audits" / "equities_defensive_master_strategy_audit.json"
 
 PATHS = {
     "capital_context": DATA / "capital/config/capital_context.json",
-    "portfolio_input": ROOT / "src/v2/data/portfolio/inputs/equities_defensive_portfolio_input.json",
+    "portfolio_input": PREPROD / "portfolio/inputs/equities_defensive_portfolio_input.json",
     "defensive_signal": ROOT / "data/defensive/defensive_signal.json",
     "allocator_output": ROOT / "data/defensive/defensive_allocations.json",
     "quality_scores": ROOT / "data/defensive/quality_scores.json",

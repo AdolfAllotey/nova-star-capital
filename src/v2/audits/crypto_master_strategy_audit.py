@@ -15,7 +15,7 @@ OUTPUT = DATA / "audits" / "crypto_master_strategy_audit.json"
 
 PATHS = {
     "capital_context": DATA / "capital/config/capital_context.json",
-    "crypto_portfolio_input": ROOT / "src/v2/data/portfolio/inputs/crypto_portfolio_input.json",
+    "crypto_portfolio_input": PREPROD / "portfolio/inputs/crypto_portfolio_input.json",
     "capital_allocation": PREPROD / "trading/capital_allocation.json",
     "execution_plan": PREPROD / "trading/execution_plan.json",
     "execution_plan_simulated": PREPROD / "trading/execution_plan_simulated.json",

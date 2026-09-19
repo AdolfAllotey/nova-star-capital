@@ -14,7 +14,7 @@ OUTPUT = DATA / "audits" / "equities_offensive_master_strategy_audit.json"
 
 PATHS = {
     "capital_context": DATA / "capital/config/capital_context.json",
-    "portfolio_input": ROOT / "src/v2/data/portfolio/inputs/equities_offensive_portfolio_input.json",
+    "portfolio_input": PREPROD / "portfolio/inputs/equities_offensive_portfolio_input.json",
     "dashboard_payload": ROOT / "data/equities_offensive/reporting/dashboard_payload.json",
     "ui_bundle": PREPROD / "equities_offensive/ui/ui_bundle.json",
     "state": PREPROD / "equities_offensive/state/state.json",
@@ -29,7 +29,7 @@ PATHS = {
 
 EXPECTED_ROLE = "alpha_directional"
 EXPECTED_POOL = "ibkr_pool"
-EXPECTED_CORE_ASSETS = {"AMD", "NVDA", "META", "NFLX", "AVGO"}
+OFFENSIVE_UNIVERSE_PATH = PREPROD / "equities_offensive/universe/universe_filtered.json"
 
 
 def utc_now() -> str:
@@ -96,6 +96,7 @@ def get_symbol(row: Dict[str, Any]) -> str:
 
 def main() -> None:
     docs = {k: read_json(p, {}) for k, p in PATHS.items()}
+    offensive_universe = read_json(OFFENSIVE_UNIVERSE_PATH, {})
 
     context = docs["capital_context"]
     portfolio_input = docs["portfolio_input"]
@@ -113,6 +114,15 @@ def main() -> None:
 
     allocation = portfolio_input.get("allocation", {}) if isinstance(portfolio_input, dict) else {}
     allocated_assets = set(str(k).upper() for k in allocation.keys())
+    allowed_offensive_assets = set(
+        str(x).upper()
+        for x in (
+            offensive_universe.get("symbols", [])
+            if isinstance(offensive_universe, dict)
+            else []
+        )
+        if x
+    )
 
     signal_symbols = [get_symbol(s) for s in signals if isinstance(s, dict) and get_symbol(s)]
     order_symbols = [get_symbol(o) for o in orders if isinstance(o, dict) and get_symbol(o)]
@@ -176,11 +186,25 @@ def main() -> None:
             allocation,
         ),
         check(
-            "core_growth_assets_present",
-            len(allocated_assets & EXPECTED_CORE_ASSETS) >= 3,
-            "warning",
-            "Allocation should include core offensive growth assets.",
-            sorted(allocated_assets),
+            "allocation_within_authoritative_universe",
+            bool(allocated_assets)
+            and bool(allowed_offensive_assets)
+            and allocated_assets.issubset(
+                allowed_offensive_assets
+            ),
+            "critical",
+            "Offensive allocation must remain inside the current authoritative universe.",
+            {
+                "allocated_assets": sorted(
+                    allocated_assets
+                ),
+                "allowed_assets": sorted(
+                    allowed_offensive_assets
+                ),
+                "universe_path": str(
+                    OFFENSIVE_UNIVERSE_PATH
+                ),
+            },
         ),
         check(
             "signals_present",
