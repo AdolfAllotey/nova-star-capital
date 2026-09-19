@@ -1,6 +1,6 @@
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from src.v2.portfolio.load_portfolio_inputs import load_portfolio_inputs
@@ -22,7 +22,7 @@ def ensure_parent(path: Path):
 
 
 def save_json(data, path: Path):
-    data["timestamp"] = datetime.utcnow().isoformat()
+    data["timestamp"] = datetime.now(timezone.utc).isoformat()
     ensure_parent(path)
     with open(path, "w") as f:
         json.dump(data, f, indent=2)
