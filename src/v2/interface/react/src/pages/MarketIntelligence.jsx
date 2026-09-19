@@ -299,7 +299,7 @@ setSourceState({
   const defensive = engineById.equities_defensive || {};
   const bonds = engineById.bonds || {};
   const metals = engineById.precious_metals || {};
-  const options = engineById.options_v2_shadow || {};
+  const options = engineById.options_us || {};
 
   const metricNumber = (value) => {
     if (value === null || value === undefined || value === "") return null;
@@ -544,9 +544,9 @@ setSourceState({
             </div>
           </Card>
 
-          <Card title="Options Shadow" icon={Brain}>
+          <Card title="Options US · Simulated" icon={Brain}>
             <div className="grid grid-cols-2 gap-2">
-              <Metric label="Status" value={options.status || "shadow"} tone="amber" />
+              <Metric label="Status" value={options.status || "active"} tone="amber" />
               <Metric label="Confidence" value={pct(options.confidence_pct)} tone="emerald" />
               <Metric label="Orders" value={options.orders_count ?? 0} tone="slate" />
               <Metric label="Positions" value={options.positions_count ?? 0} tone="slate" />

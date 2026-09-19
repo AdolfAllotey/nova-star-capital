@@ -12,7 +12,6 @@ const BRICK_LABELS = {
   precious_metals: "Precious Metals",
   long_term: "Long Term",
   options_us: "Options US · Simulated",
-  options_v2_shadow: "Options Shadow",
 };
 
 const BRICK_ROUTES = {
@@ -23,7 +22,6 @@ const BRICK_ROUTES = {
   precious_metals: "/bricks/precious-metals",
   long_term: "/bricks/lt",
   options_us: "/bricks/options",
-  options_v2_shadow: "/bricks/options",
 };
 
 function num(v, fallback = 0) {

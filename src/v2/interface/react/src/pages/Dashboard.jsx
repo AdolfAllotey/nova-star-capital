@@ -660,7 +660,6 @@ const preferredPortfolioOrder = [
 const excludedPortfolioKeys = new Set([
   "cash",
   "cash_buffer",
-  "options_v2_shadow",
   "options_v3_shadow",
 ]);
 

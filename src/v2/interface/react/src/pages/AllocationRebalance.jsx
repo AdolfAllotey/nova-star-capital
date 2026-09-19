@@ -10,7 +10,6 @@ const BRICK_LABELS = {
   precious_metals: "Metals",
   long_term: "Long Term",
   options_us: "Options US · Simulated",
-  options_v2_shadow: "Options V2 · Shadow",
 };
 
 function num(v, fallback = 0) {

@@ -332,7 +332,6 @@ const humanBrickName = (key) => {
     bonds: "Bonds",
     precious_metals: "Precious Metals",
     metals: "Precious Metals",
-    options_v2_shadow: "Options V2 · Shadow",
     options_us: "Options US · Simulated",
     long_term: "Long Term",
   };
@@ -372,7 +371,6 @@ function getReason(key, target, raw, regime) {
   if (key === "equities_defensive") return "Inactive: risk_on favors offensive allocation";
   if (key === "bonds") return "Inactive: macro defensive sleeve dormant";
   if (key === "precious_metals") return "Inactive: no systemic stress detected";
-  if (key === "options_v2_shadow") return "Shadow mode: observed but not deployed";
   if (raw > 0) return "Capped to 0 by current regime";
   return "Inactive in current regime";
 }
@@ -957,7 +955,7 @@ const explainabilityMessages = [
 
   {
     level: "INFO",
-    text: "Options shadow signals brick remains isolated from live execution flows."
+    text: "Options US is governed in simulated-only mode; real execution remains blocked."
   }
 ];
 
@@ -2108,7 +2106,7 @@ const current = Number(bricks?.[key]?.current_weight_estimate ?? bricks?.[key]?.
                   ["T-01", "Risk Engine", riskFlags > 0 ? `${riskFlags} soft governance constraint(s) detected` : "No soft governance constraint", riskFlags > 0 ? "WATCH" : "INFO"],
                   ["T-02", "Governance", `${actionPolicy} policy enforced`, actionPolicy.includes("SIMULATED") ? "WATCH" : "INFO"],
                   ["T-03", "Execution", hardBlock ? "Execution blocked by hard block" : "No hard block detected", hardBlock ? "BLOCKED" : "INFO"],
-                  ["T-04", "Options Shadow", "Shadow overlay isolated from live execution", "INFO"],
+                  ["T-04", "Options US", "Governed simulated allocation; real execution blocked", "INFO"],
                   ["T-05", "Funding", "Manual inter-universe funding constraint acknowledged", "WATCH"],
                 ].map(([time, engine, message, level], idx) => {
                   const badge =
@@ -2305,7 +2303,7 @@ const current = Number(bricks?.[key]?.current_weight_estimate ?? bricks?.[key]?.
                   ["T+02", "Execution Engine", hardBlock ? "Hard block active: execution denied" : "No hard block detected", hardBlock ? "BLOCKED" : "OK"],
                   ["T+03", "Allocator", "Drift classified as governed deviation", "WATCH"],
                   ["T+04", "Funding Layer", fundingEventMessage, fundingLayerStatus],
-                  ["T+05", "Options Shadow", "Overlay isolated from live execution flow", "OK"],
+                  ["T+05", "Options US", "Simulated-only execution policy enforced", "OK"],
                 ].map(([time, source, message, level], idx) => {
                   const tone =
                     level === "BLOCKED"
@@ -2505,11 +2503,11 @@ const current = Number(bricks?.[key]?.current_weight_estimate ?? bricks?.[key]?.
                     status: "audit ok"
                   },
                   {
-                    label: "Options Shadow",
+                    label: "Options US",
                     x: "42%",
                     y: "82%",
                     tone: "emerald",
-                    status: "isolated"
+                    status: "simulated only"
                   }
                 ].map((node, idx) => {
 
@@ -2650,7 +2648,7 @@ const current = Number(bricks?.[key]?.current_weight_estimate ?? bricks?.[key]?.
                   ["Defensive Equities", Math.round(pamConfidencePct("equities_defensive", getBrickConfidence("equities_defensive", confidence, pt, bricks) * 100))],
                   ["Bonds", Math.round(pamConfidencePct("bonds", getBrickConfidence("bonds", confidence, pt, bricks) * 100))],
                   ["Precious Metals", Math.round(pamConfidencePct("precious_metals", getBrickConfidence("precious_metals", confidence, pt, bricks) * 100))],
-                  ["Options Shadow", Math.round(pamConfidencePct("options_v2_shadow", getBrickConfidence("options_v2_shadow", confidence, pt, bricks) * 100))]
+                  ["Options US", Math.round(pamConfidencePct("options_us", getBrickConfidence("options_us", confidence, pt, bricks) * 100))]
                 ].map(([label, score], idx) => {
 
                   const width = Math.max(5, Math.min(100, Number(score)));
@@ -3571,7 +3569,7 @@ const current = Number(bricks?.[key]?.current_weight_estimate ?? bricks?.[key]?.
                 ["Execution Engine", executionEngineStatus, allowSimulatedExecution ? "SIMULATED" : "IDLE", `${activeEntryOrders} entry / ${exitOrders} exit / ${shadowSignals} shadow signals signals`, "T-03"],
                 ["Policy Layer", "WATCH", actionPolicy, "No real order allowed", "T-04"],
                 ["Funding Layer", fundingLayerStatus, fundingLayerMode, fundingLayerSignal, "T-05"],
-                ["Options Shadow", "OK", "SHADOW", "Isolated from live execution", "T-06"],
+                ["Options US", "OK", "SIMULATED", "Real execution blocked", "T-06"],
                 ["API Health", global.apiStatus === "OK" ? "OK" : "WATCH", global.apiStatus || "UNKNOWN", "Dashboard feed online", "LIVE"],
               ].map(([layer, status, mode, signal, check]) => {
                 const cls =

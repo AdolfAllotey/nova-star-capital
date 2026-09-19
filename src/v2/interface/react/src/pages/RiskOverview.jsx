@@ -10,7 +10,6 @@ const BRICK_LABELS = {
   precious_metals: "Metals",
   long_term: "Long Term",
   options_us: "Options US · Simulated",
-  options_v2_shadow: "Options V2 · Shadow",
 };
 
 function num(v, fallback = 0) {
@@ -451,7 +450,6 @@ export default function RiskOverview() {
     bonds: "Bonds",
     precious_metals: "Precious Metals",
     metals: "Precious Metals",
-    options_v2_shadow: "Options V2 · Shadow",
     options_us: "Options US · Simulated",
     long_term: "Long Term",
   }[key] || String(key || "Unknown").replaceAll("_", " "));
