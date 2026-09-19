@@ -4,7 +4,6 @@ ENGINES = [
     {"id": "equities_defensive", "name": "Defensive Equities", "group": "investment", "status": "active"},
     {"id": "long_term", "name": "Long Term", "group": "investment", "status": "active"},
     {"id": "options_us", "name": "Options US", "group": "investment", "status": "active"},
-    {"id": "options_v2_shadow", "name": "Options V2 Shadow", "group": "investment", "status": "shadow"},
     {"id": "precious_metals", "name": "Precious Metals", "group": "investment", "status": "active"},
     {"id": "bonds", "name": "Bonds", "group": "investment", "status": "active"},
 

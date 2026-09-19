@@ -74,8 +74,8 @@ def engine_execution_artifacts(eid):
         "long_term": {
             "positions": PREPROD / "long_term/state/valuation.json",
         },
-        "options_v2_shadow": {
-            "positions": ROOT / "src/v2/options_v2/data/options_v2_positions.json",
+        "options_us": {
+            "positions": PREPROD / "options_v3/options_v3_positions.json",
         },
         "precious_metals": {
             "positions": PREPROD / "metals/state/exposure_snapshot.json",
