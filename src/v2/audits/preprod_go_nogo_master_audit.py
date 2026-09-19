@@ -7,6 +7,7 @@ from pathlib import Path
 
 ROOT = Path("/opt/nsc/app")
 DATA = ROOT / "data"
+PREPROD = Path("/opt/nsc/data/preprod")
 OUTPUT = DATA / "audits/preprod_go_nogo_master_audit.json"
 
 AUDITS = {
@@ -17,7 +18,7 @@ AUDITS = {
     "precious_metals": DATA / "audits/precious_metals_master_strategy_audit.json",
     "options_us": DATA / "audits/options_us_master_strategy_audit.json",
     "long_term_global": DATA / "audits/long_term_global_master_strategy_audit.json",
-    "portfolio_engine": DATA / "audits/portfolio_engine_master_audit.json",
+    "portfolio_engine": PREPROD / "audits/portfolio_engine_master_audit.json",
     "capital_funding": DATA / "audits/capital_funding_master_audit.json",
     "dashboard_v4": DATA / "audits/dashboard_v4_coherence_audit.json",
     "governance_risk": DATA / "audits/governance_risk_master_audit.json",

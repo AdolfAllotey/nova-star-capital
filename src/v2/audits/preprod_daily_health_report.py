@@ -20,7 +20,7 @@ AUDITS = {
     "governance_risk": DATA / "audits/governance_risk_master_audit.json",
     "dashboard_v4": DATA / "audits/dashboard_v4_coherence_audit.json",
     "capital_funding": DATA / "audits/capital_funding_master_audit.json",
-    "portfolio_engine": DATA / "audits/portfolio_engine_master_audit.json",
+    "portfolio_engine": PREPROD / "audits/portfolio_engine_master_audit.json",
     "runtime_consistency": DATA / "audits/runtime_consistency_audit.json",
     "runtime_telemetry": DATA / "audits/runtime_telemetry_audit.json",
     "dynamic_signal_activity": DATA / "audits/dynamic_signal_activity_audit.json",
