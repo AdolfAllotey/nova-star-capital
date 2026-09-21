@@ -137,22 +137,58 @@ def sha16(obj: Any) -> str:
 
 
 def normalize_action_policy(gov: Dict[str, Any]) -> str:
-    env_policy = (os.getenv("NSC_EQU_ACTION_POLICY") or "").upper().strip()
-    if env_policy in {"SIMULATED_ONLY", "SIMULATED_EXECUTION", "EXIT_ONLY", "LIVE"}:
-        return env_policy
+    """
+    Canonical governance is sovereign.
 
-    mode = (gov.get("mode") or gov.get("state") or "").upper()
-    policy = (gov.get("action_policy") or gov.get("policy") or "").upper()
+    A valid action_policy persisted by Governance must never be
+    widened by an environment variable. Environment is retained
+    only as a compatibility fallback when Governance does not
+    provide a recognized policy.
 
-    if policy in {"SIMULATED_ONLY", "SIMULATED_EXECUTION", "EXIT_ONLY", "LIVE"}:
+    Unknown/missing PREPROD state fails closed to SIMULATED_ONLY.
+    """
+    valid_policies = {
+        "SIMULATED_ONLY",
+        "SIMULATED_EXECUTION",
+        "EXIT_ONLY",
+        "LIVE",
+    }
+
+    policy = str(
+        gov.get("action_policy")
+        or gov.get("policy")
+        or ""
+    ).upper().strip()
+
+    if policy in valid_policies:
         return policy
+
+    mode = str(
+        gov.get("mode")
+        or gov.get("state")
+        or ""
+    ).upper().strip()
+
+    env_policy = str(
+        os.getenv("NSC_EQU_ACTION_POLICY")
+        or ""
+    ).upper().strip()
 
     if "PREPROD" in mode or "SIM" in mode:
         return "SIMULATED_ONLY"
+
     if "EXIT" in mode:
         return "EXIT_ONLY"
+
     if "PROD" in mode or "LIVE" in mode:
-        return "LIVE"
+        # Production authorization is not granted merely by an
+        # environment variable. A canonical LIVE policy is required
+        # above; otherwise fail closed.
+        return "SIMULATED_ONLY"
+
+    if env_policy == "SIMULATED_ONLY":
+        return "SIMULATED_ONLY"
+
     return "SIMULATED_ONLY"
 
 
@@ -905,6 +941,59 @@ def build_orders_from_candidates(cands: Dict[str, Any], action_policy: str) -> T
     return cand_orders, reasons
 
 
+def apply_governance_order_cap(
+    orders: List[Dict[str, Any]],
+    gov: Dict[str, Any],
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """
+    Enforce the canonical Governance max_orders_per_run contract.
+
+    If the field is present but malformed, fail closed to zero
+    executable orders. If absent, preserve current legacy behavior.
+    """
+    reasons: List[str] = []
+
+    caps = (
+        gov.get("caps")
+        if isinstance(gov, dict)
+        else {}
+    )
+
+    if not isinstance(caps, dict):
+        caps = {}
+
+    if "max_orders_per_run" not in caps:
+        return orders, reasons
+
+    try:
+        max_orders = int(
+            caps.get("max_orders_per_run")
+        )
+    except (TypeError, ValueError):
+        max_orders = 0
+        reasons.append(
+            "invalid governance max_orders_per_run "
+            "=> fail closed to 0"
+        )
+
+    max_orders = max(
+        0,
+        max_orders,
+    )
+
+    if len(orders) > max_orders:
+        original_count = len(orders)
+
+        orders = orders[:max_orders]
+
+        reasons.append(
+            "governance max_orders_per_run enforced "
+            f"=> {len(orders)}/{original_count}"
+        )
+
+    return orders, reasons
+
+
 def build_plan_id(inputs: Dict[str, Any]) -> str:
     """
     Identité métier stable.
@@ -1049,6 +1138,30 @@ def main():
         else:
             orders = []
             reasons.append("market closed => orders=[]")
+
+        orders, governance_cap_reasons = (
+            apply_governance_order_cap(
+                orders,
+                gov,
+            )
+        )
+
+        reasons.extend(
+            governance_cap_reasons
+        )
+
+        # Final PREPROD safety invariant:
+        # SIMULATED_ONLY must never expose executable orders.
+        if (
+            action_policy_effective
+            == "SIMULATED_ONLY"
+            and orders
+        ):
+            orders = []
+            reasons.append(
+                "SIMULATED_ONLY final safety guard "
+                "=> orders=[]"
+            )
 
         out = {
             "ts": utc_now_iso(),

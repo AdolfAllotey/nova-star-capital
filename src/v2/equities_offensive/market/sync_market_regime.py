@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from datetime import datetime, timezone
 
-GLOBAL_REGIME_PATH = Path("/opt/nsc/data/preprod/market/market_regime.json")
+GLOBAL_REGIME_PATH = Path("/opt/nsc/data/preprod/analysis/market_regime_detector.json")
 LOCAL_REGIME_PATH  = Path("/opt/nsc/data/preprod/equities_offensive/market/market_regime.json")
 
 def utc_now_iso() -> str:

@@ -276,14 +276,29 @@ def detect_market_regime(snapshot: Dict[str, Any] | None = None) -> RegimeResult
     else:
         regime = "neutral"
 
-    conf = float(abs(agg))
-    if regime == "neutral":
-        conf = max(0.4, 1.0 - min(1.0, abs(agg) / 0.45))
+    conf = compute_confidence_score(
+        agg=agg,
+        vix=vix,
+        qqq=qqq,
+        spy=spy,
+        breadth=breadth,
+    )
 
-    if conf < 0.4:
-        conf = 0.4
+    inputs = dict(inputs)
+    inputs.update({
+        "vix": vix,
+        "qqq_trend": qqq_trend,
+        "spy_trend": spy_trend,
+        "breadth_pct_above_ma200": pct_above,
+        "aggregate_score": agg,
+    })
 
-    return RegimeResult(regime=regime, confidence=float(conf), reasons=reasons, inputs=inputs)
+    return RegimeResult(
+        regime=regime,
+        confidence=float(conf),
+        reasons=reasons,
+        inputs=inputs,
+    )
 def write_market_regime(snapshot_path: str, out_path: str) -> Dict[str, Any]:
     snap = load_json(Path(snapshot_path), default={}) or {}
     res = detect_market_regime(snap)

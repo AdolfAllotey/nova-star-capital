@@ -25,7 +25,7 @@ def run_step(step: Step) -> None:
 
 def main() -> int:
     os.environ.setdefault("NSC_ENV", "PREPROD")
-    os.environ.setdefault("NSC_EQU_ACTION_POLICY", "SIMULATED_EXECUTION")
+    os.environ.setdefault("NSC_EQU_ACTION_POLICY", "SIMULATED_ONLY")
 
     steps = [
         Step("refresh_us_market_session", [sys.executable, "src/v2/equities_offensive/ops/us_market_session.py"]),

@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from datetime import datetime, timezone
 
-SRC = Path("/opt/nsc/data/preprod/governance/governance_engine_pro.json")
+SRC = Path("/opt/nsc/data/preprod/analysis/governance_engine_pro.json")
 DST = Path("/opt/nsc/data/preprod/equities_offensive/governance/governance_engine_pro.json")
 
 def utc_now_iso() -> str:
@@ -32,14 +32,14 @@ def main() -> int:
             "engine": "equ_sync_governance_v1",
             "env": "unknown",
             "mode": "PREPROD",
-            "action_policy": "SIMULATED_EXECUTION",
+            "action_policy": "SIMULATED_ONLY",
             "hard_block": False,
             "caps": {
                 "max_orders_per_run": 5,
                 "max_notional_eur_per_run": 2500.0,
                 "max_notional_eur_per_asset": 1000.0
             },
-            "notes": ["global governance missing/empty; wrote fallback SIMULATED_EXECUTION"],
+            "notes": ["global governance missing/empty; wrote fail-closed fallback SIMULATED_ONLY"],
         }
     else:
         source_timestamp = gov.get("timestamp") or gov.get("ts") or gov.get("updated_at")
