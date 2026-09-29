@@ -809,14 +809,14 @@ def _main_locked() -> int:
             {
                 "status": "shadow_only",
                 "market_session": (
-                    provider_session
+                    core_payload["market_session"]
                 ),
                 "reference_time": (
-                    provider_reference_time
+                    core_payload["reference_time"]
                 ),
-                "core": core_symbols,
+                "core": core_payload["symbols"],
                 "tactical": (
-                    tactical_symbols
+                    tactical_payload["symbols"]
                 ),
                 "core_output": str(
                     core_output
