@@ -929,6 +929,26 @@ def main() -> int:
 
         return 3
 
+    if args.recover:
+        print(
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "mode": "recover",
+                    "recovery_executed": False,
+                    "active_files_modified": False,
+                    "reason": "standalone_universe_recover_disabled_use_global_four_artifact_cutover",
+                    "required_authority": (
+                        "four_artifact_cutover_v2"
+                    ),
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+
+        return 3
+
     paths = artifact_paths(
         args.root
     )
@@ -937,39 +957,6 @@ def main() -> int:
         parents=True,
         exist_ok=True,
     )
-
-    #
-    # Recovery is intentionally available,
-    # but execution remains disabled in P157.
-    #
-    if args.recover:
-        with CANONICAL_LOCK.open(
-            "a+"
-        ) as canonical_lock:
-            fcntl.flock(
-                canonical_lock.fileno(),
-                fcntl.LOCK_EX,
-            )
-
-            try:
-                report = recover_transaction(
-                    paths
-                )
-            finally:
-                fcntl.flock(
-                    canonical_lock.fileno(),
-                    fcntl.LOCK_UN,
-                )
-
-        print(
-            json.dumps(
-                report,
-                indent=2,
-                sort_keys=True,
-            )
-        )
-
-        return 0
 
     if args.execute:
         #

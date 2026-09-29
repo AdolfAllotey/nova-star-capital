@@ -74,6 +74,16 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
     )
 
+    parser.add_argument(
+        "--authorization-digest",
+        type=str,
+        default=None,
+        help=(
+            "Exact SHA256 authorization digest emitted "
+            "by a prior dry-run candidate."
+        ),
+    )
+
     return parser.parse_args()
 
 
@@ -575,6 +585,94 @@ def build_locked_candidate(
     }
 
 
+def authorization_payload(
+    candidate: dict[str, Any],
+) -> dict[str, Any]:
+    provider = candidate["provider"]
+    market = candidate["market"]
+    universe = candidate["universe"]
+
+    return {
+        "market_session": (
+            provider["market_session"]
+        ),
+        "reference_time": (
+            provider["reference_time"]
+        ),
+        "primary_sha256": (
+            provider["primary_sha256"]
+        ),
+        "secondary_sha256": (
+            provider["secondary_sha256"]
+        ),
+        "validation_sha256": (
+            provider["validation_sha256"]
+        ),
+        "gate_sha256": (
+            provider["gate_sha256"]
+        ),
+        "run_report_sha256": (
+            provider["run_report_sha256"]
+        ),
+        "market_generation_id": (
+            market["generation_id"]
+        ),
+        "universe_generation_id": (
+            universe["generation_id"]
+        ),
+        "core_symbols": (
+            universe["core_symbols"]
+        ),
+        "tactical_symbols": (
+            universe["tactical_symbols"]
+        ),
+    }
+
+
+def authorization_digest(
+    candidate: dict[str, Any],
+) -> str:
+    payload = authorization_payload(
+        candidate
+    )
+
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+    return hashlib.sha256(
+        encoded
+    ).hexdigest()
+
+
+def validate_authorization_digest(
+    candidate: dict[str, Any],
+    supplied: str | None,
+) -> str:
+    expected = authorization_digest(
+        candidate
+    )
+
+    supplied_value = str(
+        supplied or ""
+    ).strip().lower()
+
+    if not supplied_value:
+        raise RuntimeError(
+            "cutover_authorization_digest_missing"
+        )
+
+    if supplied_value != expected:
+        raise RuntimeError(
+            "cutover_authorization_digest_mismatch"
+        )
+
+    return expected
+
+
 def public_report(
     candidate: dict[str, Any],
 ) -> dict[str, Any]:
@@ -587,6 +685,15 @@ def public_report(
         "mode": "dry_run",
         "cutover_executed": False,
         "active_files_modified": False,
+        "authorization": {
+            "digest_algorithm": "sha256",
+            "digest": authorization_digest(
+                candidate
+            ),
+            "payload": authorization_payload(
+                candidate
+            ),
+        },
         "lock_order": [
             "provider_shared",
             "canonical_exclusive",
@@ -1491,6 +1598,20 @@ def recover_global_transaction(
             "recovered": False,
         }
 
+    recoverable_states = {
+        "PREPARED",
+        "PRICES_WRITTEN",
+        "SNAPSHOT_WRITTEN",
+        "CORE_WRITTEN",
+        "TACTICAL_WRITTEN",
+    }
+
+    if state not in recoverable_states:
+        raise RuntimeError(
+            "global_recovery_unknown_state:"
+            f"{state}"
+        )
+
     before = journal.get(
         "before"
     )
@@ -1660,6 +1781,31 @@ def recover_global_transaction(
 def main() -> int:
     args = parse_args()
 
+    if (
+        args.execute
+        and not str(
+            args.authorization_digest
+            or ""
+        ).strip()
+    ):
+        print(
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "mode": "execute",
+                    "cutover_executed": False,
+                    "active_files_modified": False,
+                    "reason": (
+                        "cutover_authorization_digest_missing"
+                    ),
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+
+        return 3
+
     if args.execute:
         paths = artifact_paths(
             args.root
@@ -1710,6 +1856,19 @@ def main() -> int:
                         )
 
                         try:
+                            pre_recovery_candidate = (
+                                build_locked_candidate(
+                                    paths
+                                )
+                            )
+
+                            authorized_digest = (
+                                validate_authorization_digest(
+                                    pre_recovery_candidate,
+                                    args.authorization_digest,
+                                )
+                            )
+
                             recovery = (
                                 recover_global_transaction(
                                     root=args.root
@@ -1721,6 +1880,21 @@ def main() -> int:
                                     paths
                                 )
                             )
+
+                            post_recovery_digest = (
+                                validate_authorization_digest(
+                                    candidate,
+                                    authorized_digest,
+                                )
+                            )
+
+                            if (
+                                post_recovery_digest
+                                != authorized_digest
+                            ):
+                                raise RuntimeError(
+                                    "cutover_authorization_changed_after_recovery"
+                                )
 
                             payloads = candidate[
                                 "candidate_payloads"
@@ -1794,6 +1968,9 @@ def main() -> int:
         report["active_files_modified"] = True
         report["recovery"] = recovery
         report["transaction"] = transaction
+        report["authorized_digest"] = (
+            authorized_digest
+        )
 
         print(
             json.dumps(

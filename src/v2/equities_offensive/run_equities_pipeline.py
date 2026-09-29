@@ -34,6 +34,14 @@ def main() -> int:
         Step("sync_market_regime", [sys.executable, "src/v2/equities_offensive/market/sync_market_regime.py"]),
         
         
+        Step(
+            "dual_universe_v2_shadow",
+            [
+                sys.executable,
+                "src/v2/equities_offensive/universe/"
+                "run_dual_universe_builder_v2.py",
+            ],
+        ),
         Step("signal_engine", [sys.executable, "src/v2/equities_offensive/engines/signal_engine_v1.py"]),
         Step("voting_engine", [sys.executable, "src/v2/equities_offensive/voting/voting_engine_v1.py"]),
         Step("risk_engine", [sys.executable, "src/v2/equities_offensive/risk/risk_engine_v1.py"]),
