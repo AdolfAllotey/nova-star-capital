@@ -13,7 +13,11 @@ from src.v2.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-def _nsc_ohlcv_v2_to_legacy_rows(raw, max_points: int = 260):
+# G152_VOLATILITY_FULL_HISTORY_V1
+# Preserve the complete canonical 672-candle / 7-calendar-day 15m history.
+# 672 candles yield 671 adjacent log-returns, which is exactly the governed
+# structural window required by VolatilityParams.window_7d.
+def _nsc_ohlcv_v2_to_legacy_rows(raw, max_points: int = 672):
     """
     Convertit ohlcv_combined.json v2:
       {timestamp, env, assets:[{symbol, candles:[{close|c|...}, ...]}]}
@@ -76,14 +80,33 @@ DATA_DIR = Path(os.environ.get("NSC_DATA_DIR", ROOT_DIR / "data"))
 
 @dataclass
 class VolatilityParams:
-    window_short: int = 7   # "7 jours" / 7 dernières bougies
-    window_long: int = 30   # "30 jours" / 30 dernières bougies
-    # Seuils de classification de la vol (std des log-returns, non annualisée)
-    calm_max: float = 0.02        # < 2% / step
-    normal_max: float = 0.04      # 2–4%
-    high_max: float = 0.08        # 4–8%
-    # au-delà → extreme
-    spike_ratio: float = 1.5      # vol_7d > 1.5 * vol_30d => vol_spike
+    # G152_VOLATILITY_TEMPORAL_SEMANTICS_V1
+    #
+    # Canonical OHLCV contract:
+    #   interval = 15 minutes
+    #   4 bars/hour
+    #   96 bars/day
+    #   672 candles/7 calendar days -> 671 adjacent log-returns
+    #
+    # IMPORTANT:
+    # These windows are counts of 15-minute log-returns, not candle counts.
+    # A dataset containing 672 candles contains exactly 671 adjacent returns.
+    # 4h/24h use trailing return samples; the structural 7d baseline uses all
+    # returns available from the canonical 672-candle history.
+    window_4h: int = 16
+    window_24h: int = 96
+    window_7d: int = 671
+
+    # Classification thresholds are intentionally left unchanged in D1.
+    # They classify the non-annualised per-15m return dispersion.
+    # Calibration is a separate governed change.
+    calm_max: float = 0.02
+    normal_max: float = 0.04
+    high_max: float = 0.08
+
+    # Tactical acceleration:
+    # recent 4h dispersion materially above the 24h baseline.
+    spike_ratio: float = 1.5
 
 
 def _load_ohlcv() -> Dict[str, List[Dict[str, Any]]]:
@@ -97,7 +120,7 @@ def _load_ohlcv() -> Dict[str, List[Dict[str, Any]]]:
     path = DATA_DIR / "market" / "ohlcv_combined.json"
     data = load_json_file(str(path), default=None)
     # NSC: support ohlcv_combined.json v2 (assets/candles)
-    data = _nsc_ohlcv_v2_to_legacy_rows(data, max_points=260)
+    data = _nsc_ohlcv_v2_to_legacy_rows(data, max_points=672)
 
     if not data:
         logger.warning(
@@ -210,15 +233,21 @@ def _compute_log_returns(closes: List[float]) -> List[float]:
 
 def _rolling_volatility(rets: List[float], window: int) -> Optional[float]:
     """
-    Volatilité simple = écart-type (population) des log-returns
-    sur la dernière fenêtre 'window'.
+    Population standard deviation of log-returns over an exact trailing
+    temporal window.
+
+    G152_STRICT_VOLATILITY_WINDOW_V1:
+    a canonical horizon is valid only when the complete requested number
+    of returns is available. Partial windows must not masquerade as
+    4h / 24h / 7d measurements.
     """
-    if len(rets) < max(window // 2, 5):
-        # pas assez de données
+    if window < 2:
         return None
-    window_rets = rets[-window:] if len(rets) >= window else rets
-    if len(window_rets) < 2:
+    if len(rets) < window:
         return None
+
+    window_rets = rets[-window:]
+
     try:
         return float(pstdev(window_rets))
     except Exception:
@@ -262,22 +291,32 @@ def compute_volatility_overview(params: Optional[VolatilityParams] = None) -> Di
             )
             continue
 
-        vol_7d = _rolling_volatility(rets, params.window_short)
-        vol_30d = _rolling_volatility(rets, params.window_long)
+        # G152 temporal contract:
+        # 15m OHLCV -> 4h / 24h / 7d realised-volatility horizons.
+        vol_4h = _rolling_volatility(rets, params.window_4h)
+        vol_24h = _rolling_volatility(rets, params.window_24h)
+        vol_7d = _rolling_volatility(rets, params.window_7d)
 
-        if vol_7d is None and vol_30d is None:
+        if vol_4h is None and vol_24h is None and vol_7d is None:
             continue
 
-        vol_ratio = None
-        if vol_7d is not None and vol_30d and vol_30d > 0:
-            vol_ratio = vol_7d / vol_30d
+        vol_ratio_4h_24h = None
+        if vol_4h is not None and vol_24h is not None and vol_24h > 0:
+            vol_ratio_4h_24h = vol_4h / vol_24h
 
-        regime = _classify_vol(vol_30d, params)
+        vol_ratio_24h_7d = None
+        if vol_24h is not None and vol_7d is not None and vol_7d > 0:
+            vol_ratio_24h_7d = vol_24h / vol_7d
+
+        # 24h is the canonical tactical regime horizon.
+        # 7d is retained as the structural short baseline.
+        regime = _classify_vol(vol_24h, params)
+
         vol_spike = bool(
-            vol_7d is not None
-            and vol_30d is not None
-            and vol_30d > 0
-            and vol_7d > params.spike_ratio * vol_30d
+            vol_4h is not None
+            and vol_24h is not None
+            and vol_24h > 0
+            and vol_4h > params.spike_ratio * vol_24h
         )
 
         extreme_vol = regime == "extreme"
@@ -285,9 +324,19 @@ def compute_volatility_overview(params: Optional[VolatilityParams] = None) -> Di
         assets.append(
             {
                 "symbol": symbol,
+                "vol_4h": vol_4h,
+                "vol_24h": vol_24h,
                 "vol_7d": vol_7d,
-                "vol_30d": vol_30d,
-                "vol_ratio_7_30": vol_ratio,
+                "vol_ratio_4h_24h": vol_ratio_4h_24h,
+                "vol_ratio_24h_7d": vol_ratio_24h_7d,
+
+                # Temporary compatibility aliases.
+                # They preserve downstream schema compatibility during the
+                # governed migration but MUST NOT be interpreted as their
+                # historical names implied.
+                "vol_30d": vol_24h,
+                "vol_ratio_7_30": vol_ratio_4h_24h,
+                "legacy_aliases_deprecated": True,
                 "vol_regime": regime,
                 "flags": {
                     "vol_spike": vol_spike,
@@ -314,12 +363,18 @@ def compute_volatility_overview(params: Optional[VolatilityParams] = None) -> Di
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "source": str(DATA_DIR / "market" / "ohlcv_combined.json"),
         "params": {
-            "window_short": params.window_short,
-            "window_long": params.window_long,
+            "interval": "15m",
+            "window_4h_bars": params.window_4h,
+            "window_24h_bars": params.window_24h,
+            "window_7d_returns": params.window_7d,
+            "source_history_candles": 672,
+            "temporal_semantics": "15m_realised_volatility",
+            "legacy_aliases_deprecated": True,
             "thresholds": {
                 "calm_max": params.calm_max,
                 "normal_max": params.normal_max,
                 "high_max": params.high_max,
+                "calibration_status": "provisional_preprod",
             },
             "spike_ratio": params.spike_ratio,
         },

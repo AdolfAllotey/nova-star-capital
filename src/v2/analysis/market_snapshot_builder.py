@@ -12,6 +12,8 @@ logger = get_logger("market_snapshot_builder")
 
 DATA_DIR = os.getenv("DATA_DIR", "/opt/nsc/data/preprod")
 OUT = Path(DATA_DIR) / "market_snapshot.json"
+BREADTH_OUT = Path(DATA_DIR) / "analysis" / "breadth.json"
+BREADTH_TTL_HOURS = 36.0
 
 
 def _utc_now() -> str:
@@ -147,6 +149,122 @@ def _last_close(df) -> float:
 
 
 
+def _parse_utc_ts(value: Any) -> Optional[datetime]:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        raw = value.strip()
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        parsed = datetime.fromisoformat(raw)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _load_fresh_breadth(
+    path: Path = BREADTH_OUT,
+    ttl_hours: float = BREADTH_TTL_HOURS,
+) -> Dict[str, Any]:
+    """
+    G152_BREADTH_FRESHNESS_V1
+
+    Breadth is a daily structural signal. It is usable only when:
+      - payload is valid;
+      - status == ok;
+      - source timestamp is parseable;
+      - age <= governed TTL;
+      - breadth value is numeric and in [0, 1].
+
+    Stale/invalid breadth is represented explicitly as unavailable rather
+    than silently reused as current market information.
+    """
+    raw = _load_json(path)
+
+    unavailable = {
+        "pct_above_ma200": None,
+        "status": "unavailable",
+        "source": None,
+        "universe": None,
+        "source_ts": None,
+        "age_hours": None,
+    }
+
+    if not isinstance(raw, dict):
+        return unavailable
+
+    source_ts = raw.get("ts") or raw.get("generated_at")
+    parsed = _parse_utc_ts(source_ts)
+
+    if parsed is None:
+        out = dict(unavailable)
+        out["status"] = "invalid_timestamp"
+        out["source"] = raw.get("source")
+        out["universe"] = raw.get("universe")
+        out["source_ts"] = source_ts
+        return out
+
+    raw_age_hours = (
+        datetime.now(timezone.utc) - parsed
+    ).total_seconds() / 3600.0
+
+    # G152_BREADTH_FUTURE_SKEW_GUARD_V1
+    # Allow only minor clock skew. A materially future source must never
+    # be freshness-laundered into age_hours=0.
+    max_future_skew_hours = 5.0 / 60.0
+
+    if raw_age_hours < -max_future_skew_hours:
+        out = dict(unavailable)
+        out["status"] = "future_timestamp"
+        out["source"] = raw.get("source")
+        out["universe"] = raw.get("universe")
+        out["source_ts"] = source_ts
+        out["age_hours"] = round(raw_age_hours, 3)
+        return out
+
+    age_hours = max(0.0, raw_age_hours)
+
+    try:
+        value = float(raw.get("breadth_pct_above_ma200"))
+    except (TypeError, ValueError):
+        value = None
+
+    valid_value = (
+        value is not None
+        and 0.0 <= value <= 1.0
+    )
+
+    source_status = str(raw.get("status") or "").lower()
+
+    if (
+        source_status != "ok"
+        or not valid_value
+        or age_hours > ttl_hours
+    ):
+        out = dict(unavailable)
+        out["status"] = (
+            "stale"
+            if age_hours > ttl_hours
+            else "invalid"
+        )
+        out["source"] = raw.get("source")
+        out["universe"] = raw.get("universe")
+        out["source_ts"] = source_ts
+        out["age_hours"] = round(age_hours, 3)
+        return out
+
+    return {
+        "pct_above_ma200": value,
+        "status": "fresh",
+        "source": raw.get("source"),
+        "universe": raw.get("universe"),
+        "source_ts": source_ts,
+        "age_hours": round(age_hours, 3),
+    }
+
+
 def build_snapshot() -> Dict[str, Any]:
     """
     Fetch:
@@ -177,7 +295,7 @@ def build_snapshot() -> Dict[str, Any]:
             "vix": vix_close,
             "qqq": qqq,
             "spy": spy,
-            "breadth": {"pct_above_ma200": None},
+            "breadth": _load_fresh_breadth(),
             "status": "ok",
             "source": "yfinance",
         }
@@ -190,10 +308,13 @@ def build_snapshot() -> Dict[str, Any]:
 
         existing = _load_json(OUT)
         if existing:
-            existing["ts"] = _utc_now()
-            existing["status"] = existing.get("status") or "ok"
-            existing["source"] = "yfinance(reuse_last)"
-            existing["reason"] = f"fallback_reuse_last: {e}"
+            # G152_SNAPSHOT_NO_FRESHNESS_LAUNDERING_V1
+            # Preserve the original source timestamp. A failed refresh must
+            # never make historical market data appear current.
+            existing["status"] = "stale"
+            existing["fallback"] = True
+            existing["source"] = "yfinance(reuse_last_stale)"
+            existing["reason"] = f"fallback_reuse_last_stale: {e}"
             return existing
 
         return _safe_default("default", f"yfinance_error: {e}")

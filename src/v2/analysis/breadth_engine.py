@@ -1,6 +1,7 @@
 from pathlib import Path
 from datetime import datetime, timezone
 import json
+import os
 import pandas as pd
 import yfinance as yf
 
@@ -11,7 +12,8 @@ TICKERS = [
     "CSCO","TMO","MRK","MCD","ABT","LIN","DIS","INTU","IBM","GE"
 ]
 
-OUT = Path("/opt/nsc/data/preprod/analysis/breadth.json")
+DATA_DIR = Path(os.getenv("NSC_DATA_DIR", "/opt/nsc/data/preprod"))
+OUT = DATA_DIR / "analysis" / "breadth.json"
 
 def main():
     rows = []

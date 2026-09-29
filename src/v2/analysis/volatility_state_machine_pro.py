@@ -194,129 +194,243 @@ def severity_from_flag(global_flag: str) -> str:
 
 
 def build_volatility_state(data_dir: Path, env: str) -> Tuple[Dict[str, Any], str]:
-    # Always initialize reasons early (used throughout the state machine)
-    reasons = []
-
     """
-    Construit l'état de volatilité à partir de :
+    G152_DYNAMIC_VOLATILITY_STATE_AUTHORITY_V1
 
-    data/analysis/volatility_metrics.json
+    Canonical authority:
+      analysis/volatility_engine_pro.json
 
-    Exemple de structure attendue :
+    The legacy analysis/volatility_metrics.json manual baseline is no longer
+    an authoritative input for trading risk.
 
-    {
-      "timestamp": "...",
-      "realized_vol_20d": 0.35,
-      "realized_vol_5d": 0.40,
-      "implied_vol_index": 0.30,
-      "vol_of_vol": 0.20,
-      "cross_section_vol": 0.25
-    }
+    D2 intentionally does not reinterpret raw 15m realised volatility as the
+    legacy annualised 5d/20d/IV model. The engine's own per-asset regime and
+    flags are aggregated instead.
+
+    Fail-safe contract:
+      missing / invalid / empty dynamic engine -> unknown / caution / 50.
     """
-    src_file = data_dir / "analysis" / "volatility_metrics.json"
-    raw = load_json_file(str(src_file), default={})
-    if not isinstance(raw, dict):
-        raw = {}
-    
-    # Fallback: si volatility_metrics.json absent/vide, dériver depuis volatility_engine_pro.json
-    if len(raw) == 0:
-        eng = load_json_file(str(data_dir / "analysis" / "volatility_engine_pro.json"), default={})
-        assets = eng.get("assets") if isinstance(eng, dict) else None
-        logger.info("[volatility_state_machine_pro] fallback(vol_engine) assets_len=%s", (len(assets) if isinstance(assets, list) else None))
-        if isinstance(assets, list) and len(assets) > 0:
-            v7, v30 = [], []
-            spikes, extreme = 0, 0
-            for a in assets:
-                if not isinstance(a, dict):
-                    continue
-                if a.get("vol_7d") is not None:
-                    try: v7.append(float(a["vol_7d"]))
-                    except: pass
-                if a.get("vol_30d") is not None:
-                    try: v30.append(float(a["vol_30d"]))
-                    except: pass
-                fl = a.get("flags") if isinstance(a.get("flags"), dict) else {}
-                if fl.get("vol_spike") is True:
-                    spikes += 1
-                if fl.get("extreme_vol") is True:
-                    extreme += 1
-    
-            def _avg(xs):
-                return (sum(xs) / len(xs)) if xs else None
-    
-            def _std(xs):
-                if not xs or len(xs) < 2:
-                    return None
-                mu = sum(xs) / len(xs)
-                var = sum((x - mu) ** 2 for x in xs) / (len(xs) - 1)
-                return var ** 0.5
-    
-            rv5_d  = _avg(v7)      # proxy
-            rv20_d = _avg(v30)     # proxy
-            xsec_d = _std(v30)     # dispersion cross-asset
-            vov_d  = _std(v7)      # vol-of-vol proxy
-    
-            raw = {
-                "realized_vol_20d": rv20_d,
-                "realized_vol_5d": rv5_d,
-                "implied_vol_index": None,
-                "vol_of_vol": vov_d,
-                "cross_section_vol": xsec_d,
-                "assets_count": len(assets),
-                "spikes": spikes,
-                "extreme": extreme,
-                "source": "derived_from_volatility_engine_pro",
-            }
-            reasons.append("volatility_metrics missing -> derived from volatility_engine_pro")
-            logger.info("[volatility_state_machine_pro] derived raw rv20=%s rv5=%s xsec=%s vov=%s", rv20_d, rv5_d, xsec_d, vov_d)
-        else:
-            raw = {}
-    
-    # Build VolatilityMetrics from raw (single source of truth)
-    metrics = VolatilityMetrics(
-        realized_vol_20d=_get_float(raw.get("realized_vol_20d") or raw.get("rv20") or raw.get("realized_vol20") or raw.get("rv_20d")),
-        realized_vol_5d=_get_float(raw.get("realized_vol_5d") or raw.get("rv5") or raw.get("realized_vol5") or raw.get("rv_5d")),
-        implied_vol_index=_get_float(raw.get("implied_vol_index") or raw.get("iv") or raw.get("implied_vol")),
-        vol_of_vol=_get_float(raw.get("vol_of_vol") or raw.get("vov")),
-        cross_section_vol=_get_float(raw.get("cross_section_vol") or raw.get("xsec")),
-    )
-    regime, global_flag, score, reasons = infer_vol_regime_and_score(metrics)
-    severity = severity_from_flag(global_flag)
+
+    engine_path = data_dir / "analysis" / "volatility_engine_pro.json"
+    eng = load_json_file(str(engine_path), default={})
 
     now_ts = dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
-    state: Dict[str, Any] = {
+    def _unknown(reason: str) -> Tuple[Dict[str, Any], str]:
+        state: Dict[str, Any] = {
+            "timestamp": now_ts,
+            "env": env,
+            "symbol": "global",
+            "regime": "unknown",
+            "global_flag": "caution",
+            "score": 50.0,
+            "source": "volatility_engine_pro",
+            "source_path": str(engine_path),
+            "temporal_semantics": "15m_realised_volatility_4h_24h_7d",
+            "assets_count": 0,
+            "metrics": {
+                "vol_4h_mean": None,
+                "vol_24h_mean": None,
+                "vol_7d_mean": None,
+                "vol_ratio_4h_24h_mean": None,
+                "vol_ratio_24h_7d_mean": None,
+                "spike_fraction": None,
+                "extreme_fraction": None,
+            },
+            "reasons": [reason],
+        }
+        return state, severity_from_flag("caution")
+
+    if not isinstance(eng, dict):
+        return _unknown("Dynamic volatility engine payload invalid.")
+
+    # G152_VOLATILITY_FRESHNESS_GUARD_V1
+    #
+    # The derived volatility state must never remain supportive because an
+    # old raw engine artifact survived on disk. The raw engine is expected
+    # to be produced from the current 15m OHLCV cycle.
+    #
+    # We intentionally use generated_at from the producer payload rather
+    # than filesystem mtime as the authoritative temporal provenance.
+    max_raw_age_hours = 1.0
+    max_future_skew_minutes = 5.0
+
+    raw_generated_at = eng.get("generated_at")
+    if not isinstance(raw_generated_at, str) or not raw_generated_at.strip():
+        return _unknown(
+            "Dynamic volatility engine missing generated_at provenance."
+        )
+
+    try:
+        raw_dt = dt.datetime.fromisoformat(
+            raw_generated_at.strip().replace("Z", "+00:00")
+        )
+        if raw_dt.tzinfo is None:
+            raw_dt = raw_dt.replace(tzinfo=dt.timezone.utc)
+        else:
+            raw_dt = raw_dt.astimezone(dt.timezone.utc)
+
+        current_dt = dt.datetime.now(dt.timezone.utc)
+        raw_age_seconds = (current_dt - raw_dt).total_seconds()
+    except Exception:
+        return _unknown(
+            "Dynamic volatility engine generated_at provenance invalid."
+        )
+
+    if raw_age_seconds < -(max_future_skew_minutes * 60.0):
+        return _unknown(
+            "Dynamic volatility engine generated_at is materially in the future."
+        )
+
+    if raw_age_seconds > (max_raw_age_hours * 3600.0):
+        return _unknown(
+            f"Dynamic volatility engine stale: age_hours="
+            f"{raw_age_seconds / 3600.0:.3f} > {max_raw_age_hours:.3f}."
+        )
+
+    raw_age_hours = max(0.0, raw_age_seconds / 3600.0)
+
+    assets = eng.get("assets")
+    if not isinstance(assets, list) or not assets:
+        return _unknown("Dynamic volatility engine missing or contains no assets.")
+
+    valid_assets = [a for a in assets if isinstance(a, dict)]
+    if not valid_assets:
+        return _unknown("Dynamic volatility engine contains no valid asset payloads.")
+
+    def _floats(key: str) -> List[float]:
+        out: List[float] = []
+        for asset in valid_assets:
+            value = asset.get(key)
+            if value is None:
+                continue
+            try:
+                out.append(float(value))
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def _mean(values: List[float]) -> Optional[float]:
+        return (sum(values) / len(values)) if values else None
+
+    v4 = _floats("vol_4h")
+    v24 = _floats("vol_24h")
+    v7d = _floats("vol_7d")
+    r4_24 = _floats("vol_ratio_4h_24h")
+    r24_7d = _floats("vol_ratio_24h_7d")
+
+    regime_counts: Dict[str, int] = {}
+    spike_count = 0
+    extreme_count = 0
+
+    for asset in valid_assets:
+        regime = str(asset.get("vol_regime") or "unknown").strip().lower()
+        regime_counts[regime] = regime_counts.get(regime, 0) + 1
+
+        flags = asset.get("flags")
+        if not isinstance(flags, dict):
+            flags = {}
+
+        if flags.get("vol_spike") is True:
+            spike_count += 1
+        if flags.get("extreme_vol") is True:
+            extreme_count += 1
+
+    n = len(valid_assets)
+    spike_fraction = spike_count / n
+    extreme_fraction = extreme_count / n
+
+    # D2 deliberately consumes the engine's already-classified regime rather
+    # than inventing a second incompatible absolute-volatility calibration.
+    #
+    # Conservative aggregation:
+    # - any extreme asset => at least caution
+    # - >= 25% extreme => risk_off
+    # - >= 50% high/extreme => caution
+    # - >= 25% tactical spikes => caution
+    # - otherwise majority regime determines calm/normal.
+    high_count = regime_counts.get("high", 0)
+    stressed_fraction = (high_count + extreme_count) / n
+
+    if extreme_fraction >= 0.25:
+        regime = "panic"
+        global_flag = "risk_off"
+        score = 30.0
+        reason = (
+            f"Cross-asset volatility panic: extreme_fraction="
+            f"{extreme_fraction:.3f}."
+        )
+    elif extreme_count > 0:
+        regime = "stressed"
+        global_flag = "caution"
+        score = 42.0
+        reason = (
+            f"Extreme volatility detected on {extreme_count}/{n} assets."
+        )
+    elif stressed_fraction >= 0.50:
+        regime = "stressed"
+        global_flag = "caution"
+        score = 42.0
+        reason = (
+            f"Broad high/extreme volatility: stressed_fraction="
+            f"{stressed_fraction:.3f}."
+        )
+    elif spike_fraction >= 0.25:
+        regime = "accelerating"
+        global_flag = "caution"
+        score = 48.0
+        reason = (
+            f"Broad tactical volatility acceleration: spike_fraction="
+            f"{spike_fraction:.3f}."
+        )
+    else:
+        calm_count = regime_counts.get("calm", 0)
+        normal_count = regime_counts.get("normal", 0)
+
+        if calm_count > normal_count:
+            regime = "calm"
+            global_flag = "supportive"
+            score = 65.0
+            reason = f"Cross-asset volatility predominantly calm ({calm_count}/{n})."
+        else:
+            regime = "normal"
+            global_flag = "neutral"
+            score = 55.0
+            reason = f"Cross-asset volatility predominantly normal/non-toxic ({n} assets)."
+
+    state = {
         "timestamp": now_ts,
         "env": env,
         "symbol": "global",
         "regime": regime,
         "global_flag": global_flag,
         "score": score,
+        "source": "volatility_engine_pro",
+        "source_path": str(engine_path),
+        "source_generated_at": eng.get("generated_at"),
+        "source_age_hours": round(raw_age_hours, 6),
+        "source_max_age_hours": max_raw_age_hours,
+        "source_fresh": True,
+        "temporal_semantics": "15m_realised_volatility_4h_24h_7d",
+        "assets_count": n,
+        "regime_counts": regime_counts,
         "metrics": {
-            "realized_vol_20d": metrics.realized_vol_20d,
-            "realized_vol_5d": metrics.realized_vol_5d,
-            "implied_vol_index": metrics.implied_vol_index,
-            "vol_of_vol": metrics.vol_of_vol,
-            "cross_section_vol": metrics.cross_section_vol,
+            "vol_4h_mean": _mean(v4),
+            "vol_24h_mean": _mean(v24),
+            "vol_7d_mean": _mean(v7d),
+            "vol_ratio_4h_24h_mean": _mean(r4_24),
+            "vol_ratio_24h_7d_mean": _mean(r24_7d),
+            "spike_fraction": spike_fraction,
+            "extreme_fraction": extreme_fraction,
+            "stressed_fraction": stressed_fraction,
         },
-        "reasons": reasons,
+        "reasons": [
+            reason,
+            "Authority=dynamic volatility_engine_pro; legacy manual volatility_metrics ignored.",
+        ],
     }
 
-    logger.info(
-        "[volatility_state_machine_pro] env=%s, regime=%s, global_flag=%s, "
-        "score=%.2f, rv20=%s, rv5=%s, iv=%s, vov=%s, xsec=%s",
-        env,
-        regime,
-        global_flag,
-        score,
-        f"{metrics.realized_vol_20d:.2f}" if metrics.realized_vol_20d is not None else "None",
-        f"{metrics.realized_vol_5d:.2f}" if metrics.realized_vol_5d is not None else "None",
-        f"{metrics.implied_vol_index:.2f}" if metrics.implied_vol_index is not None else "None",
-        f"{metrics.vol_of_vol:.2f}" if metrics.vol_of_vol is not None else "None",
-        f"{metrics.cross_section_vol:.2f}" if metrics.cross_section_vol is not None else "None",
-    )
-
-    return state, severity
+    return state, severity_from_flag(global_flag)
 
 
 def main() -> None:

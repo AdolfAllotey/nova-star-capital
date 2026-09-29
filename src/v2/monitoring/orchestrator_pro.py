@@ -100,7 +100,13 @@ def main() -> Dict[str, Any]:
     # Risk Limits (fallback safe)
     rl_risk_on_off = str(risk_limits.get("risk_on_off", "on"))
     rl_risk_mode = str(risk_limits.get("risk_mode", "normal"))
-    size_factor = float(risk_limits.get("size_factor", 1.0) or 1.0)
+    _raw_size_factor = risk_limits.get("size_factor", 1.0)
+    try:
+        size_factor = float(
+            _raw_size_factor if _raw_size_factor is not None else 1.0
+        )
+    except Exception:
+        size_factor = 1.0
 
     # Kill switch (fallback safe)
     ks_enabled = bool(kill_switch.get("enabled", False))
@@ -238,13 +244,40 @@ def main() -> Dict[str, Any]:
         },
     }
 
-    # Persist telemetry JSON
+    # G152_CURRENT_CYCLE_ORCHESTRATOR_SOVEREIGNTY_V1
+    #
+    # save_json_file() is intentionally not trusted here because its legacy
+    # contract swallows write exceptions.  The canonical orchestrator state is
+    # execution-critical, therefore persistence must be positively verified.
     out_path = telemetry_dir / "orchestrator_pro.json"
     save_json_file(out_path, state)
 
+    persisted_state = load_json_file(out_path, default=None)
+    if not isinstance(persisted_state, dict):
+        raise RuntimeError(
+            f"orchestrator canonical persistence verification failed: {out_path}"
+        )
+
+    expected_timestamp = state.get("timestamp")
+    persisted_timestamp = persisted_state.get("timestamp")
+
+    if persisted_timestamp != expected_timestamp:
+        raise RuntimeError(
+            "orchestrator canonical persistence verification failed: "
+            f"expected timestamp={expected_timestamp!r}, "
+            f"persisted timestamp={persisted_timestamp!r}, "
+            f"path={out_path}"
+        )
+
     logger.info("[orchestrator_pro] DATA_DIR=%s", str(data_dir))
     logger.info("[orchestrator_pro] état global (%s) – can_trade=%s, reasons=%s", mode, can_trade, reasons[0] if reasons else "none")
-    logger.info("[orchestrator_pro] orchestrator_pro.json sauvegardé (%s, can_trade=%s)", mode, can_trade)
+    logger.info(
+        "[orchestrator_pro] orchestrator_pro.json persistence VERIFIED "
+        "(%s, can_trade=%s, timestamp=%s)",
+        mode,
+        can_trade,
+        expected_timestamp,
+    )
 
     # Event bus payload simplifié (flat) + compat avec ton jq
     event_payload = {

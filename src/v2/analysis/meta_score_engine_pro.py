@@ -156,10 +156,13 @@ def _default_components() -> List[Dict[str, Any]]:
             "weight": 0.15,
         },
         {
+            # G152 Coherence V1:
+            # score = agreement strength, NOT directional/risk favourability.
+            # Keep visible in Meta Score diagnostics but exclude from arithmetic.
             "name": "market_coherence_engine_pro",
             "file": "market_coherence_engine_pro.json",
             "score_keys": ("score",),
-            "weight": 0.15,
+            "weight": 0.0,
         },
         {
             "name": "risk_engine_pro",

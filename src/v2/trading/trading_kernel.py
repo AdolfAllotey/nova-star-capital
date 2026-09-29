@@ -275,7 +275,7 @@ def _apply_effective_nsc_intensity_limits() -> None:
     base_max_positions = cfg.get("base_max_positions", cfg.get("max_positions", cfg.get("max_concurrent_positions")))
 
     try:
-        base_size = float(base_size or 1.0)
+        base_size = float(base_size if base_size is not None else 1.0)
     except Exception:
         base_size = 1.0
 
@@ -635,29 +635,46 @@ def _safe_read_json(path, default=None):
         return default
 
 
-def _check_orchestrator_gate() -> tuple[bool, bool]:
+def _check_orchestrator_gate(
+    current_state: Any = None,
+) -> tuple[bool, bool]:
     """
-    Gate runtime (orchestrator-first):
-      - return (ok, orch_available)
-      - ok=False => stop trading
-      - orch_available=False => fail-open + allow SQ fallback gate
+    Current-cycle Orchestrator execution gate.
+
+    The execution-critical caller must pass the state returned by the
+    Orchestrator from the same kernel cycle.  Disk state is not accepted as a
+    substitute because it may belong to cycle N-1.
+
+    Returns:
+      - (True, True): current state is valid and allows execution
+      - (False, True): current state is valid and blocks execution
+      - (False, False): current state is unavailable/invalid -> fail closed
     """
-    try:
-        st = _load_json(ORCHESTRATOR_STATE_FILE, default=None)
-    except Exception:
-        return (True, False)
+    st = current_state
 
     if not isinstance(st, dict):
-        return (True, False)  # orchestrator indisponible => fail-open + SQ fallback
+        logger.error(
+            "[trading_kernel] Current-cycle Orchestrator state unavailable "
+            "or invalid -> execution gate FAIL-CLOSED"
+        )
+        return (False, False)
 
-    can_trade = bool(st.get("can_trade", True))
+    if "can_trade" not in st:
+        logger.error(
+            "[trading_kernel] Current-cycle Orchestrator state missing "
+            "can_trade -> execution gate FAIL-CLOSED"
+        )
+        return (False, False)
+
+    can_trade = bool(st.get("can_trade"))
     mode = str(st.get("mode") or "unknown")
     reasons = st.get("reasons", []) or []
     severity = str(st.get("severity") or "info")
 
     if not can_trade:
         logger.warning(
-            "[trading_kernel] Boucle annulée par Orchestrator gate: can_trade=False mode=%s severity=%s reasons=%s",
+            "[trading_kernel] Boucle annulée par current-cycle Orchestrator "
+            "gate: can_trade=False mode=%s severity=%s reasons=%s",
             mode, severity, reasons
         )
         return (False, True)
@@ -715,39 +732,23 @@ def run_once(max_new_positions: Optional[int] = None) -> None:
         logger.warning("[trading_kernel] Boucle annulée car le kill-switch est activé.")
         return
 
-    # Sync risk_limits depuis orchestrator (si dispo) avant guards/sizing
-    _apply_orchestrator_risk_limits()
-    _apply_effective_nsc_intensity_limits()
-
-    # RC2_NO_TRADE_ANALYSIS_EXECUTION_SPLIT_V1
+    # G152_TEMPORAL_SOVEREIGNTY_V1
     #
-    # Orchestrator / Signal Quality are EXECUTION gates.
-    # They must not freeze the analytical pipeline in PREPROD.
+    # Do NOT project previous-cycle orchestrator state into canonical
+    # risk_limits and do NOT freeze the execution gate before current-cycle
+    # risk/governance/orchestrator have been computed.
     #
-    # Analysis continues through:
-    #   momentum -> voting -> risk -> allocation -> governance -> strategy
+    # Canonical order for cycle N:
+    #   analysis -> risk_engine(N) -> risk_controller(N)
+    #   -> effective intensity reduction -> governance(N)
+    #   -> orchestrator(N) -> execution eligibility.
     #
-    # If execution is not eligible, the kernel writes a fresh blocked
-    # execution contract and exits BEFORE sizing / execution / positions.
-    _orchestrator_execution_ok, orch_available = _check_orchestrator_gate()
-    _signal_quality_execution_ok = _check_signal_quality_gate()
-
-    _execution_gate_ok = bool(
-        _orchestrator_execution_ok
-        and _signal_quality_execution_ok
-    )
-
-    if not _orchestrator_execution_ok:
-        logger.warning(
-            "[trading_kernel] Orchestrator execution gate CLOSED; "
-            "continuing analysis-only pipeline."
-        )
-
-    if not _signal_quality_execution_ok:
-        logger.warning(
-            "[trading_kernel] Signal Quality execution gate CLOSED; "
-            "continuing analysis-only pipeline."
-        )
+    # Signal Quality remains an independent execution gate, but is evaluated
+    # at the same final boundary as the current-cycle orchestrator.
+    _orchestrator_execution_ok = False
+    orch_available = False
+    _signal_quality_execution_ok = False
+    _execution_gate_ok = False
 
     # Imports locaux pour éviter les cycles d'import
     from src.v2.analysis.momentum_scoring import main as momentum_main
@@ -867,6 +868,27 @@ def run_once(max_new_positions: Optional[int] = None) -> None:
         logger.exception("[trading_kernel] Erreur lors de risk_engine_pro")
         return
 
+    # G152_TEMPORAL_SOVEREIGNTY_V1
+    # Build canonical risk limits from the CURRENT risk-engine state.
+    logger.info("[trading_kernel] Étape 2.6/4 : risk_controller (current cycle)")
+    try:
+        from src.v2.monitoring.risk_controller import main as risk_controller_main
+        risk_controller_main()
+    except Exception:
+        logger.exception("[trading_kernel] Erreur lors de risk_controller.main()")
+        return
+
+    # Effective NSC intensity is a downstream risk reduction. It is applied
+    # only AFTER current-cycle canonical risk limits exist.
+    logger.info("[trading_kernel] Étape 2.7/4 : effective NSC intensity limits")
+    try:
+        _apply_effective_nsc_intensity_limits()
+    except Exception:
+        logger.exception(
+            "[trading_kernel] Erreur lors de effective NSC intensity limits"
+        )
+        return
+
     logger.info("[trading_kernel] Étape 3/4 : capital_allocator")
     try:
         capital_allocator_main()
@@ -880,6 +902,42 @@ def run_once(max_new_positions: Optional[int] = None) -> None:
     except Exception:
         logger.exception("[trading_kernel] Erreur lors de governance_engine_pro.main()")
         return
+
+    # Recompute orchestrator from CURRENT governance/risk_limits/market state.
+    logger.info("[trading_kernel] Étape 3.52/4 : orchestrator_pro (current cycle)")
+    try:
+        from src.v2.monitoring.orchestrator_pro import main as orchestrator_main
+        _current_orchestrator_state = orchestrator_main()
+    except Exception:
+        logger.exception(
+            "[trading_kernel] Erreur lors de orchestrator_pro.main(); "
+            "current-cycle execution cannot be authorized"
+        )
+        return
+
+    # G152_CURRENT_CYCLE_ORCHESTRATOR_SOVEREIGNTY_V1
+    # Execution eligibility is decided from the state produced in memory by
+    # THIS cycle.  Never re-read N-1 disk telemetry as execution authority.
+    _orchestrator_execution_ok, orch_available = _check_orchestrator_gate(
+        _current_orchestrator_state
+    )
+    _signal_quality_execution_ok = _check_signal_quality_gate()
+    _execution_gate_ok = bool(
+        _orchestrator_execution_ok
+        and _signal_quality_execution_ok
+    )
+
+    if not _orchestrator_execution_ok:
+        logger.warning(
+            "[trading_kernel] Current-cycle Orchestrator execution gate CLOSED; "
+            "analysis remains complete, execution will be blocked."
+        )
+
+    if not _signal_quality_execution_ok:
+        logger.warning(
+            "[trading_kernel] Signal Quality execution gate CLOSED; "
+            "analysis remains complete, execution will be blocked."
+        )
 
     logger.info("[trading_kernel] Étape 3.55/4 : strategy performance + selector")
     try:

@@ -338,169 +338,247 @@ def _nsc_build_corr_matrix_from_ohlcv(data_dir: Path, lookback: int = 120) -> di
         logger.exception("[correlation_regime_engine_pro] fallback matrix build failed")
         return {}
 
+# G152_CORRELATION_V1_TEMPORAL_AUTHORITY
+CORRELATION_WINDOW_RETURNS = 96
+CORRELATION_MIN_ASSETS = 3
+CORRELATION_MIN_RETURNS = 24
+CORRELATION_MAX_SOURCE_AGE_HOURS = 1.0
+CORRELATION_MAX_FUTURE_SKEW_MINUTES = 5.0
+
+
+def _parse_utc_timestamp(value: Any) -> Optional[dt.datetime]:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        x = dt.datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        if x.tzinfo is None:
+            x = x.replace(tzinfo=dt.timezone.utc)
+        return x.astimezone(dt.timezone.utc)
+    except Exception:
+        return None
+
+
+def _correlation_source_contract(
+    data_dir: Path,
+    now: Optional[dt.datetime] = None,
+) -> Tuple[dict, Optional[dt.datetime], Optional[str]]:
+    """
+    Load canonical OHLCV and enforce temporal sovereignty.
+
+    Returns:
+      raw, source_timestamp, error_reason
+    """
+    path = data_dir / "market" / "ohlcv_combined.json"
+    raw = load_json_file(str(path), default={}) or {}
+
+    if not isinstance(raw, dict) or not raw:
+        return {}, None, "missing_or_invalid_ohlcv"
+
+    ts = _parse_utc_timestamp(raw.get("timestamp"))
+    if ts is None:
+        return raw, None, "missing_or_invalid_source_timestamp"
+
+    now = now or dt.datetime.now(dt.timezone.utc)
+    age_seconds = (now - ts).total_seconds()
+
+    if age_seconds < -(CORRELATION_MAX_FUTURE_SKEW_MINUTES * 60.0):
+        return raw, ts, "source_timestamp_in_future"
+
+    if age_seconds > CORRELATION_MAX_SOURCE_AGE_HOURS * 3600.0:
+        return raw, ts, "stale_ohlcv"
+
+    return raw, ts, None
+
+
+def _build_correlation_matrix_v1(
+    raw: dict,
+    window_returns: int = CORRELATION_WINDOW_RETURNS,
+) -> Tuple[dict, dict]:
+    """
+    Authoritative Correlation V1 computation.
+
+    - canonical OHLCV v2 input
+    - log returns, never raw price levels
+    - last `window_returns` returns
+    - optional correlation_universe filtering is applied by caller
+    """
+    normalized = _normalize_ohlcv_combined(raw)
+
+    returns: Dict[str, List[float]] = {}
+
+    for symbol, candles in normalized.items():
+        if not isinstance(candles, list):
+            continue
+
+        closes: List[float] = []
+        for candle in candles:
+            if not isinstance(candle, dict):
+                continue
+            value = None
+            for key in ("close", "c", "Close", "close_price", "closePrice"):
+                if candle.get(key) is not None:
+                    value = candle.get(key)
+                    break
+            try:
+                fv = float(value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(fv) and fv > 0:
+                closes.append(fv)
+
+        rr: List[float] = []
+        for i in range(1, len(closes)):
+            a = closes[i - 1]
+            b = closes[i]
+            if a > 0 and b > 0:
+                r = math.log(b / a)
+                if math.isfinite(r):
+                    rr.append(r)
+
+        if len(rr) >= CORRELATION_MIN_RETURNS:
+            returns[str(symbol)] = rr[-window_returns:]
+
+    symbols = sorted(returns)
+    matrix: Dict[str, Dict[str, float]] = {s: {s: 1.0} for s in symbols}
+
+    def pearson(x: List[float], y: List[float]) -> Optional[float]:
+        n = min(len(x), len(y))
+        if n < CORRELATION_MIN_RETURNS:
+            return None
+
+        x = x[-n:]
+        y = y[-n:]
+
+        mx = sum(x) / n
+        my = sum(y) / n
+
+        vx = sum((v - mx) ** 2 for v in x)
+        vy = sum((v - my) ** 2 for v in y)
+
+        if vx <= 0.0 or vy <= 0.0:
+            return None
+
+        cov = sum((x[i] - mx) * (y[i] - my) for i in range(n))
+        value = cov / math.sqrt(vx * vy)
+
+        if not math.isfinite(value):
+            return None
+
+        return max(-1.0, min(1.0, float(value)))
+
+    for i, a in enumerate(symbols):
+        for b in symbols[i + 1:]:
+            value = pearson(returns[a], returns[b])
+            if value is None:
+                continue
+            matrix[a][b] = value
+            matrix[b][a] = value
+
+    matrix = {
+        symbol: row
+        for symbol, row in matrix.items()
+        if isinstance(row, dict) and row
+    }
+
+    meta = {
+        "assets_with_returns": len(symbols),
+        "window_returns": int(window_returns),
+        "min_returns": CORRELATION_MIN_RETURNS,
+        "method": "pearson_log_returns",
+    }
+    return matrix, meta
+
+
+def _apply_correlation_universe(matrix: dict, universe: Optional[set]) -> dict:
+    if universe is None:
+        return matrix
+
+    out = {}
+    for a, row in matrix.items():
+        if str(a).upper() not in universe or not isinstance(row, dict):
+            continue
+        row2 = {
+            b: value
+            for b, value in row.items()
+            if str(b).upper() in universe and isinstance(value, (int, float))
+        }
+        if row2:
+            out[a] = row2
+    return out
+
+
+def _build_asset_correlations_v1(
+    data_dir: Path,
+    now: Optional[dt.datetime] = None,
+) -> Tuple[dict, Optional[str]]:
+    """
+    Rebuild every cycle from canonical OHLCV.
+    asset_correlations.json is an audit artifact, never an authoritative cache.
+    """
+    raw, source_ts, source_error = _correlation_source_contract(data_dir, now=now)
+
+    if source_error is not None:
+        return {
+            "timestamp": (
+                (now or dt.datetime.now(dt.timezone.utc))
+                .replace(microsecond=0)
+                .isoformat()
+                .replace("+00:00", "Z")
+            ),
+            "source": "ohlcv_combined",
+            "source_generated_at": (
+                source_ts.isoformat().replace("+00:00", "Z")
+                if source_ts is not None else None
+            ),
+            "source_fresh": False,
+            "matrix": {},
+            "pairs": [],
+            "error": source_error,
+            "method": "pearson_log_returns",
+            "window_returns": CORRELATION_WINDOW_RETURNS,
+        }, source_error
+
+    matrix, meta = _build_correlation_matrix_v1(
+        raw,
+        window_returns=CORRELATION_WINDOW_RETURNS,
+    )
+
+    universe = _load_correlation_universe(data_dir)
+    matrix = _apply_correlation_universe(matrix, universe)
+
+    now_utc = now or dt.datetime.now(dt.timezone.utc)
+    age_h = max(0.0, (now_utc - source_ts).total_seconds() / 3600.0)
+
+    wrapped = {
+        "timestamp": now_utc.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "source": "ohlcv_combined",
+        "source_generated_at": source_ts.isoformat().replace("+00:00", "Z"),
+        "source_age_hours": age_h,
+        "source_max_age_hours": CORRELATION_MAX_SOURCE_AGE_HOURS,
+        "source_fresh": True,
+        "method": meta["method"],
+        "window_returns": meta["window_returns"],
+        "min_returns": meta["min_returns"],
+        "assets_count": len(matrix),
+        "matrix": matrix,
+        "pairs": _matrix_to_pairs(matrix),
+    }
+    wrapped["pair_count"] = len(wrapped["pairs"])
+    return wrapped, None
+
+
 def _nsc_ensure_asset_correlations_file(data_dir: Path) -> dict:
     """
-    Returns the object stored in analysis/asset_correlations.json.
-    If missing/empty, computes a fallback matrix from market/ohlcv_combined.json and saves it.
-    Format saved:
-      {"timestamp": "...Z", "source":"correlation_regime_engine_pro", "matrix": {...}}
+    Compatibility wrapper.
+
+    V1 deliberately does NOT reuse an existing asset_correlations.json.
+    It rebuilds from current canonical OHLCV every run.
     """
-    from src.v2.utils.file_utils import load_json_file, save_json_file
-
-    corr_file = data_dir / "analysis" / "asset_correlations.json"  # FORCE_REBUILD_ON_MISMATCH
-    raw = load_json_file(corr_file, default={}) or {}
-    raw = ohlcv_v2_to_legacy_rows(raw)
-
-    # If already valid, return
-    if isinstance(raw, dict) and isinstance(raw.get("matrix"), dict) and raw["matrix"]:
-        return raw
-    if isinstance(raw, dict) and raw and "matrix" not in raw:
-        # accept legacy "matrix-less" dict as matrix
-        # but only if it looks like a matrix
-        any_key = next(iter(raw.keys()), None)
-        if any_key and isinstance(raw.get(any_key), dict):
-            wrapped = {
-                "timestamp": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace('+00:00','Z'),
-                "source": "correlation_regime_engine_pro",
-                "matrix": raw,
-                "pairs": _matrix_to_pairs(matrix if isinstance(matrix, dict) else {}),
-            }
-            wrapped["pairs"] = _matrix_to_pairs(wrapped.get("matrix"))
-            save_json_file(corr_file, wrapped)
-            return wrapped
-
-    # Compute fallback
-    matrix = (_compute_asset_correlation_matrix_from_ohlcv(data_dir=data_dir, lookback=120) or
-              _nsc_build_corr_matrix_from_ohlcv(data_dir=data_dir, lookback=180))
-    wrapped = {
-        "timestamp": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace('+00:00','Z'),
-        "source": "correlation_regime_engine_pro",
-        "matrix": matrix if isinstance(matrix, dict) else {},
-    }
-    wrapped["pairs"] = _matrix_to_pairs(wrapped.get("matrix"))
-    save_json_file(corr_file, wrapped)
+    wrapped, _ = _build_asset_correlations_v1(data_dir)
+    corr_file = data_dir / "analysis" / "asset_correlations.json"
+    save_json_file(str(corr_file), wrapped)
     return wrapped
 
-def _compute_asset_correlation_matrix_from_ohlcv(data_dir: Path, lookback: int = 120) -> dict:
-    """
-    Fallback: compute a correlation *matrix* from market/ohlcv_combined.json.
-    Expected: { "bitcoin":[{close:..},..], "ethereum":[...], ... }
-    Output: { "bitcoin": {"ethereum": 0.82, ...}, ... } (upper/lower mirrored).
-    """
-    try:
-        import math
-        from src.v2.utils.file_utils import load_json_file
-
-        ohlcv_path = data_dir / "market" / "ohlcv_combined.json"
-        ohlcv = load_json_file(str(ohlcv_path), default={}) or {}
-        ohlcv = ohlcv_v2_to_legacy_rows(ohlcv)
-        matrix = _build_corr_matrix_from_ohlcv_v2(ohlcv)
-        universe = _load_correlation_universe(data_dir)
-        if universe is not None and isinstance(matrix, dict) and matrix:
-            before_n = len(matrix)
-            # filter outer keys + inner keys (garde seulement les paires dans l'univers)
-            filtered = {}
-            for a, row in matrix.items():
-                if str(a).upper() not in universe:
-                    continue
-                if not isinstance(row, dict):
-                    continue
-                row2 = {b: r for b, r in row.items()
-                        if str(b).upper() in universe and isinstance(r, (int, float))}
-                if row2:
-                    filtered[a] = row2
-            matrix = filtered
-            logger.info("[correlation_regime_engine_pro] universe filter applied: before=%s after=%s",
-                        before_n, len(matrix))
-        # IMPORTANT: si le parser v2 a construit une matrice non vide,
-        # on l'utilise directement (sinon le code legacy attend {sym:[...]} et retournera {}).
-        if isinstance(matrix, dict):
-            nb_pairs_v2 = sum(len(v) for v in matrix.values() if isinstance(v, dict)) // 2
-            if nb_pairs_v2 > 0:
-                return matrix
-
-        logger.info("[correlation_regime_engine_pro] fallback(ohlcv_v2) symbols=%s", (len(matrix) if isinstance(matrix, dict) else 0))
-        pairs = _matrix_to_pairs(matrix)
-        logger.info("[correlation_regime_engine_pro] fallback(ohlcv_v2) pairs=%s", (len(pairs) if isinstance(pairs, list) else 0))
-        if not isinstance(ohlcv, dict) or not ohlcv:
-            return {}
-
-        # closes per symbol
-        closes = {}
-        for sym, rows in ohlcv.items():
-            if not isinstance(rows, list) or len(rows) < 6:
-                continue
-            c = []
-            for r in rows[-lookback:]:
-                if isinstance(r, dict):
-                    v = r.get("close") if r.get("close") is not None else r.get("c")
-                    try:
-                        fv = float(v)
-                        if fv > 0:
-                            c.append(fv)
-                    except Exception:
-                        pass
-            if len(c) >= 6:
-                closes[str(sym).lower()] = c
-
-        syms = sorted(closes.keys())
-        if len(syms) < 2:
-            return {}
-
-        # log returns
-        rets = {}
-        for sym in syms:
-            c = closes[sym]
-            rr = []
-            for i in range(1, len(c)):
-                if c[i-1] > 0 and c[i] > 0:
-                    rr.append(math.log(c[i] / c[i-1]))
-            if len(rr) >= 5:
-                rets[sym] = rr
-
-        syms = sorted(rets.keys())
-        if len(syms) < 2:
-            return {}
-
-        def corr(x, y):
-            n = min(len(x), len(y))
-            if n < 5:
-                return None
-            x = x[-n:]; y = y[-n:]
-            mx = sum(x) / n; my = sum(y) / n
-            vx = sum((a - mx) ** 2 for a in x)
-            vy = sum((b - my) ** 2 for b in y)
-            if vx <= 0 or vy <= 0:
-                return None
-            cov = sum((x[i]-mx) * (y[i]-my) for i in range(n))
-            return float(cov / (vx ** 0.5 * vy ** 0.5))
-
-        matrix = {a: {} for a in syms}
-        for i in range(len(syms)):
-            for j in range(i+1, len(syms)):
-                a, b = syms[i], syms[j]
-                cval = corr(rets[a], rets[b])
-                if cval is None:
-                    continue
-                matrix[a][b] = cval
-                matrix[b][a] = cval
-
-        # keep only if we have at least one pair
-        nb_pairs = sum(len(v) for v in matrix.values()) // 2
-
-        # --- Small universe guard: no panic/risk_off if too few pairs ---
-        if nb_pairs < MIN_PAIRS_FOR_PANIC:
-            regime = 'unknown'
-            global_flag = 'caution'
-            score = 45.0
-            reasons.append(f"Universe trop petit (nb_pairs={nb_pairs} < 10) → pas de panic/risk_off.")
-        if nb_pairs <= 0:
-            return {}
-
-        return matrix
-    except Exception:
-        logger.exception("[correlation_regime_engine_pro] fallback compute matrix failed")
-        return {}
 # ---------------------------------------------------------------------------
 # Helpers locaux pour DATA_DIR et ENV
 # ---------------------------------------------------------------------------
@@ -689,29 +767,66 @@ def severity_from_flag(global_flag: str) -> str:
 
 def build_correlation_regime_state(data_dir: Path, env: str) -> Tuple[Dict[str, Any], str]:
     """
-    Construit l'état de régime de corrélation global.
-    Crée analysis/asset_correlations.json si absent via fallback ohlcv_combined.json.
+    Authoritative Correlation V1 state.
     """
     raw = _nsc_ensure_asset_correlations_file(data_dir)
 
-    if isinstance(raw, dict) and "matrix" in raw and isinstance(raw["matrix"], dict):
-        matrix = raw["matrix"]
-    else:
-        matrix = raw if isinstance(raw, dict) else {}
-
+    matrix = raw.get("matrix", {}) if isinstance(raw, dict) else {}
     metrics = compute_correlation_metrics(matrix)
-    regime, global_flag, score, reasons = infer_regime_and_score(metrics)
-    severity = severity_from_flag(global_flag)
 
-    now_ts = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace('+00:00','Z')
+    source_fresh = bool(raw.get("source_fresh")) if isinstance(raw, dict) else False
+    assets_count = int(raw.get("assets_count") or 0) if isinstance(raw, dict) else 0
+
+    insufficient = (
+        not source_fresh
+        or assets_count < CORRELATION_MIN_ASSETS
+        or metrics.nb_pairs < MIN_PAIRS_FOR_PANIC
+    )
+
+    if insufficient:
+        regime = "unknown"
+        global_flag = "caution"
+        score = 50.0
+        reasons = []
+
+        if not source_fresh:
+            reasons.append(
+                f"Correlation source unavailable or stale: "
+                f"{raw.get('error', 'source_not_fresh') if isinstance(raw, dict) else 'source_not_fresh'}."
+            )
+        if assets_count < CORRELATION_MIN_ASSETS:
+            reasons.append(
+                f"Correlation universe insufficient: assets={assets_count} "
+                f"< {CORRELATION_MIN_ASSETS}."
+            )
+        if metrics.nb_pairs < MIN_PAIRS_FOR_PANIC:
+            reasons.append(
+                f"Correlation pair coverage insufficient: pairs={metrics.nb_pairs} "
+                f"< {MIN_PAIRS_FOR_PANIC}."
+            )
+    else:
+        regime, global_flag, score, reasons = infer_regime_and_score(metrics)
+
+    severity = severity_from_flag(global_flag)
+    now_ts = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
     state: Dict[str, Any] = {
         "timestamp": now_ts,
+        "generated_at": now_ts,
         "env": env,
         "symbol": "global",
         "regime": regime,
         "global_flag": global_flag,
         "score": score,
+        "source": "ohlcv_combined",
+        "source_generated_at": raw.get("source_generated_at") if isinstance(raw, dict) else None,
+        "source_age_hours": raw.get("source_age_hours") if isinstance(raw, dict) else None,
+        "source_max_age_hours": CORRELATION_MAX_SOURCE_AGE_HOURS,
+        "source_fresh": source_fresh,
+        "method": "pearson_log_returns",
+        "window_returns": CORRELATION_WINDOW_RETURNS,
+        "assets_count": assets_count,
+        "pair_count": metrics.nb_pairs,
         "metrics": {
             "nb_pairs": metrics.nb_pairs,
             "avg_abs_corr": metrics.avg_abs_corr,
@@ -724,17 +839,20 @@ def build_correlation_regime_state(data_dir: Path, env: str) -> Tuple[Dict[str, 
     }
 
     logger.info(
-        "[correlation_regime_engine_pro] env=%s, regime=%s, global_flag=%s, "
-        "score=%.2f, nb_pairs=%d, avg_abs_corr=%s",
+        "[correlation_regime_engine_pro] env=%s regime=%s flag=%s "
+        "score=%.2f assets=%d pairs=%d avg_abs_corr=%s source_fresh=%s",
         env,
         regime,
         global_flag,
         score,
+        assets_count,
         metrics.nb_pairs,
-        f"{metrics.avg_abs_corr:.2f}" if metrics.avg_abs_corr is not None else "None",
+        f"{metrics.avg_abs_corr:.4f}" if metrics.avg_abs_corr is not None else "None",
+        source_fresh,
     )
 
     return state, severity
+
 
 # === NSC_MACRO_RISK_V1 ===
 def _compute_macro_risk_level(data_dir: str) -> str:
@@ -790,31 +908,21 @@ def main() -> None:
     except Exception:
         logger.exception('[correlation_regime_engine_pro] failed to attach writer/run_id')
 
-    # NSC_CORRELATION_CANONICAL_OUTPUT_V2
-    try:
-        _p = output_path
-        _canon = Path(str(_p)).with_name('correlation_regime.json')
-        save_json_file(str(_canon), state)
-    except Exception:
-        logger.exception('[correlation_regime_engine_pro] failed to write canonical correlation_regime.json')
-
-    # === NSC_MACRO_RISK_ATTACH_V1 ===
-    try:
-        state['macro_risk_level'] = _compute_macro_risk_level(str(data_dir))
-    except Exception:
-        logger.exception('[correlation_regime_engine_pro] failed to attach macro_risk_level')
-        state['macro_risk_level'] = 'neutral'
-    # === END NSC_MACRO_RISK_ATTACH_V1 ===
-    # --- schema normalization (backward compat) ---
+    # G152_CORRELATION_CANONICAL_AUTHORITY_V1
     if isinstance(state, dict):
         _m = state.get('metrics') if isinstance(state.get('metrics'), dict) else {}
-        # expose common metrics at top-level for easier queries
         state.setdefault('nb_pairs', _m.get('nb_pairs'))
         state.setdefault('avg_abs_corr', _m.get('avg_abs_corr'))
         state.setdefault('writer', 'correlation_regime_engine_pro')
-        state.setdefault('schema_version', 1)
-    # --- end schema normalization ---
-    save_json_file(output_path, state)
+        state.setdefault('schema_version', 2)
+
+    _canon = output_path.with_name('correlation_regime.json')
+
+    # Canonical authority is written only after the state is fully enriched.
+    save_json_file(str(_canon), state)
+
+    # Compatibility artifact must carry the same contract/state.
+    save_json_file(str(output_path), state)
     logger.info(
         "[correlation_regime_engine_pro] correlation_regime_engine_pro.json sauvegardé "
         "(regime=%s, global_flag=%s, score=%.2f)",

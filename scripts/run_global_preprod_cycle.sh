@@ -37,57 +37,62 @@ echo "----- PHASE 2: KERNEL -----"
 
 systemctl reset-failed nsc-kernel.service || true
 
-# Do not trust only the systemctl client return code:
-# a D-Bus/SSH interruption can occur while the service itself succeeds.
-systemctl start --no-block nsc-kernel.service || true
+# G152_KERNEL_SYNCHRONIZATION_V1
+#
+# nsc-kernel.service is a oneshot execution-critical phase.
+# Start it synchronously: phase 3 must never begin while the kernel is still
+# activating/running, and must never accept stale Result metadata.
+KERNEL_RC=0
 
-KERNEL_WAIT_TIMEOUT=300
-KERNEL_WAITED=0
+systemctl start nsc-kernel.service || KERNEL_RC=$?
 
-while systemctl is-active --quiet nsc-kernel.service; do
-    if (( KERNEL_WAITED >= KERNEL_WAIT_TIMEOUT )); then
-        echo "ERROR: nsc-kernel.service timeout"
-        KERNEL_RC=124
-        break
-    fi
+KERNEL_RESULT="$(
+    systemctl show nsc-kernel.service         -p Result         --value         2>/dev/null || echo unknown
+)"
 
-    sleep 2
-    KERNEL_WAITED=$((KERNEL_WAITED + 2))
-done
+KERNEL_EXEC_STATUS="$(
+    systemctl show nsc-kernel.service         -p ExecMainStatus         --value         2>/dev/null || echo 1
+)"
 
-if [[ "$KERNEL_RC" -eq 0 ]]; then
-    KERNEL_RESULT="$(
-        systemctl show nsc-kernel.service           -p Result           --value           2>/dev/null           || echo unknown
-    )"
+KERNEL_ACTIVE_STATE="$(
+    systemctl show nsc-kernel.service         -p ActiveState         --value         2>/dev/null || echo unknown
+)"
 
-    KERNEL_EXEC_STATUS="$(
-        systemctl show nsc-kernel.service           -p ExecMainStatus           --value           2>/dev/null           || echo 1
-    )"
+KERNEL_SUB_STATE="$(
+    systemctl show nsc-kernel.service         -p SubState         --value         2>/dev/null || echo unknown
+)"
 
-    KERNEL_ACTIVE_STATE="$(
-        systemctl show nsc-kernel.service           -p ActiveState           --value           2>/dev/null           || echo unknown
-    )"
+echo "kernel_start_rc=$KERNEL_RC"
+echo "kernel_result=$KERNEL_RESULT"
+echo "kernel_exec_status=$KERNEL_EXEC_STATUS"
+echo "kernel_active_state=$KERNEL_ACTIVE_STATE"
+echo "kernel_sub_state=$KERNEL_SUB_STATE"
 
-    echo "kernel_result=$KERNEL_RESULT"
-    echo "kernel_exec_status=$KERNEL_EXEC_STATUS"
-    echo "kernel_active_state=$KERNEL_ACTIVE_STATE"
-
-    if [[ "$KERNEL_RESULT" != "success" ]]        || [[ "$KERNEL_EXEC_STATUS" != "0" ]]; then
-        KERNEL_RC="${KERNEL_EXEC_STATUS:-1}"
-
-        if [[ "$KERNEL_RC" == "0" ]]; then
-            KERNEL_RC=1
-        fi
-    fi
+if [[ "$KERNEL_RC" -ne 0 ]]    || [[ "$KERNEL_RESULT" != "success" ]]    || [[ "$KERNEL_EXEC_STATUS" != "0" ]]; then
+    echo "ERROR: nsc-kernel.service did not complete successfully"
+    exit 1
 fi
+
+# A successful oneshot without RemainAfterExit must be inactive/dead here.
+# Most importantly, it must no longer be activating or active.
+if [[ "$KERNEL_ACTIVE_STATE" == "activating" ]]    || [[ "$KERNEL_ACTIVE_STATE" == "active" ]]; then
+    echo "ERROR: nsc-kernel.service still running after synchronous start"
+    exit 1
+fi
+
+echo "KERNEL_SYNCHRONOUS_COMPLETION=PASS"
 
 systemctl status nsc-kernel.service   --no-pager   -l   | tail -20   || true
 
 echo
 echo "----- PHASE 3: CANONICAL TELEMETRY REFRESH -----"
 
-$PYTHON -m src.v2.monitoring.orchestrator_pro \
-  || ORCHESTRATOR_RC=$?
+# G152_SINGLE_ORCHESTRATOR_WRITER_V1
+# orchestrator_pro is execution-critical and is produced by nsc-kernel.service
+# under User=nsc.  Do not recompute/rewrite it here as root after the kernel.
+# This phase refreshes non-authoritative system telemetry only.
+ORCHESTRATOR_RC=0
+echo "orchestrator_refresh=SKIPPED_KERNEL_IS_CANONICAL_WRITER"
 
 $PYTHON -m src.v2.monitoring.system_metrics_pro \
   || SYSTEM_METRICS_RC=$?

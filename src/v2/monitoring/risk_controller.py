@@ -183,6 +183,8 @@ def _policy_from_inputs(
     backpressure_mode: str,
     daily_dd: float,
     kill: Dict[str, Any],
+    risk_engine_position_size_mult: Optional[float] = None,
+    risk_engine_max_open_positions: Optional[int] = None,
 ) -> Tuple[RiskPolicy, List[str]]:
     """
     Décision globale.
@@ -267,12 +269,25 @@ def _policy_from_inputs(
         reasons.append("kill_switch=soft_block")
 
     # --- 4) Market regime risk_mode (from market_regime_detector) ---
-    if market_risk_mode == "reduced":
+    # G152_NO_WIDENING_V1:
+    # downstream may preserve or tighten upstream safety, never widen it.
+    _mrm = str(market_risk_mode or "normal").strip().lower()
+
+    if _mrm in ("risk_off", "off", "emergency"):
+        mode = "emergency"
+        risk_on_off = "off"
+        size_factor = SIZE_EMERGENCY
+        max_positions = MAX_POS_EMERGENCY
+        trailing = TRAIL_ATR_EMERGENCY
+        reasons.append(f"market_risk_mode={_mrm} => emergency")
+        return RiskPolicy(mode, risk_on_off, size_factor, max_positions, trailing), reasons
+
+    if _mrm in ("reduced", "caution"):
         mode = "reduced"
         size_factor = min(size_factor, SIZE_REDUCED)
         max_positions = min(max_positions, MAX_POS_REDUCED)
         trailing = TRAIL_ATR_REDUCED
-        reasons.append("market_risk_mode=reduced")
+        reasons.append(f"market_risk_mode={_mrm}")
 
     # --- 5) Risk engine score/flag ---
     # Score-based override
@@ -293,28 +308,45 @@ def _policy_from_inputs(
         trailing = TRAIL_ATR_REDUCED
         reasons.append(f"risk_engine_score={risk_engine_score:.2f} flag={risk_engine_flag}")
 
-    # Also honor explicit flag (best-effort)
-    if risk_engine_flag in ("danger", "emergency"):
-        mode = "reduced" if risk_engine_flag == "danger" else "emergency"
-        if mode == "emergency":
-            risk_on_off = "off"
-            size_factor = SIZE_EMERGENCY
-            max_positions = MAX_POS_EMERGENCY
-            trailing = TRAIL_ATR_EMERGENCY
-            reasons.append("risk_engine_flag=emergency")
-            return RiskPolicy(mode, risk_on_off, size_factor, max_positions, trailing), reasons
+    # Explicit Risk Engine flag is authoritative.
+    _ref = str(risk_engine_flag or "neutral").strip().lower()
 
-        size_factor = min(size_factor, SIZE_REDUCED)
-        max_positions = min(max_positions, MAX_POS_REDUCED)
-        trailing = TRAIL_ATR_REDUCED
-        reasons.append("risk_engine_flag=danger")
+    if _ref in ("risk_off", "off", "emergency"):
+        mode = "emergency"
+        risk_on_off = "off"
+        size_factor = SIZE_EMERGENCY
+        max_positions = MAX_POS_EMERGENCY
+        trailing = TRAIL_ATR_EMERGENCY
+        reasons.append(f"risk_engine_flag={_ref} => emergency")
+        return RiskPolicy(mode, risk_on_off, size_factor, max_positions, trailing), reasons
 
-    if risk_engine_flag == "caution":
+    if _ref in ("danger", "caution"):
         mode = "reduced"
         size_factor = min(size_factor, SIZE_REDUCED)
         max_positions = min(max_positions, MAX_POS_REDUCED)
         trailing = TRAIL_ATR_REDUCED
-        reasons.append("risk_engine_flag=caution")
+        reasons.append(f"risk_engine_flag={_ref}")
+
+    # Preserve stricter quantitative Risk Engine policy.
+    if risk_engine_position_size_mult is not None:
+        try:
+            _up_size = max(0.0, float(risk_engine_position_size_mult))
+            size_factor = min(size_factor, _up_size)
+            reasons.append(
+                f"risk_engine_policy.position_size_mult={_up_size:.4f} => no_widen"
+            )
+        except Exception:
+            pass
+
+    if risk_engine_max_open_positions is not None:
+        try:
+            _up_max = max(0, int(risk_engine_max_open_positions))
+            max_positions = min(max_positions, _up_max)
+            reasons.append(
+                f"risk_engine_policy.max_open_positions={_up_max} => no_widen"
+            )
+        except Exception:
+            pass
 
     # --- 6) Final policy: trading on/off ---
     if mode == "emergency":
@@ -351,6 +383,16 @@ def build_risk_limits(data_dir: Path) -> Dict[str, Any]:
 
     regime, market_risk_mode = _extract_market_regime(market_regime if isinstance(market_regime, dict) else {})
     risk_engine_score, risk_engine_flag = _extract_risk_engine_score(risk_engine if isinstance(risk_engine, dict) else {})
+
+    risk_engine_policy = (
+        risk_engine.get("policy")
+        if isinstance(risk_engine, dict) and isinstance(risk_engine.get("policy"), dict)
+        else {}
+    )
+
+    _re_size = risk_engine_policy.get("position_size_mult")
+    _re_maxpos = risk_engine_policy.get("max_open_positions")
+
     prod_mode = _extract_protocol_mode(production_protocol if isinstance(production_protocol, dict) else {})
     bp_mode = _extract_backpressure_mode(backpressure if isinstance(backpressure, dict) else {})
     kill = _extract_kill_switch(kill_switch if isinstance(kill_switch, dict) else {})
@@ -365,6 +407,8 @@ def build_risk_limits(data_dir: Path) -> Dict[str, Any]:
         backpressure_mode=bp_mode,
         daily_dd=daily_dd,
         kill=kill,
+        risk_engine_position_size_mult=_re_size,
+        risk_engine_max_open_positions=_re_maxpos,
     )
 
     # Compose output (keep your fields)

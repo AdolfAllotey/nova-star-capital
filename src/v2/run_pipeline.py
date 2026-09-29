@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 import json
+import os
 import logging
 import sys
 from pathlib import Path
@@ -47,6 +48,124 @@ def _try_import(mod_name: str):
         log.warning("module introuvable: %s (%s) — skip", mod_name, e)
         return None
 
+# G152_BREADTH_REFRESH_GUARD_V1
+BREADTH_REFRESH_MAX_AGE_HOURS = 20.0
+
+
+def _breadth_refresh_required(
+    path: Path,
+    max_age_hours: float = BREADTH_REFRESH_MAX_AGE_HOURS,
+    now: datetime | None = None,
+) -> bool:
+    """
+    Return True when the canonical Breadth artifact should be refreshed.
+
+    Refresh is required when the artifact is missing, invalid, non-ok,
+    timestamp-invalid, or older than the governed refresh age.
+
+    This guard prevents the hourly PREPROD pipeline from triggering the
+    40-ticker yfinance Breadth collection on every cycle.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    if not path.exists():
+        return True
+
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return True
+
+    if not isinstance(raw, dict):
+        return True
+
+    if str(raw.get("status") or "").lower() != "ok":
+        return True
+
+    ts = raw.get("ts") or raw.get("generated_at")
+
+    if not isinstance(ts, str) or not ts.strip():
+        return True
+
+    try:
+        value = ts.strip()
+        if value.endswith("Z"):
+            value = value[:-1] + "+00:00"
+
+        parsed = datetime.fromisoformat(value)
+
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+
+        parsed = parsed.astimezone(timezone.utc)
+
+    except Exception:
+        return True
+
+    raw_age_hours = (
+        now - parsed
+    ).total_seconds() / 3600.0
+
+    # G152_BREADTH_REFRESH_FUTURE_SKEW_GUARD_V1
+    # Minor clock skew is tolerated, but a materially future artifact
+    # must be refreshed rather than treated as age zero.
+    max_future_skew_hours = 5.0 / 60.0
+
+    if raw_age_hours < -max_future_skew_hours:
+        return True
+
+    age_hours = max(0.0, raw_age_hours)
+
+    return age_hours >= max_age_hours
+
+
+def _refresh_breadth_if_required() -> bool:
+    """
+    Best-effort structural market-intelligence refresh.
+
+    Returns True when a refresh was attempted, False when the existing
+    canonical artifact remains inside the refresh window.
+
+    Breadth provider failure must not abort PREPROD. Snapshot freshness
+    validation independently rejects stale/invalid Breadth.
+    """
+    data_dir = Path(
+        os.getenv("NSC_DATA_DIR", "/opt/nsc/data/preprod")
+    )
+
+    breadth_path = data_dir / "analysis" / "breadth.json"
+
+    if not _breadth_refresh_required(breadth_path):
+        log.info(
+            "breadth_refresh=SKIPPED_FRESH path=%s max_age_hours=%.1f",
+            breadth_path,
+            BREADTH_REFRESH_MAX_AGE_HOURS,
+        )
+        return False
+
+    log.info(
+        "breadth_refresh=REQUIRED path=%s max_age_hours=%.1f",
+        breadth_path,
+        BREADTH_REFRESH_MAX_AGE_HOURS,
+    )
+
+    result = _try_call(
+        "src.v2.analysis.breadth_engine",
+        "main",
+    )
+
+    if result is None:
+        log.warning(
+            "breadth_refresh=ATTEMPTED_BEST_EFFORT "
+            "result=unknown_or_provider_failure"
+        )
+    else:
+        log.info("breadth_refresh=ATTEMPTED")
+
+    return True
+
+
 def _try_call(mod_name: str, func_name: str, *args, **kwargs):
     """Importe puis appelle prudemment une fonction si elle existe, sinon log un skip."""
     mod = _try_import(mod_name)
@@ -81,7 +200,10 @@ def _run_preprod() -> int:
         "env": ":".join(sys.path[:3]),
     }, ensure_ascii=False))
 
-    # 0) Market snapshot (best-effort)
+    # 0) Structural Breadth refresh (TTL-guarded, best-effort)
+    _refresh_breadth_if_required()
+
+    # 0.1) Market snapshot consumes fresh Breadth when available.
     _try_call("src.v2.analysis.market_snapshot_builder", "run")
 
     # 1) Détection de régime (PREPROD réaliste via market_snapshot.json)
@@ -123,8 +245,11 @@ def _run_preprod() -> int:
         log.exception("equities_offensive_pipeline=exception %s", e)
         return 1
 
-    # 3) Risk controller
-    _try_call("src.v2.monitoring.risk_controller", "main")
+    # 3) Risk ownership
+    # Canonical Risk Engine -> Risk Controller -> effective limits execution
+    # belongs to nsc-kernel.service. Do not write risk_limits here from
+    # potentially stale upstream artifacts.
+    log.info("risk_controller=SKIPPED_KERNEL_IS_CANONICAL_WRITER")
 
     # 4) Rapport quotidien (best-effort, 1 seul appel effectif)
     _try_call("src.v2.analysis.sentiment_scorer_offline", "run")

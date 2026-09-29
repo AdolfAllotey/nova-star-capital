@@ -430,7 +430,15 @@ def main() -> None:
             # future-prod preference (keep exits allowed, block entries) – but not activated now by default
             result["action_policy"] = result.get("action_policy") or "EXIT_ONLY"
         else:
-            result["action_policy"] = result.get("action_policy") or "NORMAL"
+            # G152_PREPROD_CANONICAL_ACTION_POLICY_V1
+            # PREPROD nominal operation must remain explicitly simulated.
+            # NORMAL is a governance/risk state, not an execution policy.
+            # SIMULATED_ONLY is the canonical PREPROD execution policy used
+            # by readiness, supervision and terminal execution boundaries.
+            if str(env).upper() == "PREPROD":
+                result["action_policy"] = "SIMULATED_ONLY"
+            else:
+                result["action_policy"] = result.get("action_policy") or "NORMAL"
 
         # caps: read from trading/risk_limits.json, fallback to capital_per_trade if missing
         # (this makes governance the single source-of-truth for caps)
