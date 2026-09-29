@@ -60,8 +60,20 @@ def main():
         else ""
     ).lower()
 
+    current_canonical = (
+        isinstance(current_doc, dict)
+        and current_doc.get("canonical") is True
+    )
+
+    snapshot_canonical = (
+        isinstance(snapshot_doc, dict)
+        and snapshot_doc.get("canonical") is True
+    )
+
     canonical_feed_active = (
-        current_engine == "offensive_canonical_market_feed_v1"
+        current_canonical
+        or snapshot_canonical
+        or current_engine == "offensive_canonical_market_feed_v1"
         or snapshot_engine == "offensive_canonical_snapshot_v1"
         or current_source == "yfinance"
         or snapshot_source == "yfinance"
@@ -75,6 +87,8 @@ def main():
             "prices_source": current_source,
             "snapshot_engine": snapshot_engine,
             "snapshot_source": snapshot_source,
+            "prices_canonical": current_canonical,
+            "snapshot_canonical": snapshot_canonical,
         })
         return 0
 

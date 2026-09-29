@@ -35,8 +35,14 @@ def main():
         else ""
     ).lower()
 
+    current_canonical = (
+        isinstance(current_prices, dict)
+        and current_prices.get("canonical") is True
+    )
+
     canonical_feed_active = (
-        current_engine == "offensive_canonical_market_feed_v1"
+        current_canonical
+        or current_engine == "offensive_canonical_market_feed_v1"
         or current_source == "yfinance"
     )
 
@@ -46,6 +52,7 @@ def main():
             "reason": "canonical_market_feed_protected",
             "engine": current_engine,
             "source": current_source,
+            "canonical": current_canonical,
             "out": str(OUT),
         })
         return 0
