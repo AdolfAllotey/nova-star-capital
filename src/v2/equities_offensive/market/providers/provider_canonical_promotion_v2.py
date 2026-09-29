@@ -725,7 +725,17 @@ def build_canonical_artifacts(
             "validation_symbols_invalid"
         )
 
-    generated_at = utc_now_iso()
+    # Candidate identity must be reproducible from causal
+    # provider inputs. Wall-clock build time must not alter
+    # byte-exact authorization.
+    generated_at = str(
+        validation.get("generated_at") or ""
+    ).strip()
+
+    if not generated_at:
+        raise RuntimeError(
+            "validation_generated_at_missing"
+        )
 
     prices: dict[str, float] = {}
     snapshot_prices: dict[str, Any] = {}
@@ -906,7 +916,6 @@ def build_canonical_artifacts(
     )
 
     generation_material = {
-        "generated_at": generated_at,
         "market_session": session,
         "provider": primary.get("provider"),
         "provider_generated_at": (

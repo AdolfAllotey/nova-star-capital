@@ -442,7 +442,9 @@ def build_universe_candidates(
             + ", ".join(sorted(overlap))
         )
 
-    generated_at = utc_now_iso()
+    # Use causal provider time rather than wall-clock
+    # build time so identical inputs produce identical bytes.
+    generated_at = provider_generated_at
 
     generation_id = generation_id_for(
         market_session=provider_session,
