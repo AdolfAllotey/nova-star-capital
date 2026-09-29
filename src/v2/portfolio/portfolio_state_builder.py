@@ -3,6 +3,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
+from src.v2.core.fx import FXService, FXServiceError
 from src.v2.portfolio.load_portfolio_inputs import load_portfolio_inputs
 
 
@@ -83,9 +84,31 @@ def get_real_brick_state(brick: str, deployable_capital_eur: float):
             and "open_positions" in state
             and deployable_capital_eur > 0
         ):
-            exposure = float(
+            exposure_usd = float(
                 state.get("total_notional_usd", 0.0) or 0.0
             )
+
+            try:
+                fx_rate = FXService().get_rate(
+                    "USD",
+                    "EUR",
+                )
+            except FXServiceError as exc:
+                raise RuntimeError(
+                    "equities_offensive canonical "
+                    "USD/EUR FX unavailable"
+                ) from exc
+
+            usd_eur_rate = float(fx_rate.rate)
+
+            if usd_eur_rate <= 0:
+                raise RuntimeError(
+                    "equities_offensive invalid "
+                    "canonical USD/EUR FX rate"
+                )
+
+            exposure = exposure_usd * usd_eur_rate
+
             open_count = int(
                 state.get(
                     "open_positions",
@@ -96,6 +119,16 @@ def get_real_brick_state(brick: str, deployable_capital_eur: float):
 
             return {
                 "current_exposure_eur": round(exposure, 2),
+                "current_exposure_native": round(
+                    exposure_usd,
+                    2,
+                ),
+                "native_currency": "USD",
+                "fx_to_eur": round(
+                    usd_eur_rate,
+                    12,
+                ),
+                "fx": fx_rate.to_dict(),
                 "current_weight_estimate": round(
                     exposure / deployable_capital_eur,
                     6,
@@ -354,6 +387,10 @@ def run_portfolio_state_builder():
                 "internal_max_total_risk_eur",
                 "internal_max_trade_risk_eur",
                 "internal_available_risk_eur",
+                "current_exposure_native",
+                "native_currency",
+                "fx_to_eur",
+                "fx",
             ):
                 if field in real_state:
                     bricks[brick][field] = real_state[field]

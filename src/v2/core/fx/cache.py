@@ -70,6 +70,13 @@ class FXCache:
         )
 
         try:
+            # Shared PREPROD cache: the FX cache is consumed/written by
+            # processes running as both root and nsc.  mkstemp() deliberately
+            # creates files as 0600, so enforce group read/write before the
+            # atomic replacement.  The parent directory SGID preserves the
+            # canonical nsc group.
+            os.fchmod(fd, 0o660)
+
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 json.dump(
                     payload,
