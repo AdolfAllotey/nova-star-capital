@@ -283,6 +283,64 @@ def _validate_orders_with_plan(plan: dict, plan_id: str, scope: str):
 
 
 
+def filled_buy_economic_signal_ids(
+    fills_path=FILLS_PATH,
+) -> set:
+    """
+    Durable economic-consumption authority.
+
+    Only successful BUY fills consume an economic signal.
+    Legacy fills without economic_signal_id are intentionally
+    grandfathered and do not create inferred identities.
+    """
+    consumed = set()
+
+    if not fills_path.exists():
+        return consumed
+
+    try:
+        lines = fills_path.read_text(
+            encoding="utf-8"
+        ).splitlines()
+    except Exception:
+        return consumed
+
+    for raw in lines:
+        raw = raw.strip()
+
+        if not raw:
+            continue
+
+        try:
+            row = json.loads(raw)
+        except Exception:
+            continue
+
+        if not isinstance(row, dict):
+            continue
+
+        if (
+            str(row.get("status") or "").upper()
+            != "FILLED"
+        ):
+            continue
+
+        if (
+            str(row.get("side") or "").upper()
+            != "BUY"
+        ):
+            continue
+
+        economic_signal_id = str(
+            row.get("economic_signal_id") or ""
+        ).strip()
+
+        if economic_signal_id:
+            consumed.add(economic_signal_id)
+
+    return consumed
+
+
 def _parse_iso_ts(value):
     # stdlib only, tolerant
     try:
@@ -390,6 +448,15 @@ def main():
 
         positions = load_positions()
 
+        # Durable authority for economic BUY idempotence.
+        # This is reconstructed from immutable FILLED events
+        # rather than relying only on transient StateStore data.
+        consumed_buy_signal_ids = (
+            filled_buy_economic_signal_ids(
+                FILLS_PATH
+            )
+        )
+
         for o in orders:
             if not isinstance(o, dict):
                 try:
@@ -473,6 +540,114 @@ def main():
                 continue
 
             requested_qty = qty
+
+            economic_signal_id = str(
+                o.get("economic_signal_id") or ""
+            ).strip()
+
+            market_bar_id = str(
+                o.get("market_bar_id") or ""
+            ).strip()
+
+            market_bar_date = str(
+                o.get("market_bar_date") or ""
+            ).strip()
+
+            timeframe = str(
+                o.get("timeframe") or ""
+            ).strip()
+
+            # Economic idempotence applies only to BUY.
+            #
+            # Every BUY must carry the complete economic identity
+            # contract. Missing provenance fails closed before any
+            # order/fill identity is created.
+            #
+            # SELL semantics remain independent.
+            if side == "BUY":
+                missing_identity_fields = [
+                    name
+                    for name, value in (
+                        (
+                            "economic_signal_id",
+                            economic_signal_id,
+                        ),
+                        (
+                            "market_bar_id",
+                            market_bar_id,
+                        ),
+                        (
+                            "market_bar_date",
+                            market_bar_date,
+                        ),
+                        (
+                            "timeframe",
+                            timeframe,
+                        ),
+                    )
+                    if not value
+                ]
+
+                if missing_identity_fields:
+                    append_jsonl(
+                        REJECTED_PATH,
+                        {
+                            "ts": utc_now_iso(),
+                            "engine": (
+                                "simulated_broker_v1"
+                            ),
+                            "plan_id": plan_id,
+                            "policy": policy,
+                            "status": "REJECTED",
+                            "reason": (
+                                "missing_economic_signal_identity"
+                            ),
+                            "symbol": symbol,
+                            "side": side,
+                            "missing_identity_fields": (
+                                missing_identity_fields
+                            ),
+                            "order": o,
+                        },
+                    )
+                    continue
+
+            if (
+                side == "BUY"
+                and economic_signal_id
+                in consumed_buy_signal_ids
+            ):
+                append_jsonl(
+                    REJECTED_PATH,
+                    {
+                        "ts": utc_now_iso(),
+                        "engine": (
+                            "simulated_broker_v1"
+                        ),
+                        "plan_id": plan_id,
+                        "policy": policy,
+                        "status": "REJECTED",
+                        "reason": (
+                            "economic_signal_already_consumed"
+                        ),
+                        "symbol": symbol,
+                        "side": side,
+                        "economic_signal_id": (
+                            economic_signal_id
+                        ),
+                        "market_bar_id": (
+                            market_bar_id or None
+                        ),
+                        "market_bar_date": (
+                            market_bar_date or None
+                        ),
+                        "timeframe": (
+                            timeframe or None
+                        ),
+                        "order": o,
+                    },
+                )
+                continue
 
             oid = plan_order_id(
                 plan_id,
@@ -595,10 +770,41 @@ def main():
                 "status": "FILLED",
             }
 
+            # Preserve economic provenance on the immutable
+            # execution event. Legacy orders may legitimately
+            # omit these fields until strict cutover.
+            if economic_signal_id:
+                fill["economic_signal_id"] = (
+                    economic_signal_id
+                )
+
+            if market_bar_id:
+                fill["market_bar_id"] = (
+                    market_bar_id
+                )
+
+            if market_bar_date:
+                fill["market_bar_date"] = (
+                    market_bar_date
+                )
+
+            if timeframe:
+                fill["timeframe"] = timeframe
+
             if quantity_adjustment is not None:
                 fill["quantity_adjustment"] = quantity_adjustment
 
             append_jsonl(FILLS_PATH, fill)
+
+            # Same-process protection if multiple orders in one
+            # plan unexpectedly carry the same economic signal.
+            if (
+                side == "BUY"
+                and economic_signal_id
+            ):
+                consumed_buy_signal_ids.add(
+                    economic_signal_id
+                )
 
             apply_fill(
                 positions,

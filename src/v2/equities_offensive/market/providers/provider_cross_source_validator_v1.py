@@ -23,6 +23,7 @@ Règles :
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -61,6 +62,23 @@ def read_json(path: Path) -> dict[str, Any]:
         )
 
     return payload
+
+
+def read_json_with_sha256(
+    path: Path,
+) -> tuple[dict[str, Any], str]:
+    raw = path.read_bytes()
+    payload = json.loads(raw)
+
+    if not isinstance(payload, dict):
+        raise ValueError(
+            f"JSON object required: {path}"
+        )
+
+    return (
+        payload,
+        hashlib.sha256(raw).hexdigest(),
+    )
 
 
 def atomic_write_json(
@@ -668,6 +686,8 @@ def build_report(
     secondary_payload: dict[str, Any],
     primary_path: Path,
     secondary_path: Path,
+    primary_sha256: str,
+    secondary_sha256: str,
     warning_threshold_percent: float,
     blocking_threshold_percent: float,
     maximum_date_gap_days: int,
@@ -854,6 +874,8 @@ def build_report(
         "input_artifacts": {
             "primary": str(primary_path),
             "secondary": str(secondary_path),
+            "primary_sha256": primary_sha256,
+            "secondary_sha256": secondary_sha256,
             "primary_status": provider_status(
                 primary_payload
             ),
@@ -1015,8 +1037,17 @@ def main() -> int:
                 f"{args.secondary}"
             )
 
-        primary_payload = read_json(args.primary)
-        secondary_payload = read_json(
+        (
+            primary_payload,
+            primary_sha256,
+        ) = read_json_with_sha256(
+            args.primary
+        )
+
+        (
+            secondary_payload,
+            secondary_sha256,
+        ) = read_json_with_sha256(
             args.secondary
         )
 
@@ -1025,6 +1056,8 @@ def main() -> int:
             secondary_payload=secondary_payload,
             primary_path=args.primary,
             secondary_path=args.secondary,
+            primary_sha256=primary_sha256,
+            secondary_sha256=secondary_sha256,
             warning_threshold_percent=max(
                 args.warning_threshold_percent,
                 0.0,

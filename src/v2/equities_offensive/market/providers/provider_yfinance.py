@@ -21,12 +21,55 @@ from provider_base import (
     safe_float,
     utc_now_iso,
 )
+from provider_session_clock import (
+    latest_completed_xnys_session,
+)
 
 
 class YFinanceProvider(MarketDataProvider):
     provider_name = "yfinance"
     provider_role = "primary_research_source"
     requires_api_key = False
+
+    @staticmethod
+    def _filter_completed_xnys_sessions(
+        frame: pd.DataFrame,
+        reference_time: datetime,
+    ) -> tuple[pd.DataFrame, str]:
+        expected_session = (
+            latest_completed_xnys_session(
+                reference_time
+            )
+        )
+
+        expected_date = pd.Timestamp(
+            expected_session
+        )
+
+        filtered = frame.loc[
+            frame.index.normalize()
+            <= expected_date
+        ].copy()
+
+        if filtered.empty:
+            raise RuntimeError(
+                "yfinance_no_completed_xnys_session"
+            )
+
+        actual_session = (
+            filtered.index[-1]
+            .date()
+            .isoformat()
+        )
+
+        if actual_session != expected_session:
+            raise RuntimeError(
+                "yfinance_latest_completed_session_missing:"
+                f"expected={expected_session}:"
+                f"actual={actual_session}"
+            )
+
+        return filtered, expected_session
 
     def is_configured(self) -> bool:
         return True
@@ -80,12 +123,15 @@ class YFinanceProvider(MarketDataProvider):
         symbol: str,
         history_days: int,
         minimum_history_rows: int,
+        reference_time: datetime,
     ) -> ProviderSymbolResult:
         normalized = normalize_symbol(symbol)
         fetched_at = utc_now_iso()
 
         try:
-            end_date = datetime.now(timezone.utc)
+            end_date = reference_time.astimezone(
+                timezone.utc
+            )
             start_date = end_date - timedelta(
                 days=max(history_days, 30)
             )
@@ -129,6 +175,16 @@ class YFinanceProvider(MarketDataProvider):
             frame = frame[
                 ~frame.index.duplicated(keep="last")
             ]
+
+            # D1 provider sovereignty:
+            # never allow an in-progress XNYS daily bar to enter
+            # prices, volumes, returns or technical indicators.
+            frame, completed_session = (
+                self._filter_completed_xnys_sessions(
+                    frame,
+                    reference_time,
+                )
+            )
 
             required_columns = {
                 "Open",
@@ -177,6 +233,16 @@ class YFinanceProvider(MarketDataProvider):
             )
 
             warnings: list[str] = []
+
+            if (
+                frame.index[-1]
+                .date()
+                .isoformat()
+                != completed_session
+            ):
+                raise RuntimeError(
+                    "yfinance_completed_session_contract_broken"
+                )
 
             if insufficient_history:
                 warnings.append(

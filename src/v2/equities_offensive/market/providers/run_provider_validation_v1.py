@@ -13,6 +13,7 @@ Aucune promotion canonique.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -64,6 +65,12 @@ def utc_now_iso() -> str:
         "+00:00",
         "Z",
     )
+
+
+def file_sha256(path: Path) -> str:
+    return hashlib.sha256(
+        path.read_bytes()
+    ).hexdigest()
 
 
 def run_step(
@@ -266,11 +273,23 @@ def main() -> int:
         "promotion_executed": False,
         "artifacts": {
             "primary": str(args.primary),
+            "primary_sha256": file_sha256(
+                args.primary
+            ),
             "secondary": str(args.secondary),
+            "secondary_sha256": file_sha256(
+                args.secondary
+            ),
             "validation": str(
                 args.validation_output
             ),
+            "validation_sha256": file_sha256(
+                args.validation_output
+            ),
             "quality_gate": str(
+                args.gate_output
+            ),
+            "quality_gate_sha256": file_sha256(
                 args.gate_output
             ),
         },

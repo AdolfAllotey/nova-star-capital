@@ -393,6 +393,15 @@ def vote_signals(
             "setup_bonus": setup_bonus,
             "meta_score": meta_score,
             "timeframe": timeframe,
+            "market_bar_date": signal.get(
+                "market_bar_date"
+            ),
+            "market_bar_id": signal.get(
+                "market_bar_id"
+            ),
+            "economic_signal_id": signal.get(
+                "economic_signal_id"
+            ),
             "signal_ts": signal.get("ts"),
             "voted_at": utc_now_iso(),
             "universe": EXPECTED_SIGNAL_UNIVERSE,

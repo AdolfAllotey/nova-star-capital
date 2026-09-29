@@ -21,6 +21,7 @@ import logging
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,9 @@ from provider_base import (
     utc_now_iso,
 )
 from provider_registry import build_provider_registry
+from provider_session_clock import (
+    latest_completed_xnys_session,
+)
 
 
 LOGGER = logging.getLogger(
@@ -58,8 +62,22 @@ def build_provider_payload(
     history_days: int,
     minimum_history_rows: int,
     pause_seconds: float,
+    reference_time: datetime,
 ) -> dict[str, Any]:
     generated_at = utc_now_iso()
+
+    market_session = (
+        latest_completed_xnys_session(
+            reference_time
+        )
+    )
+
+    reference_time_iso = (
+        reference_time
+        .astimezone(timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
     results: dict[str, dict[str, Any]] = {}
 
@@ -70,6 +88,8 @@ def build_provider_payload(
                 "offensive_equities_provider_market_data"
             ),
             "generated_at": generated_at,
+            "reference_time": reference_time_iso,
+            "market_session": market_session,
             "provider": provider_name,
             "provider_metadata": provider.metadata(),
             "status": "not_configured",
@@ -101,6 +121,7 @@ def build_provider_payload(
             minimum_history_rows=(
                 minimum_history_rows
             ),
+            reference_time=reference_time,
         )
 
         results[symbol] = serialize_result(result)
@@ -122,6 +143,28 @@ def build_provider_payload(
 
     requested_count = len(symbols)
     available_count = len(available_symbols)
+
+    available_sessions = sorted(
+        {
+            str(
+                results[symbol].get(
+                    "last_session_date"
+                )
+            )
+            for symbol in available_symbols
+        }
+    )
+
+    if (
+        available_sessions
+        and available_sessions != [market_session]
+    ):
+        raise RuntimeError(
+            "provider_temporal_coherence_failure:"
+            f"provider={provider_name}:"
+            f"expected={market_session}:"
+            f"actual={available_sessions}"
+        )
 
     coverage_ratio = (
         available_count / requested_count
@@ -145,6 +188,8 @@ def build_provider_payload(
             "offensive_equities_provider_market_data"
         ),
         "generated_at": generated_at,
+        "reference_time": reference_time_iso,
+        "market_session": market_session,
         "provider": provider_name,
         "provider_metadata": provider.metadata(),
         "status": status,
@@ -171,6 +216,7 @@ def build_provider_payload(
                 4,
             ),
             "available_symbols": available_symbols,
+            "available_sessions": available_sessions,
             "unavailable_symbols": (
                 unavailable_symbols
             ),
@@ -261,6 +307,23 @@ def main() -> int:
             "%(asctime)s | %(levelname)s | "
             "%(name)s | %(message)s"
         ),
+    )
+
+    reference_time = datetime.now(
+        timezone.utc
+    )
+
+    market_session = (
+        latest_completed_xnys_session(
+            reference_time
+        )
+    )
+
+    reference_time_iso = (
+        reference_time
+        .astimezone(timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
     )
 
     registry = build_provider_registry()
@@ -389,6 +452,7 @@ def main() -> int:
                 1,
             ),
             pause_seconds=provider_pause_seconds,
+            reference_time=reference_time,
         )
 
         output_path = (
@@ -413,6 +477,8 @@ def main() -> int:
             "offensive_equities_provider_layer_run"
         ),
         "generated_at": utc_now_iso(),
+        "reference_time": reference_time_iso,
+        "market_session": market_session,
         "status": "completed",
         "canonical_files_modified": False,
         "promotion_executed": False,

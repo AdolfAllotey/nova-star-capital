@@ -185,6 +185,16 @@ def risk_decide_one(
         "direction": sig.get("direction"),
         "setup": sig.get("setup"),
         "engine": sig.get("engine"),
+        "timeframe": sig.get("timeframe"),
+        "market_bar_date": sig.get(
+            "market_bar_date"
+        ),
+        "market_bar_id": sig.get(
+            "market_bar_id"
+        ),
+        "economic_signal_id": sig.get(
+            "economic_signal_id"
+        ),
         "meta_score": meta_score,
         "allowed": bool(allowed),
         "size_usd": round(float(size_usd), 2),

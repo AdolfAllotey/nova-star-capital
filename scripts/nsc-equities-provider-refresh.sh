@@ -18,7 +18,11 @@ trap cleanup EXIT
 
 cd "$APP_DIR"
 
-exec 9>"$LOCK_FILE"
+touch "$LOCK_FILE"
+chown root:nscsvc "$LOCK_FILE"
+chmod 0660 "$LOCK_FILE"
+
+exec 9<>"$LOCK_FILE"
 
 if ! flock -n 9; then
   echo "STATUS=SKIPPED_ALREADY_RUNNING"

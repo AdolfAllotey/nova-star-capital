@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +29,53 @@ def save_json(path: Path, data: Any) -> None:
     except Exception:
         with path.open("w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+
+def _sha256_identity(payload: Dict[str, Any]) -> str:
+    serialized = json.dumps(
+        payload,
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(
+        serialized.encode("utf-8")
+    ).hexdigest()
+
+
+def build_market_bar_id(
+    symbol: str,
+    timeframe: str,
+    market_bar_date: str,
+) -> str:
+    payload = {
+        "symbol": str(symbol).upper(),
+        "timeframe": str(timeframe).upper(),
+        "market_bar_date": str(market_bar_date),
+    }
+    return "bar_" + _sha256_identity(payload)
+
+
+def build_economic_signal_id(
+    *,
+    engine: str,
+    engine_version: str,
+    symbol: str,
+    direction: str,
+    timeframe: str,
+    setup: str,
+    market_bar_id: str,
+) -> str:
+    payload = {
+        "engine": str(engine),
+        "engine_version": str(engine_version),
+        "symbol": str(symbol).upper(),
+        "direction": str(direction).lower(),
+        "timeframe": str(timeframe).upper(),
+        "setup": str(setup).lower(),
+        "market_bar_id": str(market_bar_id),
+    }
+    return "esig_" + _sha256_identity(payload)
+
 
 def clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
@@ -135,12 +183,39 @@ def generate_signals(
             skipped[sym] = f"score_below_min<{min_score}"
             continue
 
+        market_bar_date = str(
+            px.get("last_market_date") or ""
+        ).strip()
+
+        if not market_bar_date:
+            skipped[sym] = "missing_last_market_date"
+            continue
+
+        market_bar_id = build_market_bar_id(
+            symbol=sym,
+            timeframe="D1",
+            market_bar_date=market_bar_date,
+        )
+
+        economic_signal_id = build_economic_signal_id(
+            engine="signal_engine_v1",
+            engine_version="1.0",
+            symbol=sym,
+            direction="long",
+            timeframe="D1",
+            setup=s["setup"],
+            market_bar_id=market_bar_id,
+        )
+
         signals.append({
             "ts": utc_now_iso(),
             "engine": "signal_engine_v1",
             "symbol": sym,
             "direction": "long",
             "timeframe": "D1",
+            "market_bar_date": market_bar_date,
+            "market_bar_id": market_bar_id,
+            "economic_signal_id": economic_signal_id,
             "score": s["score"],
             "setup": s["setup"],
             "features": {

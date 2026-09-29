@@ -328,6 +328,16 @@ def convert_entry_candidate(c: Dict[str, Any]) -> Dict[str, Any] | None:
             or "entry_signal"
         ),
         "risk_notes": c.get("risk_notes"),
+        "economic_signal_id": c.get(
+            "economic_signal_id"
+        ),
+        "market_bar_id": c.get(
+            "market_bar_id"
+        ),
+        "market_bar_date": c.get(
+            "market_bar_date"
+        ),
+        "timeframe": c.get("timeframe"),
         "size_usd": round(size_usd, 2),
         "budget": c.get("budget"),
         "fx": c.get("fx"),
@@ -812,6 +822,18 @@ def build_orders_from_candidates(cands: Dict[str, Any], action_policy: str) -> T
             "score": c.get("score"),
             "reason": c.get("reason"),
             "risk_notes": c.get("risk_notes"),
+            "economic_signal_id": c.get(
+                "economic_signal_id"
+            ),
+            "market_bar_id": c.get(
+                "market_bar_id"
+            ),
+            "market_bar_date": c.get(
+                "market_bar_date"
+            ),
+            "timeframe": c.get(
+                "timeframe"
+            ),
         }
 
         if side == "BUY":
@@ -970,16 +992,23 @@ def apply_governance_order_cap(
             caps.get("max_orders_per_run")
         )
     except (TypeError, ValueError):
-        max_orders = 0
         reasons.append(
             "invalid governance max_orders_per_run "
             "=> fail closed to 0"
         )
+        return [], reasons
 
-    max_orders = max(
-        0,
-        max_orders,
-    )
+    if max_orders < 0:
+        reasons.append(
+            "negative governance max_orders_per_run "
+            "=> fail closed to 0"
+        )
+        return [], reasons
+
+    # Canonical PREPROD Governance contract:
+    # max_orders_per_run == 0 means unlimited order count.
+    if max_orders == 0:
+        return orders, reasons
 
     if len(orders) > max_orders:
         original_count = len(orders)

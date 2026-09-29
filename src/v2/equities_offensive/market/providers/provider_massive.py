@@ -30,6 +30,9 @@ from provider_base import (
     safe_float,
     utc_now_iso,
 )
+from provider_session_clock import (
+    latest_completed_xnys_session,
+)
 
 
 class MassiveProvider(MarketDataProvider):
@@ -172,6 +175,7 @@ class MassiveProvider(MarketDataProvider):
         symbol: str,
         history_days: int,
         minimum_history_rows: int,
+        reference_time: datetime,
     ) -> ProviderSymbolResult:
         normalized = normalize_symbol(symbol)
         fetched_at = utc_now_iso()
@@ -191,9 +195,19 @@ class MassiveProvider(MarketDataProvider):
             )
 
         try:
-            end_date = datetime.now(timezone.utc).date()
+            run_reference = reference_time.astimezone(
+                timezone.utc
+            )
+
+            completed_session = (
+                latest_completed_xnys_session(
+                    run_reference
+                )
+            )
+
+            end_date = run_reference.date()
             start_date = (
-                datetime.now(timezone.utc)
+                run_reference
                 - timedelta(days=max(history_days, 30))
             ).date()
 
@@ -285,6 +299,34 @@ class MassiveProvider(MarketDataProvider):
                     "Aucune barre Massive exploitable."
                 )
 
+            expected_date = pd.Timestamp(
+                completed_session,
+                tz="UTC",
+            )
+
+            frame = frame.loc[
+                frame.index.normalize()
+                <= expected_date
+            ].copy()
+
+            if frame.empty:
+                raise RuntimeError(
+                    "massive_no_completed_xnys_session"
+                )
+
+            actual_session = (
+                frame.index[-1]
+                .date()
+                .isoformat()
+            )
+
+            if actual_session != completed_session:
+                raise RuntimeError(
+                    "massive_latest_completed_session_missing:"
+                    f"expected={completed_session}:"
+                    f"actual={actual_session}"
+                )
+
             close = frame["Close"].astype(float)
             volume = frame["Volume"].astype(float)
             last_row = frame.iloc[-1]
@@ -295,6 +337,16 @@ class MassiveProvider(MarketDataProvider):
             )
 
             warnings: list[str] = []
+
+            if (
+                frame.index[-1]
+                .date()
+                .isoformat()
+                != completed_session
+            ):
+                raise RuntimeError(
+                    "massive_completed_session_contract_broken"
+                )
 
             if insufficient_history:
                 warnings.append(

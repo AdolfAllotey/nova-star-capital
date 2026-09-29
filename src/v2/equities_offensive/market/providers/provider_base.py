@@ -97,8 +97,15 @@ class MarketDataProvider(ABC):
         symbol: str,
         history_days: int,
         minimum_history_rows: int,
+        reference_time: datetime,
     ) -> ProviderSymbolResult:
-        """Récupère et normalise un symbole."""
+        """
+        Récupère et normalise un symbole.
+
+        reference_time est capturé une seule fois par provider run
+        afin que tous les symboles partagent la même autorité
+        temporelle.
+        """
 
     def metadata(self) -> dict[str, Any]:
         return {

@@ -15,6 +15,7 @@ n'est pas configurée ou lorsqu'un symbole est en source unique.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -48,6 +49,23 @@ def read_json(path: Path) -> dict[str, Any]:
     return payload
 
 
+def read_json_with_sha256(
+    path: Path,
+) -> tuple[dict[str, Any], str]:
+    raw = path.read_bytes()
+    payload = json.loads(raw)
+
+    if not isinstance(payload, dict):
+        raise ValueError(
+            f"JSON object required: {path}"
+        )
+
+    return (
+        payload,
+        hashlib.sha256(raw).hexdigest(),
+    )
+
+
 def atomic_write_json(
     path: Path,
     payload: dict[str, Any],
@@ -73,6 +91,7 @@ def atomic_write_json(
 def build_gate(
     validation: dict[str, Any],
     validation_path: Path,
+    validation_sha256: str,
     minimum_usable_percent: float,
     minimum_validated_percent: float,
     maximum_warning_symbols: int,
@@ -283,6 +302,7 @@ def build_gate(
             ),
         },
         "input_artifact": str(validation_path),
+        "input_sha256": validation_sha256,
         "input_status": validation.get("status"),
         "providers": {
             "primary": validation.get(
@@ -378,13 +398,17 @@ def main() -> int:
     args = parse_args()
 
     try:
-        validation = read_json(
+        (
+            validation,
+            validation_sha256,
+        ) = read_json_with_sha256(
             args.validation
         )
 
         report = build_gate(
             validation=validation,
             validation_path=args.validation,
+            validation_sha256=validation_sha256,
             minimum_usable_percent=max(
                 args.minimum_usable_percent,
                 0.0,
