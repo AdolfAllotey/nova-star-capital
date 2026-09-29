@@ -585,12 +585,39 @@ def build_locked_candidate(
     }
 
 
+def candidate_authorization_hashes(
+    candidate: dict[str, Any],
+) -> dict[str, str]:
+    payloads = candidate[
+        "candidate_payloads"
+    ]
+
+    candidate_bytes = (
+        candidate_artifact_bytes(
+            prices=payloads["prices"],
+            snapshot=payloads["snapshot"],
+            core=payloads["core"],
+            tactical=payloads["tactical"],
+        )
+    )
+
+    return hash_artifact_bytes(
+        candidate_bytes
+    )
+
+
 def authorization_payload(
     candidate: dict[str, Any],
 ) -> dict[str, Any]:
     provider = candidate["provider"]
     market = candidate["market"]
     universe = candidate["universe"]
+
+    candidate_hashes = (
+        candidate_authorization_hashes(
+            candidate
+        )
+    )
 
     return {
         "market_session": (
@@ -619,6 +646,18 @@ def authorization_payload(
         ),
         "universe_generation_id": (
             universe["generation_id"]
+        ),
+        "prices_candidate_sha256": (
+            candidate_hashes["prices"]
+        ),
+        "snapshot_candidate_sha256": (
+            candidate_hashes["snapshot"]
+        ),
+        "core_candidate_sha256": (
+            candidate_hashes["core"]
+        ),
+        "tactical_candidate_sha256": (
+            candidate_hashes["tactical"]
         ),
         "core_symbols": (
             universe["core_symbols"]
