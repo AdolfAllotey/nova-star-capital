@@ -390,7 +390,9 @@ def main() -> int:
     }
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    from src.v2.utils.file_utils import save_json_file_atomic
+
+    save_json_file_atomic(OUT, payload)
     print(json.dumps(payload, indent=2))
     return 0
 

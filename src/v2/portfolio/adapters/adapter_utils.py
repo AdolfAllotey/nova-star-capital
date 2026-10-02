@@ -11,11 +11,12 @@ def load_json(path):
 
 
 def save_json(data, path):
+    from src.v2.utils.file_utils import save_json_file_atomic
+
     if not isinstance(data, dict):
         data = {"value": data}
     data["timestamp"] = datetime.utcnow().isoformat()
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
+    save_json_file_atomic(path, data)
 
 
 def build_portfolio_input_payload(

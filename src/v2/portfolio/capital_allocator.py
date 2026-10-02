@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from src.v2.utils.file_utils import load_json_file, save_json_file
+from src.v2.utils.file_utils import load_json_file, save_json_file_atomic
 from src.v2.utils.logger import get_logger
 
 logger = get_logger("capital_allocator")
@@ -172,7 +172,7 @@ def run() -> Dict[str, Any]:
         "currency": currency,
         "pockets": {b: {"budget_eur": round(targets[b], 2)} for b in BRICKS},
     }
-    save_json_file(str(POCKETS_PATH), new_pockets)
+    save_json_file_atomic(str(POCKETS_PATH), new_pockets)
 
     for t in transfers:
         instr = {"ts": ts, "engine": "transfer_instruction_v1", **t, "phase": phase_name}

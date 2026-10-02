@@ -112,6 +112,8 @@ summary = {
     }
 }
 
-OUT.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+from src.v2.utils.file_utils import save_json_file_atomic
+
+save_json_file_atomic(OUT, summary)
 
 print(json.dumps(summary, indent=2))

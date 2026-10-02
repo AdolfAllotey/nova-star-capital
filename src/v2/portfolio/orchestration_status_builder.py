@@ -36,8 +36,9 @@ def mtime(path: Path) -> float | None:
 
 
 def save(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    from src.v2.utils.file_utils import save_json_file_atomic
+
+    save_json_file_atomic(path, data)
 
 
 def main() -> int:

@@ -28,9 +28,9 @@ def load_json(path: Path, default: Any) -> Any:
 
 
 def save_json(path: Path, data: Dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        json.dump(data, handle, indent=2, ensure_ascii=False)
+    from src.v2.utils.file_utils import save_json_file_atomic
+
+    save_json_file_atomic(path, data)
 
 
 def safe_float(value: Any, default: float = 0.0) -> float:

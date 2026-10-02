@@ -23,10 +23,10 @@ def ensure_parent(path: Path):
 
 
 def save_json(data, path: Path):
+    from src.v2.utils.file_utils import save_json_file_atomic
+
     data["timestamp"] = datetime.now(timezone.utc).isoformat()
-    ensure_parent(path)
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
+    save_json_file_atomic(path, data)
 
 
 def load_json(path: Path, default=None):
