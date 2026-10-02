@@ -5,6 +5,38 @@ from src.v2.utils.file_utils import get_data_dir, load_json_file
 
 logger = get_logger("exchange_router")
 
+
+def _real_execution_authorized(dd):
+    """Strict positive PROD authorization. Missing/invalid/expired => False."""
+    import json
+    from datetime import datetime, timezone
+
+    p = dd / "governance" / "real_execution_authorization.json"
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return False
+        if raw.get("environment") != "PROD":
+            return False
+        if raw.get("status") != "AUTHORIZED":
+            return False
+        if raw.get("production_authorized") is not True:
+            return False
+        if raw.get("real_execution_allowed") is not True:
+            return False
+
+        expires = raw.get("expires_at")
+        if not isinstance(expires, str) or not expires:
+            return False
+
+        exp = datetime.fromisoformat(expires.replace("Z", "+00:00"))
+        if exp.tzinfo is None:
+            return False
+
+        return exp.astimezone(timezone.utc) > datetime.now(timezone.utc)
+    except Exception:
+        return False
+
 def _hard_gate() -> tuple[bool, str]:
     """
     Défense en profondeur:
@@ -16,9 +48,16 @@ def _hard_gate() -> tuple[bool, str]:
     Fail-safe: si lecture impossible => block
     """
     try:
-        env = str(os.getenv("NSC_ENV", "")).upper()
-        if env == "PREPROD":
-            return False, "env=PREPROD => execution disabled"
+        env = str(os.getenv("NSC_ENV", "")).upper().strip()
+
+        # Positive authorization boundary:
+        # real exchange execution is impossible outside PROD.
+        if env != "PROD":
+            return False, f"env={env or 'UNSET'} => real execution disabled"
+
+        # REAL_TRADING is necessary but never sufficient by itself.
+        if os.getenv("REAL_TRADING", "False").lower() != "true":
+            return False, "REAL_TRADING!=true"
 
         data_dir = get_data_dir()
         dd = Path(data_dir)
@@ -31,22 +70,33 @@ def _hard_gate() -> tuple[bool, str]:
             if bool(ks.get("hard_block")) or (bool(ks.get("enabled")) and str(ks.get("mode")) == "hard_block"):
                 return False, "kill_switch_hard_block"
 
-        if isinstance(gov, dict):
-            if bool(gov.get("hard_block")):
-                return False, "governance_hard_block"
-            ap = str(gov.get("action_policy") or "").upper()
-            if ap in {"SIMULATED_ONLY", "PAPER", "DRY_RUN"}:
-                return False, f"governance_action_policy={ap}"
+        if not isinstance(gov, dict) or not gov:
+            return False, "governance_missing_or_invalid"
 
-        if isinstance(plan, dict):
-            st = str(plan.get("status") or "").lower()
-            if st in {"blocked", "hard_block", "hard_blocked"}:
-                return False, f"execution_plan_status={st}"
-            mode = str(plan.get("execution_mode") or "").upper()
-            if mode in {"SIMULATED_ONLY", "PAPER", "DRY_RUN"}:
-                return False, f"execution_mode={mode}"
+        if bool(gov.get("hard_block")):
+            return False, "governance_hard_block"
 
-        return True, "ok"
+        ap = str(gov.get("action_policy") or "").upper().strip()
+        if ap != "LIVE":
+            return False, f"governance_action_policy={ap or 'MISSING'}"
+
+        # Explicit institutional authorization is mandatory.
+        # Missing/false/invalid authorization always blocks.
+        if not _real_execution_authorized(dd):
+            return False, "real_execution_authorization_invalid"
+
+        if not isinstance(plan, dict) or not plan:
+            return False, "execution_plan_missing_or_invalid"
+
+        st = str(plan.get("status") or "").lower()
+        if st in {"blocked", "hard_block", "hard_blocked"}:
+            return False, f"execution_plan_status={st}"
+
+        mode = str(plan.get("execution_mode") or "").upper().strip()
+        if mode != "LIVE":
+            return False, f"execution_mode={mode or 'MISSING'}"
+
+        return True, "positive_real_execution_authorization"
     except Exception as e:
         logger.exception("[exchange_router] HARD GATE exception => block: %s", e)
         return False, f"hard_gate_exception:{type(e).__name__}:{e}"

@@ -55,6 +55,38 @@ def _get_qty(order: dict) -> float:
     )
 
 
+
+def _real_execution_authorized(dd):
+    """Strict positive PROD authorization. Missing/invalid/expired => False."""
+    import json
+    from datetime import datetime, timezone
+
+    p = dd / "governance" / "real_execution_authorization.json"
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return False
+        if raw.get("environment") != "PROD":
+            return False
+        if raw.get("status") != "AUTHORIZED":
+            return False
+        if raw.get("production_authorized") is not True:
+            return False
+        if raw.get("real_execution_allowed") is not True:
+            return False
+
+        expires = raw.get("expires_at")
+        if not isinstance(expires, str) or not expires:
+            return False
+
+        exp = datetime.fromisoformat(expires.replace("Z", "+00:00"))
+        if exp.tzinfo is None:
+            return False
+
+        return exp.astimezone(timezone.utc) > datetime.now(timezone.utc)
+    except Exception:
+        return False
+
 def _nsc_execution_hard_gate(data_dir: str):
     """Retourne (ok_to_execute: bool, reason: str). FAIL-SAFE: if error => block."""
     try:
@@ -65,24 +97,33 @@ def _nsc_execution_hard_gate(data_dir: str):
         gov = load_json_file(dd / "analysis" / "governance_engine_pro.json", default={})
         ks = load_json_file(dd / "trading" / "kill_switch.json", default={})
 
-        # 0) PREPROD is ALWAYS blocked for real trading (absolute safety)
-        env = str(os.getenv("NSC_ENV", "")).upper()
-        if env == "PREPROD":
-            return False, "env=PREPROD => real execution disabled"
+        # 0) Positive authorization boundary.
+        # Real execution is impossible outside PROD.
+        env = str(os.getenv("NSC_ENV", "")).upper().strip()
+        if env != "PROD":
+            return False, f"env={env or 'UNSET'} => real execution disabled"
+
+        if not REAL_TRADING:
+            return False, "REAL_TRADING!=true"
 
         # 1) Kill-switch prioritaire
         if isinstance(ks, dict):
             if bool(ks.get("enabled")) is True and (bool(ks.get("hard_block")) or str(ks.get("mode")) == "hard_block"):
                 return False, "kill_switch_hard_block"
 
-        # 2) Gouvernance KING (source-of-truth)
-        if isinstance(gov, dict):
-            if bool(gov.get("hard_block")):
-                return False, "governance_hard_block"
+        # 2) Governance is authoritative and must positively authorize REAL.
+        if not isinstance(gov, dict) or not gov:
+            return False, "governance_missing_or_invalid"
 
-            ap = str(gov.get("action_policy") or "").upper()
-            if ap in {"SIMULATED_ONLY", "PAPER", "DRY_RUN"}:
-                return False, f"governance_action_policy={ap}"
+        if bool(gov.get("hard_block")):
+            return False, "governance_hard_block"
+
+        ap = str(gov.get("action_policy") or "").upper().strip()
+        if ap != "LIVE":
+            return False, f"governance_action_policy={ap or 'MISSING'}"
+
+        if not _real_execution_authorized(dd):
+            return False, "real_execution_authorization_invalid"
 
         # 3) Execution plan checks
         if isinstance(plan, dict):
@@ -90,9 +131,9 @@ def _nsc_execution_hard_gate(data_dir: str):
             if st in {"blocked", "hard_block", "hard_blocked"}:
                 return False, f"execution_plan_status={st}"
 
-            mode = str(plan.get("execution_mode") or "").upper()
-            if mode in {"SIMULATED_ONLY", "PAPER", "DRY_RUN"}:
-                return False, f"execution_mode={mode}"
+            mode = str(plan.get("execution_mode") or "").upper().strip()
+            if mode != "LIVE":
+                return False, f"execution_mode={mode or 'MISSING'}"
 
             orders = plan.get("orders")
             if isinstance(orders, list) and len(orders) == 0:
@@ -178,7 +219,21 @@ def run(data_dir: str | None = None) -> dict:
         # Real execution
         try:
             # exchange_router.place_order(token_symbol, amount, side="buy")
-            route_place_order(symbol, float(qty), side=side)
+            result = route_place_order(symbol, float(qty), side=side)
+
+            if isinstance(result, dict):
+                router_status = str(result.get("status") or "").lower()
+                if router_status in {"blocked", "error", "failed", "rejected"}:
+                    errors += 1
+                    logger.error(
+                        "[trading_executor] ROUTER REJECTED symbol=%s side=%s status=%s reason=%s",
+                        symbol,
+                        side,
+                        router_status,
+                        result.get("reason"),
+                    )
+                    continue
+
             executed += 1
             logger.info("[trading_executor] EXECUTED %s %s qty=%s", side, symbol, qty)
             try:
