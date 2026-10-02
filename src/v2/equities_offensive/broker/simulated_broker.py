@@ -37,17 +37,132 @@ def load_json(path: Path, default: Any = None) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
 
 def save_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        from src.v2.utils.file_utils import save_json_file  # type: ignore
-        save_json_file(str(path), data)
-    except Exception:
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    from src.v2.utils.file_utils import save_json_file_atomic
+    save_json_file_atomic(str(path), data)
 
 def append_jsonl(path: Path, obj: Dict[str, Any]) -> None:
+    """Durable append for execution journals."""
+    import os
+
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    payload = json.dumps(
+        obj,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ) + "\n"
+
     with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+        f.write(payload)
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def load_fill_journal_strict(
+    fills_path: Path = FILLS_PATH,
+) -> List[Dict[str, Any]]:
+    """
+    Strict immutable fill-journal reader.
+
+    Any malformed FILLED event, missing execution identity,
+    or duplicate fill/order identity fails closed.
+    """
+    if not fills_path.exists():
+        return []
+
+    rows: List[Dict[str, Any]] = []
+    fill_ids = set()
+    order_ids = set()
+
+    with fills_path.open("r", encoding="utf-8") as f:
+        for line_no, raw in enumerate(f, 1):
+            if not raw.strip():
+                continue
+
+            try:
+                row = json.loads(raw)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Corrupt fill journal line {line_no}"
+                ) from exc
+
+            if not isinstance(row, dict):
+                raise RuntimeError(
+                    f"Invalid fill journal row {line_no}"
+                )
+
+            if str(row.get("status") or "").upper() != "FILLED":
+                raise RuntimeError(
+                    f"Unexpected fill journal status line {line_no}"
+                )
+
+            fill_id = str(row.get("fill_id") or "").strip()
+            order_id = str(row.get("order_id") or "").strip()
+            symbol = str(row.get("symbol") or "").strip()
+            side = str(row.get("side") or "").upper().strip()
+
+            try:
+                qty = float(row.get("qty") or 0.0)
+                price = float(row.get("fill_price") or 0.0)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Invalid fill numeric fields line {line_no}"
+                ) from exc
+
+            if (
+                not fill_id
+                or not order_id
+                or not symbol
+                or side not in {"BUY", "SELL"}
+                or qty <= 0
+                or price <= 0
+            ):
+                raise RuntimeError(
+                    f"Incomplete fill journal row {line_no}"
+                )
+
+            if fill_id in fill_ids:
+                raise RuntimeError(
+                    f"Duplicate fill_id in journal: {fill_id}"
+                )
+
+            if order_id in order_ids:
+                raise RuntimeError(
+                    f"Duplicate order_id in journal: {order_id}"
+                )
+
+            fill_ids.add(fill_id)
+            order_ids.add(order_id)
+            rows.append(row)
+
+    return rows
+
+
+def replay_positions_from_fills(
+    rows: List[Dict[str, Any]],
+) -> Dict[str, Position]:
+    """Deterministically rebuild positions from validated fills."""
+    positions: Dict[str, Position] = {}
+
+    for row in rows:
+        apply_fill(
+            positions,
+            str(row["symbol"]).strip(),
+            str(row["side"]).upper().strip(),
+            float(row["qty"]),
+            float(row["fill_price"]),
+        )
+
+    return positions
+
+
+def durable_filled_order_ids(
+    fills_path: Path = FILLS_PATH,
+) -> set:
+    return {
+        str(row["order_id"])
+        for row in load_fill_journal_strict(fills_path)
+    }
 
 def sha16(obj: Any) -> str:
     s = json.dumps(obj, sort_keys=True, ensure_ascii=False)
@@ -140,6 +255,101 @@ def build_exposure_snapshot(pos: Dict[str, Position]) -> Dict[str, Any]:
 
 
 
+def positions_document(
+    positions: Dict[str, Position],
+) -> Dict[str, Dict[str, float]]:
+    """Canonical persisted representation of simulator positions."""
+    return {
+        sym: {
+            "qty": p.qty,
+            "avg_price": p.avg_price,
+        }
+        for sym, p in positions.items()
+    }
+
+
+def reconcile_positions_from_fill_journal(
+    fills_path: Path = FILLS_PATH,
+    positions_path: Path = POSITIONS_PATH,
+) -> Tuple[Dict[str, Position], bool]:
+    """
+    Rebuild the derived position snapshot from the authoritative
+    immutable fill journal.
+
+    Returns (positions, repaired).
+
+    Journal corruption/duplicate identity fails closed.
+    A missing or divergent derived snapshot is repaired atomically.
+    """
+    journal_existed = fills_path.exists()
+    rows = load_fill_journal_strict(fills_path)
+    journal_has_authority = bool(rows)
+
+    # A missing, empty, or whitespace-only journal must never silently
+    # erase an existing open-position snapshot. At least one strictly
+    # valid durable fill is required before an existing open position
+    # may be reconstructed from journal authority.
+    if (not journal_has_authority) and positions_path.exists():
+        from src.v2.utils.file_utils import load_json_file_strict
+
+        current_positions = load_json_file_strict(
+            str(positions_path)
+        )
+        if not isinstance(current_positions, dict):
+            raise RuntimeError(
+                "positions snapshot is not a JSON object"
+            )
+
+        try:
+            has_open_position = any(
+                isinstance(v, dict)
+                and abs(float(v.get("qty", 0) or 0)) > 0
+                for v in current_positions.values()
+            )
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "positions snapshot contains invalid quantity"
+            ) from exc
+
+        if has_open_position:
+            journal_state = (
+                "empty_or_non_authoritative"
+                if journal_existed
+                else "missing"
+            )
+            raise RuntimeError(
+                f"fill journal {journal_state} while open "
+                "positions snapshot exists"
+            )
+    replayed = replay_positions_from_fills(rows)
+    expected = positions_document(replayed)
+
+    current = None
+
+    if positions_path.exists():
+        try:
+            from src.v2.utils.file_utils import (
+                load_json_file_strict,
+            )
+            current = load_json_file_strict(
+                str(positions_path)
+            )
+        except Exception:
+            current = None
+
+    if current == expected:
+        return replayed, False
+
+    from src.v2.utils.file_utils import save_json_file_atomic
+
+    save_json_file_atomic(
+        str(positions_path),
+        expected,
+    )
+
+    return replayed, True
+
+
 def _get_orders_seen(store, state) -> set:
     """
     Backward-compatible: uses StateStore methods if available,
@@ -147,7 +357,7 @@ def _get_orders_seen(store, state) -> set:
     """
     if hasattr(store, "get_orders_seen"):
         try:
-            seen = _get_orders_seen(store, state)
+            seen = store.get_orders_seen(state)
             return set(seen) if isinstance(seen, (list, set, tuple)) else set()
         except Exception:
             pass
@@ -432,21 +642,27 @@ def main():
             return
 
 
-        # Idempotence at order level
-        seen = _get_orders_seen(store, state)
+        # The immutable fill journal is the durable execution
+        # authority. Derived positions are repaired from it before
+        # any new order can be processed.
+        positions, positions_repaired = (
+            reconcile_positions_from_fill_journal(
+                FILLS_PATH,
+                POSITIONS_PATH,
+            )
+        )
+
+        # Idempotence is durable across plan rollover/restart.
+        # StateStore remains an additional same-run/cache guard only.
+        durable_seen = durable_filled_order_ids(FILLS_PATH)
+        seen = _get_orders_seen(store, state) | durable_seen
 
         # In preprod we expect SIMULATED_ONLY (orders likely empty),
-        # but we still support sim fills if orders exist.
+        # but we still support simulated fills if orders exist.
         created = 0
-
-        # Ensure fills file exists even when no fills are created
-        FILLS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        FILLS_PATH.touch(exist_ok=True)
 
         REJECTED_PATH.parent.mkdir(parents=True, exist_ok=True)
         REJECTED_PATH.touch(exist_ok=True)
-
-        positions = load_positions()
 
         # Durable authority for economic BUY idempotence.
         # This is reconstructed from immutable FILLED events
@@ -796,6 +1012,13 @@ def main():
 
             append_jsonl(FILLS_PATH, fill)
 
+            # The durable journal is authoritative. Update the local
+            # idempotency sets immediately after the durable append so
+            # an identical order later in the same process cannot fill
+            # twice even before StateStore persistence.
+            durable_seen.add(oid)
+            seen.add(oid)
+
             # Same-process protection if multiple orders in one
             # plan unexpectedly carry the same economic signal.
             if (
@@ -817,11 +1040,22 @@ def main():
             _mark_order_seen(store, state, oid)
             created += 1
 
+        # positions.json is the broker-derived snapshot.
+        # exposure_snapshot.json has a single canonical writer:
+        # execution/position_tracker.py, which runs immediately after
+        # the broker in run_equities_pipeline.py.
         save_positions(positions)
-        snap = build_exposure_snapshot(positions)
-        save_json(EXPOSURE_PATH, snap)
 
-        _set_last_broker_run(store, state, {"ts": utc_now_iso(), "plan_id": plan_id, "fills_created": created})
+        _set_last_broker_run(
+            store,
+            state,
+            {
+                "ts": utc_now_iso(),
+                "plan_id": plan_id,
+                "fills_created": created,
+                "positions_repaired": positions_repaired,
+            },
+        )
         store.save(state)
 
         print(json.dumps({"plan_id": plan_id, "policy": policy, "fills_created": created}, ensure_ascii=False, indent=2))

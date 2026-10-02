@@ -39,12 +39,10 @@ def load_json(path: Path, default: Any = None) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
 
 def save_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        from src.v2.utils.file_utils import save_json_file  # type: ignore
-        save_json_file(str(path), data)
-    except Exception:
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    """Atomic, fail-fast persistence for canonical tracker outputs."""
+    from src.v2.utils.file_utils import save_json_file_atomic
+
+    save_json_file_atomic(str(path), data)
 
 def read_jsonl(path: Path, limit: int = 5000) -> List[Dict[str, Any]]:
     if not path.exists():

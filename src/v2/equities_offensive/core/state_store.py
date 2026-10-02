@@ -19,24 +19,15 @@ def sha256(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
 def _load_json(path: Path, default: Any = None) -> Any:
-    # Prefer NSC utilities if present
-    try:
-        from src.v2.utils.file_utils import load_json_file  # type: ignore
-        return load_json_file(str(path), default=default)
-    except Exception:
-        if not path.exists():
-            return default
-        with path.open("r", encoding="utf-8") as f:
-            return json.load(f)
+    if not path.exists():
+        return default
+
+    from src.v2.utils.file_utils import load_json_file_strict
+    return load_json_file_strict(str(path))
 
 def _save_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        from src.v2.utils.file_utils import save_json_file  # type: ignore
-        save_json_file(str(path), data)
-    except Exception:
-        with path.open("w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+    from src.v2.utils.file_utils import save_json_file_atomic
+    save_json_file_atomic(str(path), data)
 
 @dataclass
 class StateStore:

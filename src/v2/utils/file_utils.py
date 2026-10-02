@@ -173,6 +173,71 @@ def save_json_file(path: PathLike, data: Any, indent: int = 2) -> str:
     return str(p)
 
 
+
+def load_json_file_strict(path: PathLike) -> Any:
+    """Strict JSON loader: missing, empty, null or corrupt => exception."""
+    from pathlib import Path
+    import json
+
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(str(p))
+
+    raw = p.read_text(encoding="utf-8")
+    if not raw.strip():
+        raise ValueError(f"Empty JSON file: {p}")
+
+    data = json.loads(raw)
+    if data is None:
+        raise ValueError(f"Null JSON document: {p}")
+
+    return data
+
+
+def save_json_file_atomic(path: PathLike, data: Any, indent: int = 2) -> str:
+    """Strict durable JSON write: temp file + fsync + atomic replace."""
+    from pathlib import Path
+    import json
+    import os
+    import tempfile
+
+    if data is None:
+        raise ValueError("Refusing to persist None as critical JSON")
+
+    p = _resolve_path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{p.name}.",
+        suffix=".tmp",
+        dir=str(p.parent),
+    )
+
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=indent, ensure_ascii=False)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+
+        os.replace(tmp_name, p)
+
+        dir_fd = os.open(str(p.parent), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+        raise
+
+    return str(p)
+
+
 # ---------------------------------------------------------
 # UTILITAIRE : TIMESTAMP ISO
 # ---------------------------------------------------------
