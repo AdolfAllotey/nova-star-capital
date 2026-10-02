@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import argparse
 import json
 from pathlib import Path
+
+from src.v2.equities_offensive.market.providers.provider_session_clock import (
+    latest_completed_xnys_session,
+)
 from typing import Any
 
 
@@ -380,6 +386,7 @@ def validate_reader_admission(
     active_prices: Path = ACTIVE_PRICES,
     active_snapshot: Path = ACTIVE_SNAPSHOT,
     backup_root: Path = BACKUP_ROOT,
+    reference_time: datetime | None = None,
 ) -> dict[str, Any]:
     assert_no_prepared_transaction(
         backup_root
@@ -441,6 +448,37 @@ def validate_reader_admission(
         result = validate_v2_pair(
             prices,
             snapshot,
+        )
+
+        observed_at = (
+            reference_time
+            if reference_time is not None
+            else datetime.now(timezone.utc)
+        )
+
+        try:
+            expected_market_session = (
+                latest_completed_xnys_session(
+                    reference_time=observed_at,
+                )
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "canonical_xnys_session_authority_unavailable"
+            ) from exc
+
+        if (
+            result["market_session"]
+            != expected_market_session
+        ):
+            raise RuntimeError(
+                "canonical_market_session_stale:"
+                f"actual={result['market_session']}:"
+                f"expected={expected_market_session}"
+            )
+
+        result["expected_market_session"] = (
+            expected_market_session
         )
     else:
         # Legacy admission is intentionally strict:
