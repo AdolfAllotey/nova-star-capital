@@ -1069,9 +1069,29 @@ def main():
             or portfolio_regime in {"risk_off", "risk_off_blocked"}
         )
 
-        action_policy_effective = action_policy if gate_ok else "SIMULATED_ONLY"
-        if is_risk_off:
-            action_policy_effective = "EXIT_ONLY" if gate_ok else "SIMULATED_ONLY"
+        # Governance action_policy is sovereign execution authority.
+        # Market state may only restrict direction; it must never
+        # widen SIMULATED_ONLY into an executable policy.
+        action_policy_effective = (
+            action_policy
+            if gate_ok
+            else "SIMULATED_ONLY"
+        )
+
+        directional_permission = (
+            "EXIT_ONLY"
+            if is_risk_off
+            else "NORMAL"
+        )
+
+        order_build_policy = action_policy_effective
+
+        if (
+            directional_permission == "EXIT_ONLY"
+            and action_policy_effective
+            in {"LIVE", "SIMULATED_EXECUTION", "EXIT_ONLY"}
+        ):
+            order_build_policy = "EXIT_ONLY"
 
         entry_doc, exit_doc, legacy_doc, merged_doc = load_merged_candidates()
 
@@ -1101,6 +1121,7 @@ def main():
                 ) or {}
             ),
             "action_policy": action_policy_effective,
+            "directional_permission": directional_permission,
             "portfolio_target_weight": portfolio_target_weight,
             "portfolio_regime": portfolio_regime,
         }
@@ -1120,6 +1141,7 @@ def main():
                 "plan_id": plan_id,
                 "run_id": run_id,
                 "action_policy": action_policy_effective,
+                "directional_permission": directional_permission,
                 "idempotent_skip": True,
                 "candidate_orders": [],
                 "orders": [],
@@ -1130,7 +1152,10 @@ def main():
             print(json.dumps(out, ensure_ascii=False, indent=2))
             return
 
-        cand_orders, order_reasons = build_orders_from_candidates(merged_doc, action_policy_effective)
+        cand_orders, order_reasons = build_orders_from_candidates(
+            merged_doc,
+            order_build_policy,
+        )
 
         # Guardrail: no BUY execution without live price.
         prices_doc_for_guard = load_json(PRICES_PATH, default={}) or {}
@@ -1151,17 +1176,32 @@ def main():
         orders: List[Dict[str, Any]] = []
         reasons: List[str] = []
         reasons.extend(gate_reasons)
-        if portfolio_target_weight <= 0.0 or "risk_off" in portfolio_regime:
+        if is_risk_off:
             reasons.append(
-                f"portfolio override => {action_policy_effective} (target_weight={portfolio_target_weight}, regime={portfolio_regime})"
+                "portfolio directional restriction => "
+                f"{directional_permission} "
+                f"(action_policy={action_policy_effective}, "
+                f"target_weight={portfolio_target_weight}, "
+                f"regime={portfolio_regime})"
             )
         reasons.extend(order_reasons)
 
         if gate_ok:
-            if action_policy_effective in {"LIVE", "SIMULATED_EXECUTION"}:
+            if action_policy_effective == "SIMULATED_ONLY":
+                orders = []
+            elif (
+                action_policy_effective == "EXIT_ONLY"
+                or directional_permission == "EXIT_ONLY"
+            ):
+                orders = [
+                    o for o in cand_orders
+                    if o["side"] == "SELL"
+                ]
+            elif action_policy_effective in {
+                "LIVE",
+                "SIMULATED_EXECUTION",
+            }:
                 orders = cand_orders
-            elif action_policy_effective == "EXIT_ONLY":
-                orders = [o for o in cand_orders if o["side"] == "SELL"]
             else:
                 orders = []
         else:
@@ -1198,6 +1238,7 @@ def main():
             "plan_id": plan_id,
             "run_id": run_id,
             "action_policy": action_policy_effective,
+            "directional_permission": directional_permission,
             "idempotent_skip": False,
             "candidate_orders": cand_orders,
             "orders": orders,
