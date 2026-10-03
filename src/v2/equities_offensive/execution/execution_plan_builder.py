@@ -348,6 +348,46 @@ def convert_entry_candidate(c: Dict[str, Any]) -> Dict[str, Any] | None:
     }
 
 
+def build_exit_intent_id(
+    *,
+    symbol: str,
+    reason_class: str,
+    position_qty: float,
+    avg_price: float,
+    requested_qty: float,
+) -> str:
+    """
+    Stable economic identity for a SELL intent.
+
+    Deliberately excludes plan_id, timestamps, current market price,
+    PnL and other observation-time values so regeneration of the same
+    economic exit decision cannot create a new executable intent.
+    """
+    payload = {
+        "symbol": str(symbol or "").strip().upper(),
+        "side": "SELL",
+        "reason_class": str(reason_class or "").strip().lower(),
+        "position_basis": {
+            "qty": round(float(position_qty), 8),
+            "avg_price": round(float(avg_price), 8),
+        },
+        "requested_qty": round(float(requested_qty), 8),
+    }
+
+    if (
+        not payload["symbol"]
+        or not payload["reason_class"]
+        or payload["position_basis"]["qty"] <= 0
+        or payload["position_basis"]["avg_price"] <= 0
+        or payload["requested_qty"] <= 0
+    ):
+        raise RuntimeError(
+            "invalid SELL economic intent material"
+        )
+
+    return f"exit_{sha16(payload)}"
+
+
 def size_entry_candidate(
     candidate: Dict[str, Any],
     caps: Dict[str, Any],
@@ -673,6 +713,14 @@ def build_orders_from_candidates(cands: Dict[str, Any], action_policy: str) -> T
         anchored_stop = avg_price * (1.0 - trailing_pct)
 
         if current_price <= anchored_stop:
+            exit_intent_id = build_exit_intent_id(
+                symbol=sym,
+                reason_class="trailing_stop_hit",
+                position_qty=qty,
+                avg_price=avg_price,
+                requested_qty=qty,
+            )
+
             cand_orders.append({
                 "symbol": sym,
                 "side": "SELL",
@@ -682,6 +730,7 @@ def build_orders_from_candidates(cands: Dict[str, Any], action_policy: str) -> T
                 "score": 1.0,
                 "reason": "trailing_stop_hit",
                 "risk_notes": f"regime={portfolio_regime}; trailing_pct={round(trailing_pct,4)}; stop={round(anchored_stop,4)}; price={round(current_price,4)}",
+                "exit_intent_id": exit_intent_id,
             })
             reasons.append(f"trailing stop hit for {sym} at {current_price:.4f} <= {anchored_stop:.4f}")
 
@@ -946,6 +995,38 @@ def build_orders_from_candidates(cands: Dict[str, Any], action_policy: str) -> T
         if side == "SELL" and qty > existing_qty > 0:
             qty = existing_qty
 
+        exit_intent_id = None
+
+        if side == "SELL":
+            try:
+                existing_avg_price = float(
+                    existing.get("avg_price", 0.0)
+                    or 0.0
+                )
+            except Exception:
+                existing_avg_price = 0.0
+
+            reason_text = str(
+                c.get("reason") or "exit_signal"
+            ).strip().lower()
+
+            if reason_text.startswith("take_profit"):
+                reason_class = "take_profit"
+            elif reason_text.startswith("stop_loss"):
+                reason_class = "stop_loss"
+            elif reason_text == "trailing_stop_hit":
+                reason_class = "trailing_stop"
+            else:
+                reason_class = reason_text
+
+            exit_intent_id = build_exit_intent_id(
+                symbol=sym,
+                reason_class=reason_class,
+                position_qty=existing_qty,
+                avg_price=existing_avg_price,
+                requested_qty=qty,
+            )
+
         if side == "BUY":
             capacity_price = get_market_price(
                 sym,
@@ -1001,6 +1082,11 @@ def build_orders_from_candidates(cands: Dict[str, Any], action_policy: str) -> T
             ),
             "timeframe": c.get(
                 "timeframe"
+            ),
+            "exit_intent_id": (
+                exit_intent_id
+                if side == "SELL"
+                else None
             ),
         }
 
@@ -1086,6 +1172,17 @@ def build_orders_from_candidates(cands: Dict[str, Any], action_policy: str) -> T
             if reduce_qty <= 0:
                 continue
 
+            exit_intent_id = build_exit_intent_id(
+                symbol=symbol,
+                reason_class=(
+                    "risk_off_smart_de_risking:"
+                    + risk_note
+                ),
+                position_qty=qty,
+                avg_price=avg_price,
+                requested_qty=reduce_qty,
+            )
+
             exit_orders.append({
                 "symbol": symbol,
                 "side": "SELL",
@@ -1095,6 +1192,7 @@ def build_orders_from_candidates(cands: Dict[str, Any], action_policy: str) -> T
                 "score": 1.0,
                 "reason": "risk_off_smart_de_risking",
                 "risk_notes": risk_note,
+                "exit_intent_id": exit_intent_id,
             })
 
         reasons.append(f"policy=EXIT_ONLY + smart_de-risking => SELL ({len(exit_orders)})")

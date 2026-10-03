@@ -552,6 +552,35 @@ def filled_buy_economic_signal_ids(
     return consumed
 
 
+def filled_sell_exit_intent_ids(
+    fills_path=FILLS_PATH,
+) -> set:
+    """
+    Durable cross-plan SELL intent-consumption authority.
+
+    Legacy SELL fills without exit_intent_id are grandfathered.
+    New successful SELL fills carrying exit_intent_id consume that
+    economic exit intent permanently in the immutable fill journal.
+    """
+    consumed = set()
+
+    for row in load_fill_journal_strict(fills_path):
+        if (
+            str(row.get("side") or "").upper()
+            != "SELL"
+        ):
+            continue
+
+        exit_intent_id = str(
+            row.get("exit_intent_id") or ""
+        ).strip()
+
+        if exit_intent_id:
+            consumed.add(exit_intent_id)
+
+    return consumed
+
+
 def _parse_iso_ts(value):
     # stdlib only, tolerant
     try:
@@ -568,31 +597,58 @@ def _parse_iso_ts(value):
 
 def _is_plan_stale(plan: dict) -> bool:
     """
-    Returns True if plan is older than NSC_EQU_PLAN_MAX_AGE_MIN minutes.
-    If ts is missing/unparseable => not stale (fail-open).
+    Fail-closed execution-plan freshness guard.
+
+    Missing/malformed timestamps, invalid max-age configuration,
+    non-positive max-age, and future timestamps are rejected.
     """
     try:
         import os
         from datetime import datetime, timezone, timedelta
 
-        max_age = os.getenv("NSC_EQU_PLAN_MAX_AGE_MIN", "").strip()
-        max_age_min = int(max_age) if max_age else 180  # default 3h
+        raw_max_age = os.getenv(
+            "NSC_EQU_PLAN_MAX_AGE_MIN",
+            "",
+        ).strip()
+
+        max_age_min = (
+            int(raw_max_age)
+            if raw_max_age
+            else 180
+        )
+
         if max_age_min <= 0:
-            return False
+            return True
 
-        ts = plan.get("ts") or plan.get("generated_at") or plan.get("created_at")
-        dt = _parse_iso_ts(ts) if ts else None
+        ts = (
+            plan.get("ts")
+            or plan.get("generated_at")
+            or plan.get("created_at")
+        )
+
+        if not ts:
+            return True
+
+        dt = _parse_iso_ts(ts)
+
         if dt is None:
-            return False
+            return True
 
-        # normalize timezone
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
 
-        age = datetime.now(timezone.utc) - dt
-        return age > timedelta(minutes=max_age_min)
+        now = datetime.now(timezone.utc)
+        age = now - dt
+
+        if age < timedelta(0):
+            return True
+
+        return age > timedelta(
+            minutes=max_age_min
+        )
+
     except Exception:
-        return False
+        return True
 
 def _ensure_plan_rollover(state: dict, plan_id: str) -> None:
     """
@@ -631,16 +687,17 @@ def main():
             print("Plan missing plan_id")
             return
 
-        # Plan rollover: reset idempotence when plan_id changes
-        _ensure_plan_rollover(state, plan_id)
-
-        # Stale plan guard: skip if plan too old
+        # Stale plan guard must run before rollover so an invalid,
+        # expired, or future-dated plan cannot mutate idempotence state.
         if _is_plan_stale(plan):
             payload = {"ts": utc_now_iso(), "plan_id": plan_id, "fills_created": 0, "status": "SKIPPED_STALE_PLAN"}
             _set_last_broker_run(store, state, payload)
             store.save(state)
             print({"plan_id": plan_id, "policy": policy, "fills_created": 0, "status": "SKIPPED_STALE_PLAN"})
             return
+
+        # Only an admitted fresh plan may roll execution state forward.
+        _ensure_plan_rollover(state, plan_id)
 
 
         # The immutable fill journal is the durable execution
@@ -699,6 +756,12 @@ def main():
         # rather than relying only on transient StateStore data.
         consumed_buy_signal_ids = (
             filled_buy_economic_signal_ids(
+                FILLS_PATH
+            )
+        )
+
+        consumed_sell_exit_intent_ids = (
+            filled_sell_exit_intent_ids(
                 FILLS_PATH
             )
         )
@@ -803,7 +866,12 @@ def main():
                 o.get("timeframe") or ""
             ).strip()
 
-            # Economic idempotence applies only to BUY.
+            exit_intent_id = str(
+                o.get("exit_intent_id") or ""
+            ).strip()
+
+            # Economic idempotence applies to BUY signals and
+            # SELL exit intents independently.
             #
             # Every BUY must carry the complete economic identity
             # contract. Missing provenance fails closed before any
@@ -857,6 +925,52 @@ def main():
                         },
                     )
                     continue
+
+            if (
+                side == "SELL"
+                and not exit_intent_id
+            ):
+                append_jsonl(
+                    REJECTED_PATH,
+                    {
+                        "ts": utc_now_iso(),
+                        "engine": "simulated_broker_v1",
+                        "plan_id": plan_id,
+                        "policy": policy,
+                        "status": "REJECTED",
+                        "reason": (
+                            "missing_exit_intent_identity"
+                        ),
+                        "symbol": symbol,
+                        "side": side,
+                        "order": o,
+                    },
+                )
+                continue
+
+            if (
+                side == "SELL"
+                and exit_intent_id
+                in consumed_sell_exit_intent_ids
+            ):
+                append_jsonl(
+                    REJECTED_PATH,
+                    {
+                        "ts": utc_now_iso(),
+                        "engine": "simulated_broker_v1",
+                        "plan_id": plan_id,
+                        "policy": policy,
+                        "status": "REJECTED",
+                        "reason": (
+                            "exit_intent_already_consumed"
+                        ),
+                        "symbol": symbol,
+                        "side": side,
+                        "exit_intent_id": exit_intent_id,
+                        "order": o,
+                    },
+                )
+                continue
 
             if (
                 side == "BUY"
@@ -1070,6 +1184,11 @@ def main():
             if timeframe:
                 fill["timeframe"] = timeframe
 
+            if exit_intent_id:
+                fill["exit_intent_id"] = (
+                    exit_intent_id
+                )
+
             if quantity_adjustment is not None:
                 fill["quantity_adjustment"] = quantity_adjustment
 
@@ -1095,6 +1214,14 @@ def main():
             ):
                 consumed_buy_signal_ids.add(
                     economic_signal_id
+                )
+
+            if (
+                side == "SELL"
+                and exit_intent_id
+            ):
+                consumed_sell_exit_intent_ids.add(
+                    exit_intent_id
                 )
 
             apply_fill(
