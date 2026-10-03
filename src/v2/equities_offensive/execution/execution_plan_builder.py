@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
+import math
 
 import json
 import os
@@ -12,6 +13,7 @@ from src.v2.equities_offensive.position_sizer import size_qty_from_budget
 
 from src.v2.equities_offensive.core.state_store import StateStore
 from src.v2.equities_offensive.execution.capacity_guard import build_capacity_contract, admit_buy
+from src.v2.portfolio.budget_context import load_budget_context
 
 def data_root() -> Path:
     return Path(os.getenv("NSC_DATA_DIR", "/opt/nsc/data/preprod"))
@@ -753,31 +755,141 @@ def build_orders_from_candidates(cands: Dict[str, Any], action_policy: str) -> T
                 offensive_state = {}
 
             try:
-                current_exposure = float(offensive_state.get("current_exposure_eur") or 0.0)
+                current_exposure = float(
+                    offensive_state.get(
+                        "current_exposure_eur"
+                    )
+                    or 0.0
+                )
             except Exception:
                 current_exposure = 0.0
 
             try:
-                target_exposure = float(offensive_state.get("target_amount_eur") or 0.0)
-            except Exception:
-                target_exposure = 0.0
+                raw_target_exposure = offensive_state.get(
+                    "target_amount_eur"
+                )
+                target_exposure = float(
+                    raw_target_exposure
+                )
+                if (
+                    not math.isfinite(target_exposure)
+                    or target_exposure <= 0.0
+                ):
+                    raise ValueError(
+                        "target_amount_eur_non_positive"
+                    )
+            except Exception as exc:
+                reasons.append(
+                    "skip "
+                    f"{sym} BUY reinforcement: "
+                    "portfolio_target_unavailable:"
+                    f"{type(exc).__name__}"
+                )
+                continue
 
-            # Fallback from live positions if portfolio_state is missing/stale.
-            if current_exposure <= 0:
-                try:
-                    current_exposure = sum(
-                        float(pv.get("qty", 0.0) or 0.0)
-                        * get_market_price(sym_key, fallback=float(pv.get("avg_price", 0.0) or 0.0))
-                        for sym_key, pv in positions.items()
+            # If canonical Portfolio exposure already meets or
+            # exceeds its EUR target, reinforcement is forbidden.
+            # No FX conversion is required for this EUR-vs-EUR veto.
+            if (
+                target_exposure > 0
+                and current_exposure > 0
+                and current_exposure >= target_exposure
+            ):
+                reasons.append(
+                    f"skip {sym} BUY reinforcement "
+                    "sleeve_at_or_above_target "
+                    f"current={round(current_exposure,2)} "
+                    f"target={round(target_exposure,2)}"
+                )
+                continue
+
+            # Portfolio targets are EUR while Offensive equity prices
+            # and position notionals are USD. Use the same canonical
+            # Portfolio/Core FX authority as the capacity guard.
+            try:
+                budget_context = load_budget_context(
+                    ROOT,
+                    scope="equities_offensive",
+                )
+                if budget_context.get("status") != "ok":
+                    raise RuntimeError(
+                        "canonical_budget_context_invalid:"
+                        + str(
+                            budget_context.get("error")
+                            or "unknown"
+                        )
+                    )
+
+                fx = budget_context.get("fx")
+                if not isinstance(fx, dict):
+                    raise RuntimeError(
+                        "canonical_fx_missing"
+                    )
+
+                fx_pair = str(
+                    fx.get("pair") or ""
+                ).upper()
+
+                eur_usd_rate = float(
+                    fx.get("rate") or 0.0
+                )
+
+                if (
+                    fx_pair != "EUR/USD"
+                    or not math.isfinite(
+                        eur_usd_rate
+                    )
+                    or eur_usd_rate <= 0.0
+                ):
+                    raise RuntimeError(
+                        "canonical_eur_usd_fx_invalid"
+                    )
+
+                # If Portfolio exposure is unavailable, reconstruct
+                # native USD exposure from positions and convert it
+                # explicitly back to EUR.
+                if current_exposure <= 0:
+                    exposure_usd = sum(
+                        float(
+                            pv.get("qty", 0.0)
+                            or 0.0
+                        )
+                        * get_market_price(
+                            sym_key,
+                            fallback=float(
+                                pv.get(
+                                    "avg_price",
+                                    0.0,
+                                )
+                                or 0.0
+                            ),
+                        )
+                        for sym_key, pv
+                        in positions.items()
                         if isinstance(pv, dict)
                     )
-                except Exception:
-                    current_exposure = 0.0
 
-            if target_exposure > 0 and current_exposure >= target_exposure:
+                    if (
+                        not math.isfinite(
+                            exposure_usd
+                        )
+                        or exposure_usd < 0.0
+                    ):
+                        raise RuntimeError(
+                            "fallback_exposure_usd_invalid"
+                        )
+
+                    current_exposure = (
+                        exposure_usd
+                        / eur_usd_rate
+                    )
+
+            except Exception as exc:
                 reasons.append(
-                    f"skip {sym} BUY reinforcement sleeve_at_or_above_target "
-                    f"current={round(current_exposure,2)} target={round(target_exposure,2)}"
+                    "skip "
+                    f"{sym} BUY reinforcement: "
+                    "canonical_fx_or_exposure_unavailable:"
+                    f"{type(exc).__name__}"
                 )
                 continue
 
@@ -792,8 +904,19 @@ def build_orders_from_candidates(cands: Dict[str, Any], action_policy: str) -> T
                 continue
 
             if target_exposure > 0 and current_exposure > 0:
-                remaining_gap = max(0.0, target_exposure - current_exposure)
-                reinforce_qty = min(reinforce_qty, remaining_gap / px)
+                remaining_gap_eur = max(
+                    0.0,
+                    target_exposure
+                    - current_exposure,
+                )
+                remaining_gap_usd = (
+                    remaining_gap_eur
+                    * eur_usd_rate
+                )
+                reinforce_qty = min(
+                    reinforce_qty,
+                    remaining_gap_usd / px,
+                )
 
             if reinforce_qty <= 0:
                 reasons.append(f"skip {sym} BUY already in position qty={existing_qty} reinforce_qty<=0")
