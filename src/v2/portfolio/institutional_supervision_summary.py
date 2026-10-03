@@ -13,16 +13,39 @@ INSTITUTIONAL_COMPLETION = BASE / "institutional_supervision_completion.json"
 OUT = BASE / "institutional_supervision_summary.json"
 
 
-def load(path: Path) -> dict:
+def load_required(path: Path) -> dict:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise RuntimeError(f"required_authority_unreadable:{path}") from exc
+    if not isinstance(value, dict) or not value:
+        raise RuntimeError(f"required_authority_invalid:{path}")
+    return value
+
+
+def load_optional(path: Path) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
+    return value if isinstance(value, dict) else {}
 
 
-global_audit = load(GLOBAL_AUDIT)
-gate = load(SUPERVISION_GATE)
-completion = load(INSTITUTIONAL_COMPLETION)
+global_audit = load_required(GLOBAL_AUDIT)
+gate = load_required(SUPERVISION_GATE)
+completion = load_optional(INSTITUTIONAL_COMPLETION)
+
+raw_audit_summary = global_audit.get("summary")
+if not isinstance(raw_audit_summary, dict):
+    raise RuntimeError("global_audit_summary_invalid")
+if "blocking_checks" not in raw_audit_summary:
+    raise RuntimeError("global_audit_blocking_checks_missing")
+
+raw_blocking_checks = raw_audit_summary["blocking_checks"]
+if isinstance(raw_blocking_checks, bool) or not isinstance(raw_blocking_checks, int):
+    raise RuntimeError("global_audit_blocking_checks_invalid")
+if raw_blocking_checks < 0:
+    raise RuntimeError("global_audit_blocking_checks_invalid")
 
 policy_context = gate.get("policy_context") or {}
 preprod_safe_nominal = (
@@ -32,42 +55,31 @@ preprod_safe_nominal = (
     and gate.get("mode") == "SAFE"
 )
 
-domains = global_audit.get("domains", {}) if isinstance(global_audit, dict) else {}
-orchestration_domain = domains.get("orchestration", {}) if isinstance(domains, dict) else {}
-
-orchestration_safe_nominal = (
-    preprod_safe_nominal
-    and orchestration_domain.get("status") == "BLOCKING"
-    and orchestration_domain.get("blocking") is True
-)
+domains = global_audit.get("domains")
+if not isinstance(domains, dict):
+    raise RuntimeError("global_audit_domains_invalid")
 
 effective_domains = dict(domains)
-if orchestration_safe_nominal:
-    effective_domains["orchestration"] = {
-        **orchestration_domain,
-        "status": "OK",
-        "blocking": False,
-        "effective_status": "PREPROD_SAFE_NOMINAL",
-    }
-
-raw_audit_summary = global_audit.get("summary", {}) if isinstance(global_audit, dict) else {}
-effective_blocking_checks = int(raw_audit_summary.get("blocking_checks") or 0)
+effective_blocking_checks = raw_blocking_checks
 effective_ok_checks = int(raw_audit_summary.get("ok_checks") or 0)
 
-if orchestration_safe_nominal and effective_blocking_checks > 0:
-    effective_blocking_checks -= 1
-    effective_ok_checks += 1
+effective_global_status = global_audit.get("global_status")
+effective_alert_level = global_audit.get("alert_level")
+effective_blocking = bool(global_audit.get("blocking", True))
 
-effective_global_status = "OK" if effective_blocking_checks == 0 else global_audit.get("global_status")
-effective_alert_level = "OK" if effective_blocking_checks == 0 else global_audit.get("alert_level")
-effective_blocking = effective_blocking_checks > 0
+audit_contract_ok = (
+    effective_global_status == "OK"
+    and effective_blocking is False
+    and effective_blocking_checks == 0
+)
+
+if not audit_contract_ok:
+    effective_blocking = True
 
 institutional_layer_ready = (
-    effective_global_status == "OK"
-    and (
-        gate.get("gate_open") is True
-        or preprod_safe_nominal
-    )
+    audit_contract_ok
+    and gate.get("gate_open") is True
+    and gate.get("blocking") is False
 )
 
 summary = {

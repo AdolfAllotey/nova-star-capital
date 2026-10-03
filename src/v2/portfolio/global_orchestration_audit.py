@@ -104,10 +104,19 @@ def main() -> int:
         }
     )
 
-    master_summary = master.get("summary", {}) if isinstance(master, dict) else {}
+    master_valid = (
+        isinstance(master, dict)
+        and master.get("status") is not None
+        and isinstance(master.get("summary"), dict)
+        and "errors_count" in master["summary"]
+        and "missing_artifacts" in master["summary"]
+        and isinstance(master["summary"].get("missing_artifacts"), list)
+    )
+    master_summary = master.get("summary", {}) if master_valid else {}
     master_blocking = (
-        int(master_summary.get("errors_count", 0) or 0) > 0
-        or len(master_summary.get("missing_artifacts", []) or []) > 0
+        not master_valid
+        or int(master_summary.get("errors_count") or 0) > 0
+        or len(master_summary.get("missing_artifacts") or []) > 0
     )
 
     add_check(

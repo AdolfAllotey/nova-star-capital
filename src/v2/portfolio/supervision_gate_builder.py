@@ -68,12 +68,14 @@ raw_gate_open = (
 # but real execution remains disabled.
 preprod_safe_nominal = preprod_safe and action_policy in {"SIMULATED_ONLY", "SIGNAL_ONLY", "SHADOW_ONLY"}
 
-gate_open = raw_gate_open or preprod_safe_nominal
+# PREPROD safe mode constrains execution permissions only.
+# It must never override upstream audit health.
+gate_open = raw_gate_open
 mode = "SAFE" if preprod_safe_nominal else ("NORMAL" if raw_gate_open else "SAFE")
-effective_global_status = "OK" if preprod_safe_nominal else global_status
-effective_blocking = False if preprod_safe_nominal else blocking
-effective_alert_level = "OK" if preprod_safe_nominal else alert_level
-effective_blocking_checks = 0 if preprod_safe_nominal else blocking_checks
+effective_global_status = global_status
+effective_blocking = blocking
+effective_alert_level = alert_level
+effective_blocking_checks = blocking_checks
 
 payload = {
     "status": "ok",
