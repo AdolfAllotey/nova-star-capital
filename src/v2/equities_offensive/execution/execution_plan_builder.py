@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Tuple
 from src.v2.equities_offensive.position_sizer import size_qty_from_budget
 
 from src.v2.equities_offensive.core.state_store import StateStore
+from src.v2.equities_offensive.execution.capacity_guard import build_capacity_contract, admit_buy
 
 def data_root() -> Path:
     return Path(os.getenv("NSC_DATA_DIR", "/opt/nsc/data/preprod"))
@@ -635,6 +636,15 @@ def build_orders_from_candidates(cands: Dict[str, Any], action_policy: str) -> T
     if not isinstance(governance_caps, dict):
         governance_caps = {}
 
+    capacity_contract = build_capacity_contract(
+        governance=governance,
+        scope="equities_offensive",
+        root=ROOT,
+    )
+    admitted_new_entries = 0
+    admitted_buy_notional = 0.0
+    admitted_buy_notional_by_asset = {}
+
     sell_last_ts = last_sell_times_by_symbol()
     cooldown_min = get_reentry_cooldown_minutes()
     now = datetime.now(timezone.utc)
@@ -812,6 +822,41 @@ def build_orders_from_candidates(cands: Dict[str, Any], action_policy: str) -> T
 
         if side == "SELL" and qty > existing_qty > 0:
             qty = existing_qty
+
+        if side == "BUY":
+            capacity_price = get_market_price(
+                sym,
+                fallback=0.0,
+            )
+            if capacity_price <= 0:
+                reasons.append(
+                    f"skip {sym} BUY capacity_price_unavailable"
+                )
+                continue
+
+            admission = admit_buy(
+                contract=capacity_contract,
+                positions=positions,
+                symbol=sym,
+                qty=qty,
+                price=capacity_price,
+                new_entries_used=admitted_new_entries,
+                buy_notional_used=admitted_buy_notional,
+                buy_notional_by_asset_used=admitted_buy_notional_by_asset.get(sym, 0.0),
+                price_resolver=get_market_price,
+            )
+
+            if not admission.allowed:
+                reasons.append(
+                    f"skip {sym} BUY capacity_rejected:"
+                    f"{admission.reason}"
+                )
+                continue
+
+            if admission.is_new_position:
+                admitted_new_entries += 1
+            admitted_buy_notional += admission.order_notional_usd
+            admitted_buy_notional_by_asset[sym] = admitted_buy_notional_by_asset.get(sym, 0.0) + admission.order_notional_usd
 
         order = {
             "symbol": sym,

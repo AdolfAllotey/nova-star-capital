@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.v2.equities_offensive.core.state_store import StateStore
+from src.v2.equities_offensive.execution.capacity_guard import build_capacity_contract, admit_buy
 
 def data_root() -> Path:
     import os
@@ -657,6 +658,35 @@ def main():
         durable_seen = durable_filled_order_ids(FILLS_PATH)
         seen = _get_orders_seen(store, state) | durable_seen
 
+        governance_path = (
+            ROOT
+            / "equities_offensive/governance/"
+            "governance_engine_pro.json"
+        )
+        try:
+            governance_doc = json.loads(
+                governance_path.read_text(encoding="utf-8")
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "capacity_governance_unavailable:"
+                f"{type(exc).__name__}:{exc}"
+            ) from exc
+
+        if not isinstance(governance_doc, dict):
+            raise RuntimeError(
+                "capacity_governance_invalid_document"
+            )
+
+        capacity_contract = build_capacity_contract(
+            governance=governance_doc,
+            scope="equities_offensive",
+            root=ROOT,
+        )
+        admitted_new_entries = 0
+        admitted_buy_notional = 0.0
+        admitted_buy_notional_by_asset = {}
+
         # In preprod we expect SIMULATED_ONLY (orders likely empty),
         # but we still support simulated fills if orders exist.
         created = 0
@@ -966,6 +996,39 @@ def main():
                 _mark_order_seen(store, state, oid)
                 continue
 
+            if side == "BUY":
+                admission = admit_buy(
+                    contract=capacity_contract,
+                    positions=positions,
+                    symbol=symbol,
+                    qty=effective_qty,
+                    price=price,
+                    new_entries_used=admitted_new_entries,
+                    buy_notional_used=admitted_buy_notional,
+                    buy_notional_by_asset_used=admitted_buy_notional_by_asset.get(symbol, 0.0),
+                    price_resolver=get_price,
+                )
+
+                if not admission.allowed:
+                    append_jsonl(
+                        REJECTED_PATH,
+                        {
+                            "ts": utc_now_iso(),
+                            "order_id": oid,
+                            "symbol": symbol,
+                            "side": side,
+                            "requested_qty": requested_qty,
+                            "effective_qty": effective_qty,
+                            "price": price,
+                            "reason": (
+                                "capacity_rejected:"
+                                f"{admission.reason}"
+                            ),
+                        },
+                    )
+                    continue
+
+
             fill = {
                 "ts": utc_now_iso(),
                 "engine": "simulated_broker_v1",
@@ -1011,6 +1074,11 @@ def main():
                 fill["quantity_adjustment"] = quantity_adjustment
 
             append_jsonl(FILLS_PATH, fill)
+            if side == "BUY":
+                if admission.is_new_position:
+                    admitted_new_entries += 1
+                admitted_buy_notional += admission.order_notional_usd
+                admitted_buy_notional_by_asset[symbol] = admitted_buy_notional_by_asset.get(symbol, 0.0) + admission.order_notional_usd
 
             # The durable journal is authoritative. Update the local
             # idempotency sets immediately after the durable append so

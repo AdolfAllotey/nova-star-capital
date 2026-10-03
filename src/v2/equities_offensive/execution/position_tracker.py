@@ -502,13 +502,11 @@ def apply_budget_cap(caps: dict, scope: str) -> dict:
     if cur_f is None or cur_f <= 0:
         out["max_total_notional_usd"] = budget
     else:
-        # PREPROD: allow a small buffer above the canonical pocket target,
-        # while always retaining the most conservative limit between
-        # Governance and the buffered Portfolio budget.
-        buffered_budget = round(budget * 1.10, 2)
+        # Portfolio pocket is an absolute economic ceiling.
+        # Governance/tracker limits may tighten it, never widen it.
         out["max_total_notional_usd"] = min(
             cur_f,
-            buffered_budget,
+            budget,
         )
 
     return out
