@@ -808,7 +808,7 @@ def run_once(max_new_positions: Optional[int] = None) -> None:
         momentum_main()
     except Exception:
         logger.exception("[trading_kernel] Erreur lors de momentum_scoring.main()")
-        return
+        raise
 
     # Observation prospective H1/H2 — strictement passive.
     # Une défaillance du Shadow ne doit jamais interrompre le pipeline principal.
@@ -827,7 +827,7 @@ def run_once(max_new_positions: Optional[int] = None) -> None:
         signal_voting_main()
     except Exception:
         logger.exception("[trading_kernel] Erreur lors de signal_voting.main()")
-        return
+        raise
 
     # Étape 2.33/4 : market_regime_detector
     try:
@@ -858,7 +858,7 @@ def run_once(max_new_positions: Optional[int] = None) -> None:
 
     except Exception:
         logger.exception("[trading_kernel] Erreur lors de l'étape market_regime_detector (CLI)")
-        return
+        raise
 
     logger.info("[trading_kernel] Étape 2.5/4 : risk_engine_pro")
     try:
@@ -866,7 +866,7 @@ def run_once(max_new_positions: Optional[int] = None) -> None:
         subprocess.run([sys.executable, "-m", "src.v2.analysis.risk_engine_pro"], check=True)
     except Exception:
         logger.exception("[trading_kernel] Erreur lors de risk_engine_pro")
-        return
+        raise
 
     # G152_TEMPORAL_SOVEREIGNTY_V1
     # Build canonical risk limits from the CURRENT risk-engine state.
@@ -876,7 +876,7 @@ def run_once(max_new_positions: Optional[int] = None) -> None:
         risk_controller_main()
     except Exception:
         logger.exception("[trading_kernel] Erreur lors de risk_controller.main()")
-        return
+        raise
 
     # Effective NSC intensity is a downstream risk reduction. It is applied
     # only AFTER current-cycle canonical risk limits exist.
@@ -887,21 +887,21 @@ def run_once(max_new_positions: Optional[int] = None) -> None:
         logger.exception(
             "[trading_kernel] Erreur lors de effective NSC intensity limits"
         )
-        return
+        raise
 
     logger.info("[trading_kernel] Étape 3/4 : capital_allocator")
     try:
         capital_allocator_main()
     except Exception:
         logger.exception("[trading_kernel] Erreur lors de capital_allocator.main()")
-        return
+        raise
 
     logger.info("[trading_kernel] Étape 3.5/4 : governance_engine_pro")
     try:
         governance_engine_main()
     except Exception:
         logger.exception("[trading_kernel] Erreur lors de governance_engine_pro.main()")
-        return
+        raise
 
     # Recompute orchestrator from CURRENT governance/risk_limits/market state.
     logger.info("[trading_kernel] Étape 3.52/4 : orchestrator_pro (current cycle)")
@@ -913,7 +913,7 @@ def run_once(max_new_positions: Optional[int] = None) -> None:
             "[trading_kernel] Erreur lors de orchestrator_pro.main(); "
             "current-cycle execution cannot be authorized"
         )
-        return
+        raise
 
     # G152_CURRENT_CYCLE_ORCHESTRATOR_SOVEREIGNTY_V1
     # Execution eligibility is decided from the state produced in memory by
@@ -1114,7 +1114,7 @@ def run_once(max_new_positions: Optional[int] = None) -> None:
         subprocess.run([sys.executable, "-m", "src.v2.trading.position_sizing_institutionnel"], check=True)
     except Exception:
         logger.exception("[trading_kernel] position_sizing failed")
-        return
+        raise
 
     logger.info("[trading_kernel] Étape 3.7/4 : execution_engine_pro")
     try:
@@ -1122,7 +1122,7 @@ def run_once(max_new_positions: Optional[int] = None) -> None:
         subprocess.run([sys.executable, "-m", "src.v2.analysis.execution_engine_pro", "--data-dir", str(DATA_DIR)], check=True)
     except Exception:
         logger.exception("[trading_kernel] execution_engine_pro failed")
-        return
+        raise
 
     logger.info("[trading_kernel] Étape 4/4 : position_manager")
     try:
@@ -1130,7 +1130,7 @@ def run_once(max_new_positions: Optional[int] = None) -> None:
         position_manager_main()
     except Exception:
         logger.exception("[trading_kernel] Erreur lors de position_manager.main()")
-        return
+        raise
 
     logger.info("[trading_kernel] Étape 4.1/4 : crypto_pnl_state_builder")
     try:
@@ -1141,7 +1141,7 @@ def run_once(max_new_positions: Optional[int] = None) -> None:
         )
     except Exception:
         logger.exception("[trading_kernel] crypto_pnl_state_builder failed")
-        return
+        raise
 
 
     # ───────────────────────────────────────────────────────────

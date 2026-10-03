@@ -29,8 +29,44 @@ echo "$STARTED_AT"
 echo
 echo "----- PHASE 1: MASTER PIPELINE -----"
 systemctl start nsc-preprod-pipeline.service || PIPELINE_RC=$?
-sleep 3
-systemctl status nsc-preprod-pipeline.service --no-pager -l | tail -12 || true
+
+PIPELINE_RESULT="$(
+    systemctl show nsc-preprod-pipeline.service         -p Result         --value         2>/dev/null || echo unknown
+)"
+
+PIPELINE_EXEC_STATUS="$(
+    systemctl show nsc-preprod-pipeline.service         -p ExecMainStatus         --value         2>/dev/null || echo 1
+)"
+
+PIPELINE_ACTIVE_STATE="$(
+    systemctl show nsc-preprod-pipeline.service         -p ActiveState         --value         2>/dev/null || echo unknown
+)"
+
+PIPELINE_SUB_STATE="$(
+    systemctl show nsc-preprod-pipeline.service         -p SubState         --value         2>/dev/null || echo unknown
+)"
+
+echo "pipeline_start_rc=$PIPELINE_RC"
+echo "pipeline_result=$PIPELINE_RESULT"
+echo "pipeline_exec_status=$PIPELINE_EXEC_STATUS"
+echo "pipeline_active_state=$PIPELINE_ACTIVE_STATE"
+echo "pipeline_sub_state=$PIPELINE_SUB_STATE"
+
+if [[ "$PIPELINE_RC" -ne 0 ]]    || [[ "$PIPELINE_RESULT" != "success" ]]    || [[ "$PIPELINE_EXEC_STATUS" != "0" ]]; then
+    echo "ERROR: nsc-preprod-pipeline.service did not complete successfully"
+    exit 1
+fi
+
+# A successful oneshot must have completed before execution-critical
+# phases are allowed to continue.
+if [[ "$PIPELINE_ACTIVE_STATE" == "activating" ]]    || [[ "$PIPELINE_ACTIVE_STATE" == "active" ]]; then
+    echo "ERROR: nsc-preprod-pipeline.service still running after synchronous start"
+    exit 1
+fi
+
+echo "PIPELINE_SYNCHRONOUS_COMPLETION=PASS"
+
+systemctl status nsc-preprod-pipeline.service --no-pager -l     | tail -12 || true
 
 echo
 echo "----- PHASE 2: KERNEL -----"

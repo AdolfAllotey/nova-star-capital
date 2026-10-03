@@ -214,11 +214,21 @@ def _run_preprod() -> int:
     regime = regime or {"regime": "unknown"}
     log.info("regime=%s", regime)
 
-    # 2) Allocation dynamique
-    alloc = _try_call("src.v2.portfolio.capital_allocator", "run", regime)
+    # 2) Portfolio capital authority.
+    # This writer owns portfolio/pockets.json for the current cycle.
+    # Failure must invalidate the pipeline instead of degrading to a
+    # synthetic no-profit allocation.
+    try:
+        from src.v2.portfolio.capital_allocator import run as run_capital_allocator
+        alloc = run_capital_allocator(regime)
+    except Exception:
+        log.exception("portfolio_capital_allocator=critical_failure")
+        return 1
+
     if alloc is None:
-        alloc = _try_call("src.v2.portfolio.capital_allocator", "run")
-    alloc = alloc or {"status": "no_profit", "splits": {}}
+        log.error("portfolio_capital_allocator=invalid_none_result")
+        return 1
+
     log.info("allocation=%s", alloc)
 
 
