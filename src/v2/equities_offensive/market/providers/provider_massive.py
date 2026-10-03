@@ -115,23 +115,32 @@ class MassiveProvider(MarketDataProvider):
             f"{start_date}/{end_date}"
         )
 
-        response = requests.get(
-            endpoint,
-            params={
-                "adjusted": "true",
-                "sort": "asc",
-                "limit": 50000,
-                "apiKey": self.api_key,
-            },
-            timeout=self.timeout_seconds,
-            headers={
-                "Accept": "application/json",
-                "User-Agent": (
-                    "Nova-Star-Capital/"
-                    "Offensive-Equities-Market-Data-V1"
-                ),
-            },
-        )
+        try:
+            response = requests.get(
+                endpoint,
+                params={
+                    "adjusted": "true",
+                    "sort": "asc",
+                    "limit": 50000,
+                    "apiKey": self.api_key,
+                },
+                timeout=self.timeout_seconds,
+                headers={
+                    "Accept": "application/json",
+                    "User-Agent": (
+                        "Nova-Star-Capital/"
+                        "Offensive-Equities-Market-Data-V1"
+                    ),
+                },
+            )
+        except requests.exceptions.Timeout as exc:
+            raise RuntimeError(
+                "Requête Massive expirée."
+            ) from None
+        except requests.exceptions.RequestException as exc:
+            raise RuntimeError(
+                "Échec réseau Massive."
+            ) from None
 
         if response.status_code in {401, 403}:
             raise PermissionError(
@@ -143,7 +152,13 @@ class MassiveProvider(MarketDataProvider):
                 "Limite de requêtes Massive atteinte."
             )
 
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as exc:
+            raise RuntimeError(
+                "Erreur HTTP Massive "
+                f"(status={response.status_code})."
+            ) from None
 
         payload = response.json()
 
