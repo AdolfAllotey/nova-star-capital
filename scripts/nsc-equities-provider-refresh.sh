@@ -5,7 +5,8 @@ APP_DIR="/opt/nsc/app"
 PYTHON="/opt/nsc/.venv/bin/python3"
 
 PROVIDER_DIR="$APP_DIR/src/v2/equities_offensive/market/providers"
-DATA_DIR="/opt/nsc/data/preprod/equities_offensive/market/providers"
+NSC_DATA_DIR="${NSC_DATA_DIR:-/opt/nsc/data/preprod}"
+DATA_DIR="$NSC_DATA_DIR/equities_offensive/market/providers"
 
 LOCK_FILE="/run/lock/nsc-equities-provider-refresh.lock"
 BEFORE_FILE="$(mktemp)"
@@ -33,17 +34,18 @@ echo "CONTROL=RC1_02B_EQUITIES_PROVIDER_REFRESH"
 echo "STARTED_AT_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 snapshot_execution() {
-  "$PYTHON" - "$1" <<'PY'
+  "$PYTHON" - "$1" "$NSC_DATA_DIR" <<'PY'
 from pathlib import Path
 import json
 import sys
 
 output = Path(sys.argv[1])
+data_root = Path(sys.argv[2]).resolve()
 
 roots = [
-    Path("/opt/nsc/data/preprod/equities_offensive/execution"),
-    Path("/opt/nsc/data/preprod/equities_offensive/broker"),
-    Path("/opt/nsc/data/preprod/equities_offensive/positions"),
+    data_root / "equities_offensive" / "execution",
+    data_root / "equities_offensive" / "broker",
+    data_root / "equities_offensive" / "positions",
 ]
 
 result = {}

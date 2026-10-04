@@ -3,19 +3,20 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
+from src.v2.utils.file_utils import get_data_dir
+
 from src.v2.core.fx import FXService, FXServiceError
 from src.v2.portfolio.load_portfolio_inputs import load_portfolio_inputs
 
 
-DEFAULT_DATA_DIR = "/opt/nsc/data/preprod"
-DATA_DIR = Path(os.getenv("NSC_DATA_DIR", DEFAULT_DATA_DIR))
+DATA_DIR = get_data_dir()
 PORTFOLIO_DIR = DATA_DIR / "portfolio"
 
-INPUT_DIR = "/opt/nsc/data/preprod/portfolio/inputs"
+INPUT_DIR = str(PORTFOLIO_DIR / "inputs")
 TARGET_PATH = PORTFOLIO_DIR / "portfolio_target.json"
 OUTPUT_PATH = PORTFOLIO_DIR / "state" / "portfolio_state.json"
-LT_PATH = Path("/opt/nsc/data/preprod/long_term/state/valuation.json")
-CAPITAL_STATE_PATH = DATA_DIR / "portfolio" / "capital_state.json"
+LT_PATH = DATA_DIR / "long_term" / "state" / "valuation.json"
+CAPITAL_STATE_PATH = PORTFOLIO_DIR / "capital_state.json"
 
 
 def ensure_parent(path: Path):

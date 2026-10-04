@@ -1,9 +1,11 @@
 from pathlib import Path
 
+from src.v2.utils.file_utils import get_data_dir
+
 from src.v2.precious_metals.metals_utils import load_json, save_json
 
 
-DEFAULT_DATA_DIR = Path("/opt/nsc/data/preprod/metals")
+DEFAULT_DATA_DIR = get_data_dir() / "metals"
 
 
 def clamp(value, low, high):
@@ -106,7 +108,12 @@ def export_metals_signal_to_portfolio_input(signal_path, output_path):
 
 if __name__ == "__main__":
     result = export_metals_signal_to_portfolio_input(
-        "/opt/nsc/data/preprod/metals/metals_signal.json",
-        "/opt/nsc/data/preprod/portfolio/inputs/precious_metals_portfolio_input.json"
+        str(get_data_dir() / "metals" / "metals_signal.json"),
+        str(
+            get_data_dir()
+            / "portfolio"
+            / "inputs"
+            / "precious_metals_portfolio_input.json"
+        )
     )
     print(result)

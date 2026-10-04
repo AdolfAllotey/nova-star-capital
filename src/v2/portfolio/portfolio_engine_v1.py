@@ -4,6 +4,8 @@ import json
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+
+from src.v2.utils.file_utils import get_data_dir
 from typing import Any, Dict, List, Tuple
 
 from src.v2.portfolio.load_portfolio_inputs import (
@@ -20,18 +22,21 @@ from src.v2.portfolio.portfolio_utils import (
 )
 
 
-INPUT_DIR = Path(
-    "/opt/nsc/data/preprod/portfolio/inputs"
+DATA_ROOT = get_data_dir()
+
+INPUT_DIR = DATA_ROOT / "portfolio" / "inputs"
+
+OUTPUT_PATH = (
+    DATA_ROOT
+    / "portfolio"
+    / "portfolio_target.json"
 )
 
-OUTPUT_PATH = Path(
-    "/opt/nsc/data/preprod/portfolio/"
-    "portfolio_target.json"
-)
-
-POLICY_PATH = Path(
-    "/opt/nsc/data/preprod/portfolio/"
-    "policy/allocation_policy.json"
+POLICY_PATH = (
+    DATA_ROOT
+    / "portfolio"
+    / "policy"
+    / "allocation_policy.json"
 )
 
 

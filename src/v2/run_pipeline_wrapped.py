@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from src.v2.utils.file_utils import get_data_dir
 
 APP_ROOT = Path("/opt/nsc/app")
 if str(APP_ROOT) not in sys.path:
@@ -55,7 +56,7 @@ def _install_openai_blockers() -> None:
 # ----------------------------
 # Lock (non-blocking)
 # ----------------------------
-LOCK_PATH = Path("/opt/nsc/data/preprod/state/nsc-preprod-pipeline.lock")
+LOCK_PATH = get_data_dir() / "state" / "nsc-preprod-pipeline.lock"
 
 def _acquire_lock_nonblocking() -> int | None:
     """

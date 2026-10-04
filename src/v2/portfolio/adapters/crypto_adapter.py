@@ -1,13 +1,26 @@
 from statistics import mean
 
+from src.v2.utils.file_utils import get_data_dir
+
 from src.v2.portfolio.adapters.adapter_utils import load_json, save_json
 
 
-INPUT_PATH = "/opt/nsc/data/preprod/trading/capital_allocation.json"
-TRADING_PLAN_PATH = "/opt/nsc/data/preprod/trading/trading_plan.json"
-PORTFOLIO_OVERVIEW_PATH = "/opt/nsc/data/preprod/analysis/portfolio_overview.json"
-SIGNAL_VOTES_PATH = "/opt/nsc/data/preprod/analysis/signal_votes.json"
-OUTPUT_PATH = "/opt/nsc/data/preprod/portfolio/inputs/crypto_portfolio_input.json"
+DATA_ROOT = get_data_dir()
+
+INPUT_PATH = str(DATA_ROOT / "trading" / "capital_allocation.json")
+TRADING_PLAN_PATH = str(DATA_ROOT / "trading" / "trading_plan.json")
+PORTFOLIO_OVERVIEW_PATH = str(
+    DATA_ROOT / "analysis" / "portfolio_overview.json"
+)
+SIGNAL_VOTES_PATH = str(
+    DATA_ROOT / "analysis" / "signal_votes.json"
+)
+OUTPUT_PATH = str(
+    DATA_ROOT
+    / "portfolio"
+    / "inputs"
+    / "crypto_portfolio_input.json"
+)
 
 
 def clamp(value, low, high):
@@ -101,8 +114,8 @@ def export_crypto_to_portfolio_input(
 
     # Canonical portfolio weights are measured against deployable capital only.
     # Treasury is part of total virtual capital but is not trading capital.
-    capital_pools = load_json("/opt/nsc/data/preprod/capital/capital_pools.json")
-    capital_state = load_json("/opt/nsc/data/preprod/portfolio/capital_state.json")
+    capital_pools = load_json(str(DATA_ROOT / "capital" / "capital_pools.json"))
+    capital_state = load_json(str(DATA_ROOT / "portfolio" / "capital_state.json"))
     try:
         crypto_pool = float(
             (

@@ -4,14 +4,11 @@ import json
 import os
 from pathlib import Path
 from typing import Any, Dict
+from src.v2.utils.file_utils import get_data_dir
 
 
 def _get_data_dir() -> Path:
-    return Path(
-        os.getenv("NSC_DATA_DIR")
-        or os.getenv("DATA_DIR")
-        or "/opt/nsc/data/preprod"
-    ).resolve()
+    return get_data_dir()
 
 
 def _read_json(path: Path, default: Any) -> Any:

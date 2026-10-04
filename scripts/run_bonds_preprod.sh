@@ -6,9 +6,9 @@ cd /opt/nsc/app
 export PYTHONPATH=/opt/nsc/app
 export NSC_PROJECT_ROOT=/opt/nsc/app
 export NSC_ENV=PREPROD
-export NSC_DATA_DIR=/opt/nsc/data/preprod
-export DATA_ROOT=/opt/nsc/data/preprod
-export NSC_DATA_ROOT=/opt/nsc/data/preprod
+export NSC_DATA_DIR="${NSC_DATA_DIR:-/opt/nsc/data/preprod}"
+export DATA_ROOT="$NSC_DATA_DIR"
+export NSC_DATA_ROOT="$NSC_DATA_DIR"
 
 echo "[run_bonds_preprod] start $(date -Is)"
 

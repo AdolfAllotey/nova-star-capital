@@ -839,11 +839,15 @@ def run_once(max_new_positions: Optional[int] = None) -> None:
             import subprocess, sys
             from pathlib import Path
 
-            snapshot = Path(os.getenv("NSC_MARKET_SNAPSHOT", "/opt/nsc/data/preprod/market_snapshot.json"))
-            out_path = Path(str(DATA_DIR / "analysis" / "market_regime_detector.json"))
-
-            # Force PREPROD canonical snapshot; avoids stale env/wrapper value like "."
-            snapshot = Path("/opt/nsc/data/preprod/market_snapshot.json")
+            snapshot_override = os.getenv("NSC_MARKET_SNAPSHOT", "").strip()
+            snapshot = (
+                Path(snapshot_override).resolve()
+                if snapshot_override
+                else DATA_DIR / "market_snapshot.json"
+            )
+            out_path = (
+                DATA_DIR / "analysis" / "market_regime_detector.json"
+            )
             logger.info("[trading_kernel] market_regime_detector CLI: snapshot=%s out=%s", snapshot, out_path)
 
             subprocess.run(

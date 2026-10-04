@@ -9,6 +9,7 @@ from threading import Lock
 from typing import Any, Dict, Optional
 
 from src.v2.utils.logger import get_logger  # logger centralisé
+from src.v2.utils.file_utils import get_data_dir as _central_get_data_dir
 
 
 # =============================================================================
@@ -17,19 +18,12 @@ from src.v2.utils.logger import get_logger  # logger centralisé
 
 def get_data_dir(*args, **kwargs) -> Path:
     """
-    Résout le répertoire DATA_DIR.
-
-    Priorité :
-    1. NSC_DATA_DIR (variable d'environnement)
-    2. ./data (par défaut)
+    Résout le répertoire DATA via l'autorité centrale.
 
     *args / **kwargs sont ignorés mais acceptés pour rester compatible
     avec les anciens appels (fallback=..., env_var=..., etc.).
     """
-    env_dir = os.getenv("NSC_DATA_DIR")
-    if env_dir:
-        return Path(env_dir)
-    return Path("data")
+    return _central_get_data_dir()
 
 
 def ensure_dir(path: Path) -> None:

@@ -8,9 +8,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
+from src.v2.utils.file_utils import get_data_dir
 
-DEFAULT_STATE_PATH = Path("/opt/nsc/data/preprod/equities_offensive/state/state.json")
-DEFAULT_LOCK_PATH  = Path("/opt/nsc/data/preprod/equities_offensive/state/state.lock")
+DEFAULT_STATE_PATH = get_data_dir() / "equities_offensive" / "state" / "state.json"
+DEFAULT_LOCK_PATH = get_data_dir() / "equities_offensive" / "state" / "state.lock"
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")

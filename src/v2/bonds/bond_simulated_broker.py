@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from src.v2.utils.file_utils import get_data_dir
 import json
 import os
 from datetime import datetime, timezone
@@ -12,12 +13,7 @@ from src.v2.market.preprod_price_contract import (
 )
 
 
-ROOT = Path(
-    os.getenv(
-        "NSC_DATA_DIR",
-        "/opt/nsc/data/preprod",
-    )
-)
+ROOT = get_data_dir()
 
 SIGNAL_PATH = ROOT / "bonds/bond_signal.json"
 PRICES_PATH = ROOT / "bonds/prices.json"

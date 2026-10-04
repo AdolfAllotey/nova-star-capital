@@ -4,9 +4,11 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from src.v2.utils.file_utils import get_data_dir
 
-TRADING_WINDOW_OUT = Path("/opt/nsc/data/preprod/ops/trading_window.json")
-HOLIDAYS_OUT = Path("/opt/nsc/data/preprod/ops/us_holidays.json")
+OPS_DIR = get_data_dir() / "ops"
+TRADING_WINDOW_OUT = OPS_DIR / "trading_window.json"
+HOLIDAYS_OUT = OPS_DIR / "us_holidays.json"
 
 
 def utc_now_iso() -> str:

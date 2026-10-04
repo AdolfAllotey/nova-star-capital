@@ -9,11 +9,12 @@ import json
 import urllib.request
 from pathlib import Path
 from datetime import datetime, timezone
+from src.v2.utils.file_utils import get_data_dir
 
-ANALYSIS_DIR = Path("/opt/nsc/data/preprod/analysis")
+ANALYSIS_DIR = get_data_dir() / "analysis"
 PNL_STATE_PATH = ANALYSIS_DIR / "pnl_state.json"
 CAPITAL_ALLOCATOR_STATE_PATH = ANALYSIS_DIR / "capital_allocator_state.json"
-PORTFOLIO_STATE_PATH = Path("/opt/nsc/data/preprod/portfolio/state/portfolio_state.json")
+PORTFOLIO_STATE_PATH = get_data_dir() / "portfolio" / "state" / "portfolio_state.json"
 OUTPUT_PATH = ANALYSIS_DIR / "equity_curve_state.json"
 DASHBOARD_V3_URL = "http://127.0.0.1:8000/dashboard/v3"
 

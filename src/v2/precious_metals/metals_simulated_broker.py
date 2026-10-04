@@ -4,6 +4,8 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+
+from src.v2.utils.file_utils import get_data_dir
 from typing import Any, Dict
 
 from src.v2.precious_metals.eur_pricing import build_eur_prices
@@ -12,12 +14,7 @@ from src.v2.market.preprod_price_contract import (
 )
 
 
-ROOT = Path(
-    os.getenv(
-        "NSC_DATA_DIR",
-        "/opt/nsc/data/preprod",
-    )
-)
+ROOT = get_data_dir()
 
 SIGNAL_PATH = ROOT / "metals/metals_signal.json"
 PRICES_PATH = ROOT / "metals/prices.json"

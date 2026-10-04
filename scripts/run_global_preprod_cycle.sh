@@ -6,14 +6,14 @@ PYTHON="/opt/nsc/.venv/bin/python"
 
 # Canonical PREPROD environment
 export NSC_ENV="PREPROD"
-export NSC_DATA_DIR="/opt/nsc/data/preprod"
-export DATA_DIR="/opt/nsc/data/preprod"
-export NSC_DATA_ROOT="/opt/nsc/data/preprod"
-export DATA_ROOT="/opt/nsc/data/preprod"
+export NSC_DATA_DIR="${NSC_DATA_DIR:-/opt/nsc/data/preprod}"
+export DATA_DIR="$NSC_DATA_DIR"
+export NSC_DATA_ROOT="$NSC_DATA_DIR"
+export DATA_ROOT="$NSC_DATA_DIR"
 export PYTHONPATH="/opt/nsc/app"
 
-OUT="/opt/nsc/data/preprod/portfolio/audit/global_preprod_cycle_report.json"
-HISTORY_DIR="/opt/nsc/data/preprod/portfolio/audit/global_preprod_cycle_history"
+OUT="$NSC_DATA_DIR/portfolio/audit/global_preprod_cycle_report.json"
+HISTORY_DIR="$NSC_DATA_DIR/portfolio/audit/global_preprod_cycle_history"
 
 cd "$APP_DIR"
 

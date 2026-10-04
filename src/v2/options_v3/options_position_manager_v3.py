@@ -13,10 +13,11 @@ from options_assignment_guard_v3 import (
 import json
 import hashlib
 from pathlib import Path
+from src.v2.utils.file_utils import get_data_dir
 from datetime import datetime, timezone
 from math import isfinite
 
-BASE = Path("/opt/nsc/data/preprod/options_v3")
+BASE = get_data_dir() / "options_v3"
 
 MAX_DAYS = 45
 

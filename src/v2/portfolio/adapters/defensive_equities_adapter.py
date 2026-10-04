@@ -4,7 +4,9 @@ from src.v2.portfolio.adapters.adapter_utils import load_json, save_json
 import os
 from pathlib import Path
 
-ROOT = Path(os.getenv("NSC_DATA_DIR", "/opt/nsc/data/preprod"))
+from src.v2.utils.file_utils import get_data_dir
+
+ROOT = get_data_dir()
 
 INPUT_PATH = str(ROOT / "defensive/defensive_signal.json")
 STATE_PATH = str(ROOT / "defensive/defensive_state.json")

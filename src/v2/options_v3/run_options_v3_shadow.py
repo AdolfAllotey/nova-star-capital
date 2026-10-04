@@ -16,6 +16,7 @@ from options_expiration_policy_v3 import select_expiration_v3
 import json
 import os
 from pathlib import Path
+from src.v2.utils.file_utils import get_data_dir
 from datetime import datetime, timezone
 from options_portfolio_engine_v3 import allocate_portfolio
 from options_performance_v3 import (
@@ -48,18 +49,19 @@ from src.v2.equities_offensive.ops.us_market_session import (
     build_with_exchange_calendars,
 )
 
-OUT = Path("/opt/nsc/data/preprod/options_v3")
+DATA_ROOT = get_data_dir()
+OUT = DATA_ROOT / "options_v3"
 OUT.mkdir(parents=True, exist_ok=True)
 
 SRC = Path("/opt/nsc/app/src/v2")
 PATHS = {
     # RC2 canonical live inputs.
     "offensive_execution": Path(
-        "/opt/nsc/data/preprod/equities_offensive/risk/"
+        str(DATA_ROOT / "equities_offensive" / "risk") + "/"
         "execution_candidates.json"
     ),
     "defensive_state": Path(
-        "/opt/nsc/data/preprod/defensive/defensive_state.json"
+        str(DATA_ROOT / "defensive" / "defensive_state.json")
     ),
 
     # Transitional analytical dependencies retained by Options V3.
@@ -234,7 +236,7 @@ def enrich_candidate_capabilities_v3(
 
 
 OPTIONS_V3_OPTION_CHAIN_CACHE_DIR = Path(
-    "/opt/nsc/data/preprod/options_v3/option_chain_cache"
+    str(DATA_ROOT / "options_v3" / "option_chain_cache")
 )
 
 OPTIONS_V3_STRATEGY_TARGET_DTE = {
@@ -1328,7 +1330,7 @@ def main():
     option_chain_cycle_cache = {}
 
     pockets_doc = load(
-        Path("/opt/nsc/data/preprod/portfolio/pockets.json"),
+        DATA_ROOT / "portfolio" / "pockets.json",
         {},
     )
     pockets = (
@@ -1605,7 +1607,7 @@ def main():
 
     # Options V3 operates inside the dedicated NSC options_us pocket.
     pockets_doc = load(
-        Path("/opt/nsc/data/preprod/portfolio/pockets.json"),
+        DATA_ROOT / "portfolio" / "pockets.json",
         {},
     )
     pockets = (
@@ -1736,7 +1738,7 @@ def main():
         "portfolio": {
             "pocket": "options_us",
             "capital_source": (
-                "/opt/nsc/data/preprod/portfolio/pockets.json"
+                str(DATA_ROOT / "portfolio" / "pockets.json")
             ),
             "capital_eur": portfolio.get("capital_eur", 0),
             "selected_count": portfolio.get("selected_count", 0),

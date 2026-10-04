@@ -15,6 +15,7 @@ import os
 import logging
 import sys
 from pathlib import Path
+from src.v2.utils.file_utils import get_data_dir
 from datetime import datetime, timezone
 from typing import Any
 
@@ -29,9 +30,9 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 def _load_market_snapshot() -> dict | None:
-    """Charge /opt/nsc/data/preprod/market_snapshot.json si présent, sinon None."""
-    # IMPORTANT: en PREPROD on garde ce chemin fixe (cohérent systemd)
-    path = Path("/opt/nsc/data/preprod/market_snapshot.json")
+    """Charge market_snapshot.json depuis le data root actif, sinon None."""
+    # Data root authority is resolved centrally from the runtime environment.
+    path = get_data_dir() / "market_snapshot.json"
     if not path.exists():
         return None
     try:
@@ -130,9 +131,7 @@ def _refresh_breadth_if_required() -> bool:
     Breadth provider failure must not abort PREPROD. Snapshot freshness
     validation independently rejects stale/invalid Breadth.
     """
-    data_dir = Path(
-        os.getenv("NSC_DATA_DIR", "/opt/nsc/data/preprod")
-    )
+    data_dir = get_data_dir()
 
     breadth_path = data_dir / "analysis" / "breadth.json"
 

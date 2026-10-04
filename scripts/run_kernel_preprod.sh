@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-export NSC_KERNEL_LOCK="${NSC_KERNEL_LOCK:-/opt/nsc/data/preprod/state/nsc-kernel.lock}"
 export NSC_DATA_DIR="${NSC_DATA_DIR:-/opt/nsc/data/preprod}"
+export NSC_DATA_ROOT="$NSC_DATA_DIR"
+export DATA_ROOT="$NSC_DATA_DIR"
+export DATA_DIR="$NSC_DATA_DIR"
+export NSC_KERNEL_LOCK="${NSC_KERNEL_LOCK:-$NSC_DATA_DIR/state/nsc-kernel.lock}"
 
 echo "[run_kernel_preprod] using lock: $NSC_KERNEL_LOCK"
 echo "[run_kernel_preprod] using data dir: $NSC_DATA_DIR"

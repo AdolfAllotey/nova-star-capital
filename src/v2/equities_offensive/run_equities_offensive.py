@@ -7,7 +7,7 @@ from pathlib import Path
 
 from src.v2.equities_offensive.finalize_equities_state import main as finalize_equities_state
 from src.v2.equities_offensive.runner import ensure_preprod_artifacts, run
-from src.v2.utils.file_utils import save_json
+from src.v2.utils.file_utils import get_data_dir, save_json
 from src.v2.utils.time_utils import utc_now_iso
 from src.v2.validation.contracts import validate_contract
 
@@ -16,8 +16,15 @@ def main():
     import argparse
 
     ap = argparse.ArgumentParser(description="NSC Equities Offensive Runner (Skeleton V0)")
-    ap.add_argument("--inputs", default="/opt/nsc/data/preprod/equities_offensive/inputs.json")
-    ap.add_argument("--out", default="/opt/nsc/data/preprod/equities_offensive/out")
+    data_dir = get_data_dir()
+    ap.add_argument(
+        "--inputs",
+        default=str(data_dir / "equities_offensive" / "inputs.json"),
+    )
+    ap.add_argument(
+        "--out",
+        default=str(data_dir / "equities_offensive" / "out"),
+    )
     args = ap.parse_args()
 
     res = run(inputs_path=args.inputs, out_dir=args.out)

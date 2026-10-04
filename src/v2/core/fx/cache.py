@@ -6,6 +6,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
+from src.v2.utils.file_utils import get_data_dir
 
 from .models import FXRate
 from .validator import (
@@ -16,10 +17,8 @@ from .validator import (
 
 
 DEFAULT_CACHE_PATH = Path(
-    os.getenv(
-        "NSC_FX_CACHE_PATH",
-        "/opt/nsc/data/preprod/core/fx/rates.json",
-    )
+    os.getenv("NSC_FX_CACHE_PATH")
+    or (get_data_dir() / "core" / "fx" / "rates.json")
 )
 
 

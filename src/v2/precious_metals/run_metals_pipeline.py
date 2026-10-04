@@ -18,17 +18,21 @@ from src.v2.precious_metals.metals_utils import (
     load_and_validate_macro_inputs,
 )
 
+from src.v2.utils.file_utils import get_data_dir
+
 try:
     from src.v2.utils.logger import get_logger
     logger = get_logger("precious_metals_pipeline")
 except Exception:
     import logging
+
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger("precious_metals_pipeline")
 
 
-DATA_DIR = "/opt/nsc/data/preprod/metals"
-PORTFOLIO_INPUT_DIR = "/opt/nsc/data/preprod/portfolio/inputs"
+DATA_ROOT = get_data_dir()
+DATA_DIR = str(DATA_ROOT / "metals")
+PORTFOLIO_INPUT_DIR = str(DATA_ROOT / "portfolio" / "inputs")
 
 
 def run_metals_pipeline():

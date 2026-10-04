@@ -9,6 +9,8 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+
+from src.v2.utils.file_utils import get_data_dir
 from typing import Any, Callable, Mapping
 
 from src.v2.precious_metals import macro_provider_integration as integration
@@ -22,7 +24,7 @@ DEFAULT_RETRY_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 DEFAULT_RETRY_BACKOFF_SECONDS = (1, 3)
 DEFAULT_USER_AGENT = "NovaStarCapital-RC2-PreciousMetals/1.0"
 DEFAULT_MAXIMUM_RESPONSE_BYTES = 5_000_000
-DEFAULT_TARGET_PATH = Path("/opt/nsc/data/preprod/metals/macro_inputs.json")
+DEFAULT_TARGET_PATH = get_data_dir() / "metals" / "macro_inputs.json"
 
 
 class MacroProviderRuntimeError(RuntimeError):

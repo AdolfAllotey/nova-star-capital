@@ -8,9 +8,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from datetime import datetime, timezone
+from src.v2.utils.file_utils import get_data_dir
 
-DATA_DIR = Path("/opt/nsc/data/preprod/analysis")
-TRADING_DIR = Path("/opt/nsc/data/preprod/trading")
+ROOT_DATA_DIR = get_data_dir()
+DATA_DIR = ROOT_DATA_DIR / "analysis"
+TRADING_DIR = ROOT_DATA_DIR / "trading"
 
 OPEN_POSITIONS_PATH = TRADING_DIR / "open_positions.json"
 TRADE_SIMULATION_PATH = TRADING_DIR / "trade_simulation.json"

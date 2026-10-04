@@ -1,3 +1,4 @@
+from src.v2.utils.file_utils import get_data_dir
 from src.v2.bonds.rate_engine import run_rate_engine
 from src.v2.bonds.inflation_engine import run_inflation_engine
 from src.v2.bonds.yield_curve_engine import run_yield_curve_engine
@@ -18,8 +19,8 @@ except Exception:
     logger = logging.getLogger("bonds_pipeline")
 
 
-DATA_DIR = "/opt/nsc/data/preprod/bonds"
-PORTFOLIO_INPUT_DIR = "/opt/nsc/data/preprod/portfolio/inputs"
+DATA_DIR = str(get_data_dir() / "bonds")
+PORTFOLIO_INPUT_DIR = str(get_data_dir() / "portfolio" / "inputs")
 
 
 def run_bonds_pipeline():

@@ -834,7 +834,7 @@ def _get_price_and_atr_for_symbol(
 
     # Fallback spot prices for tokens without OHLCV candles.
     try:
-        spot_path = Path(os.environ.get("NSC_DATA_DIR", "/opt/nsc/data/preprod")) / "market" / "crypto_spot_prices.json"
+        spot_path = get_data_dir() / "market" / "crypto_spot_prices.json"
         spot = load_json_file(str(spot_path), default={}) or {}
         base = compact[:-4] if compact.endswith("usdt") else compact
 

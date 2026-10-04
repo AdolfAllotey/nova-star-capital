@@ -1,7 +1,8 @@
 from pathlib import Path
 import subprocess
+from src.v2.utils.file_utils import get_data_dir
 
-BASE = Path("/opt/nsc/data/preprod/equities_offensive")
+BASE = get_data_dir() / "equities_offensive"
 
 REQUIRED = [
     BASE / "execution" / "simulated_fills.jsonl",

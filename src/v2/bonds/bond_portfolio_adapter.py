@@ -1,9 +1,10 @@
+from src.v2.utils.file_utils import get_data_dir
 from pathlib import Path
 
 from src.v2.bonds.bond_utils import load_json, save_json
 
 
-DEFAULT_DATA_DIR = Path("/opt/nsc/data/preprod/bonds")
+DEFAULT_DATA_DIR = get_data_dir() / "bonds"
 
 
 def clamp(value, low, high):
@@ -139,7 +140,7 @@ def export_bond_signal_to_portfolio_input(
 
 if __name__ == "__main__":
     result = export_bond_signal_to_portfolio_input(
-        "/opt/nsc/data/preprod/bonds/bond_signal.json",
-        "/opt/nsc/data/preprod/portfolio/inputs/bonds_portfolio_input.json"
+        str(get_data_dir() / "bonds" / "bond_signal.json"),
+        str(get_data_dir() / "portfolio" / "inputs" / "bonds_portfolio_input.json")
     )
     print(result)

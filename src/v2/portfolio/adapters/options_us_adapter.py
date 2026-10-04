@@ -1,21 +1,26 @@
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+
+from src.v2.utils.file_utils import get_data_dir
 from typing import Any, Dict, List, Optional
 
 
-BASE_PATH = Path("/opt/nsc/data/preprod/options_v3")
+DATA_ROOT = get_data_dir()
+BASE_PATH = DATA_ROOT / "options_v3"
 
 DASHBOARD_PATH = BASE_PATH / "options_v3_dashboard.json"
 POSITIONS_OPEN_PATH = BASE_PATH / "options_v3_positions.json"
 POSITIONS_CLOSED_PATH = BASE_PATH / "options_v3_positions_closed.json"
 PORTFOLIO_SELECTED_PATH = BASE_PATH / "options_v3_portfolio_selected.json"
-POCKETS_PATH = Path("/opt/nsc/data/preprod/portfolio/pockets.json")
-CAPITAL_STATE_PATH = Path("/opt/nsc/data/preprod/portfolio/capital_state.json")
+POCKETS_PATH = DATA_ROOT / "portfolio" / "pockets.json"
+CAPITAL_STATE_PATH = DATA_ROOT / "portfolio" / "capital_state.json"
 
-OUTPUT_PATH = Path(
-    "/opt/nsc/data/preprod/portfolio/inputs/"
-    "options_us_portfolio_input.json"
+OUTPUT_PATH = (
+    DATA_ROOT
+    / "portfolio"
+    / "inputs"
+    / "options_us_portfolio_input.json"
 )
 
 

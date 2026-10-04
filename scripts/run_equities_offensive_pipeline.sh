@@ -26,11 +26,13 @@ echo "CANONICAL_V2_RUNTIME_GATE=START"
 
 /opt/nsc/.venv/bin/python - <<'PY_GATE'
 import json
+import os
 import re
 from pathlib import Path
 
-root = Path(
-    "/opt/nsc/data/preprod/equities_offensive"
+root = (
+    Path(os.environ["NSC_DATA_DIR"]).resolve()
+    / "equities_offensive"
 )
 
 paths = {

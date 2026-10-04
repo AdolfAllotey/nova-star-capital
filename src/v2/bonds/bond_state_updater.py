@@ -4,6 +4,8 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+
+from src.v2.utils.file_utils import get_data_dir
 from typing import Any, Dict, List
 
 from src.v2.bonds.eur_pricing import build_eur_prices
@@ -12,12 +14,7 @@ from src.v2.market.preprod_price_contract import (
 )
 
 
-ROOT = Path(
-    os.getenv(
-        "NSC_DATA_DIR",
-        "/opt/nsc/data/preprod",
-    )
-)
+ROOT = get_data_dir()
 
 SIGNAL_PATH = ROOT / "bonds/bond_signal.json"
 PORTFOLIO_STATE_PATH = (

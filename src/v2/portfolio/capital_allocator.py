@@ -6,17 +6,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from src.v2.utils.file_utils import load_json_file, save_json_file_atomic
+from src.v2.utils.file_utils import get_data_dir, load_json_file, save_json_file_atomic
 from src.v2.utils.logger import get_logger
 
 logger = get_logger("capital_allocator")
 
 POLICY_PATH = Path("/opt/nsc/app/data/portfolio/capital_flow_policy.json")
-MASTER_CASH_PATH = Path("/opt/nsc/data/preprod/portfolio/capital_state.json")
-POCKETS_PATH = Path("/opt/nsc/data/preprod/portfolio/pockets.json")
+DATA_ROOT = get_data_dir()
+MASTER_CASH_PATH = DATA_ROOT / "portfolio" / "capital_state.json"
+POCKETS_PATH = DATA_ROOT / "portfolio" / "pockets.json"
 
-TRANSFERS_JSONL = Path("/opt/nsc/data/preprod/portfolio/transfer_instructions.jsonl")
-EVENTS_TRANSFERS_JSONL = Path("/opt/nsc/data/preprod/events/capital_transfers.jsonl")
+TRANSFERS_JSONL = DATA_ROOT / "portfolio" / "transfer_instructions.jsonl"
+EVENTS_TRANSFERS_JSONL = DATA_ROOT / "events" / "capital_transfers.jsonl"
 
 BRICKS = [
     "crypto",
