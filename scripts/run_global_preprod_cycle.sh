@@ -160,41 +160,60 @@ echo "$STRESS_JSON" | jq '{
 
 echo
 echo "----- WRITE GLOBAL PREPROD CYCLE REPORT -----"
-python3 - <<PY
+OUT="$OUT" \
+SUMMARY_JSON="$SUMMARY_JSON" \
+PIPELINE_RC="$PIPELINE_RC" \
+KERNEL_RC="$KERNEL_RC" \
+ORCHESTRATOR_RC="$ORCHESTRATOR_RC" \
+SYSTEM_METRICS_RC="$SYSTEM_METRICS_RC" \
+STARTED_AT="$STARTED_AT" \
+FINISHED_AT="$FINISHED_AT" \
+STRESS_JSON="$STRESS_JSON" \
+HISTORY_DIR="$HISTORY_DIR" \
+python3 - <<'PY'
 import json
+import os
 from pathlib import Path
 
-out = Path("$OUT")
-summary = json.loads("""$SUMMARY_JSON""")
+out = Path(os.environ["OUT"])
+summary = json.loads(os.environ["SUMMARY_JSON"])
+
+pipeline_rc = int(os.environ["PIPELINE_RC"])
+kernel_rc = int(os.environ["KERNEL_RC"])
+orchestrator_rc = int(os.environ["ORCHESTRATOR_RC"])
+system_metrics_rc = int(os.environ["SYSTEM_METRICS_RC"])
+started_at = os.environ["STARTED_AT"]
+finished_at = os.environ["FINISHED_AT"]
+stress_tests = json.loads(os.environ["STRESS_JSON"])
+history_dir = Path(os.environ["HISTORY_DIR"])
 
 report = {
     "status": "ok" if (
-        $PIPELINE_RC == 0
-        and $KERNEL_RC == 0
-        and $ORCHESTRATOR_RC == 0
-        and $SYSTEM_METRICS_RC == 0
+        pipeline_rc == 0
+        and kernel_rc == 0
+        and orchestrator_rc == 0
+        and system_metrics_rc == 0
         and summary.get("institutional_layer_ready")
     ) else "error",
     "engine": "global_preprod_cycle_runner_v1",
-    "started_at": "$STARTED_AT",
-    "finished_at": "$FINISHED_AT",
-    "pipeline_rc": $PIPELINE_RC,
-    "kernel_rc": $KERNEL_RC,
-    "orchestrator_rc": $ORCHESTRATOR_RC,
-    "system_metrics_rc": $SYSTEM_METRICS_RC,
+    "started_at": started_at,
+    "finished_at": finished_at,
+    "pipeline_rc": pipeline_rc,
+    "kernel_rc": kernel_rc,
+    "orchestrator_rc": orchestrator_rc,
+    "system_metrics_rc": system_metrics_rc,
     "institutional_layer_ready": summary.get("institutional_layer_ready"),
     "global_status": summary.get("global_status"),
     "gate": summary.get("gate"),
     "audit": summary.get("audit"),
-    "stress_tests": json.loads("""$STRESS_JSON"""),
+    "stress_tests": stress_tests,
 }
 
 out.parent.mkdir(parents=True, exist_ok=True)
 out.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
-history_dir = Path("$HISTORY_DIR")
 history_dir.mkdir(parents=True, exist_ok=True)
-safe_ts = "$FINISHED_AT".replace(":", "").replace("+", "_").replace("-", "")
+safe_ts = finished_at.replace(":", "").replace("+", "_").replace("-", "")
 history_file = history_dir / f"global_preprod_cycle_{safe_ts}.json"
 history_file.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
