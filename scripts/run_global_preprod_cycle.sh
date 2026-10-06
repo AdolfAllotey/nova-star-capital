@@ -18,13 +18,264 @@ HISTORY_DIR="$NSC_DATA_DIR/portfolio/audit/global_preprod_cycle_history"
 cd "$APP_DIR"
 
 STARTED_AT="$(date -Is)"
+PROVIDER_RC=0
+CUTOVER_DRY_RUN_RC=0
+CUTOVER_EXECUTE_RC=0
 PIPELINE_RC=0
 KERNEL_RC=0
 ORCHESTRATOR_RC=0
 SYSTEM_METRICS_RC=0
 
+OFFENSIVE_ROOT="$NSC_DATA_DIR/equities_offensive"
+CUTOVER_SCRIPT="$APP_DIR/src/v2/equities_offensive/cutover/four_artifact_cutover_v2.py"
+CUTOVER_DRY_RUN_JSON="$(mktemp)"
+CUTOVER_EXECUTE_JSON=""
+
+cleanup_global_cycle() {
+    rm -f "$CUTOVER_DRY_RUN_JSON"
+
+    if [[ -n "$CUTOVER_EXECUTE_JSON" ]]; then
+        rm -f "$CUTOVER_EXECUTE_JSON"
+    fi
+}
+trap cleanup_global_cycle EXIT
+
 echo "===== NSC GLOBAL PREPROD CYCLE ====="
 echo "$STARTED_AT"
+
+echo
+echo "----- PHASE 0A: OFFENSIVE PROVIDER REFRESH -----"
+
+PROVIDER_INVOCATION_BEFORE="$(
+    systemctl show         nsc-equities-provider-refresh.service         -p InvocationID         --value         2>/dev/null || true
+)"
+
+systemctl reset-failed nsc-equities-provider-refresh.service || true
+systemctl start nsc-equities-provider-refresh.service || PROVIDER_RC=$?
+
+PROVIDER_INVOCATION_AFTER="$(
+    systemctl show         nsc-equities-provider-refresh.service         -p InvocationID         --value         2>/dev/null || true
+)"
+
+PROVIDER_RESULT="$(
+    systemctl show nsc-equities-provider-refresh.service         -p Result         --value         2>/dev/null || echo unknown
+)"
+
+PROVIDER_EXEC_STATUS="$(
+    systemctl show nsc-equities-provider-refresh.service         -p ExecMainStatus         --value         2>/dev/null || echo 1
+)"
+
+PROVIDER_ACTIVE_STATE="$(
+    systemctl show nsc-equities-provider-refresh.service         -p ActiveState         --value         2>/dev/null || echo unknown
+)"
+
+echo "provider_invocation_before=$PROVIDER_INVOCATION_BEFORE"
+echo "provider_invocation_after=$PROVIDER_INVOCATION_AFTER"
+echo "provider_start_rc=$PROVIDER_RC"
+echo "provider_result=$PROVIDER_RESULT"
+echo "provider_exec_status=$PROVIDER_EXEC_STATUS"
+echo "provider_active_state=$PROVIDER_ACTIVE_STATE"
+
+if [[ -z "$PROVIDER_INVOCATION_AFTER" ]]; then
+    echo "ERROR: provider refresh InvocationID is empty"
+    exit 1
+fi
+
+if [[ "$PROVIDER_INVOCATION_AFTER" == "$PROVIDER_INVOCATION_BEFORE" ]]; then
+    echo "ERROR: provider refresh did not create a new systemd invocation"
+    exit 1
+fi
+
+if [[ "$PROVIDER_RC" -ne 0 ]]    || [[ "$PROVIDER_RESULT" != "success" ]]    || [[ "$PROVIDER_EXEC_STATUS" != "0" ]]; then
+    echo "ERROR: provider refresh did not complete technically"
+    exit 1
+fi
+
+if [[ "$PROVIDER_ACTIVE_STATE" == "activating" ]]    || [[ "$PROVIDER_ACTIVE_STATE" == "active" ]]; then
+    echo "ERROR: provider refresh still running after synchronous start"
+    exit 1
+fi
+
+echo "PROVIDER_NEW_INVOCATION=PASS"
+echo "PROVIDER_SYNCHRONOUS_COMPLETION=PASS"
+
+echo
+echo "----- PHASE 0B: FOUR-ARTIFACT CUTOVER DRY-RUN -----"
+
+set +e
+"$PYTHON" "$CUTOVER_SCRIPT"     --root "$OFFENSIVE_ROOT"     >"$CUTOVER_DRY_RUN_JSON"
+CUTOVER_DRY_RUN_RC=$?
+set -e
+
+echo "cutover_dry_run_rc=$CUTOVER_DRY_RUN_RC"
+
+if [[ "$CUTOVER_DRY_RUN_RC" -ne 0 ]]; then
+    echo "ERROR: no admissible Offensive canonical cutover candidate"
+    cat "$CUTOVER_DRY_RUN_JSON" || true
+    exit 1
+fi
+
+AUTHORIZATION_DIGEST="$(
+    "$PYTHON" - "$CUTOVER_DRY_RUN_JSON" <<'PY_DIGEST'
+import json
+import sys
+from pathlib import Path
+
+payload = json.loads(
+    Path(sys.argv[1]).read_text(encoding="utf-8")
+)
+
+if payload.get("status") != "candidate_ready":
+    raise SystemExit(
+        "cutover dry-run status is not candidate_ready"
+    )
+
+if payload.get("cutover_executed") is not False:
+    raise SystemExit(
+        "dry-run unexpectedly reports cutover execution"
+    )
+
+if payload.get("active_files_modified") is not False:
+    raise SystemExit(
+        "dry-run unexpectedly reports active file modification"
+    )
+
+authorization = payload.get("authorization")
+
+if not isinstance(authorization, dict):
+    raise SystemExit("authorization payload missing")
+
+digest = str(authorization.get("digest") or "").strip().lower()
+
+if len(digest) != 64:
+    raise SystemExit("authorization digest invalid")
+
+if any(c not in "0123456789abcdef" for c in digest):
+    raise SystemExit("authorization digest is not hexadecimal")
+
+print(digest)
+PY_DIGEST
+)"
+
+echo "CUTOVER_DRY_RUN=PASS"
+echo "CUTOVER_AUTHORIZATION_DIGEST=$AUTHORIZATION_DIGEST"
+
+echo
+echo "----- PHASE 0C: FOUR-ARTIFACT CUTOVER EXECUTE -----"
+
+CUTOVER_EXECUTE_JSON="$(
+    mktemp /tmp/nsc-cutover-execute.XXXXXX.json
+)"
+
+set +e
+"$PYTHON" "$CUTOVER_SCRIPT" \
+    --root "$OFFENSIVE_ROOT" \
+    --execute \
+    --authorization-digest "$AUTHORIZATION_DIGEST" \
+    > "$CUTOVER_EXECUTE_JSON"
+CUTOVER_EXECUTE_RC=$?
+set -e
+
+echo "cutover_execute_rc=$CUTOVER_EXECUTE_RC"
+
+if [[ "$CUTOVER_EXECUTE_RC" -ne 0 ]]; then
+    echo "ERROR: four-artifact cutover execute failed"
+    cat "$CUTOVER_EXECUTE_JSON"
+    exit 1
+fi
+
+"$PYTHON" - \
+    "$CUTOVER_EXECUTE_JSON" \
+    "$AUTHORIZATION_DIGEST" <<'PYEXEC'
+import json
+import re
+import sys
+from pathlib import Path
+
+report_path = Path(sys.argv[1])
+expected_digest = sys.argv[2].strip()
+
+if not re.fullmatch(
+    r"[0-9a-f]{64}",
+    expected_digest,
+):
+    raise SystemExit(
+        "cutover execute expected digest is invalid"
+    )
+
+try:
+    payload = json.loads(
+        report_path.read_text(
+            encoding="utf-8"
+        )
+    )
+except Exception as exc:
+    raise SystemExit(
+        f"cutover execute JSON parse failed: {exc}"
+    )
+
+if not isinstance(payload, dict):
+    raise SystemExit(
+        "cutover execute report is not an object"
+    )
+
+if payload.get("status") != "committed":
+    raise SystemExit(
+        "cutover execute status is not committed"
+    )
+
+if payload.get("mode") != "execute":
+    raise SystemExit(
+        "cutover execute mode is not execute"
+    )
+
+if payload.get("cutover_executed") is not True:
+    raise SystemExit(
+        "cutover execute did not confirm execution"
+    )
+
+if payload.get("active_files_modified") is not True:
+    raise SystemExit(
+        "cutover execute did not confirm active modification"
+    )
+
+authorized_digest = str(
+    payload.get("authorized_digest")
+    or ""
+).strip()
+
+if authorized_digest != expected_digest:
+    raise SystemExit(
+        "cutover execute authorized_digest mismatch"
+    )
+
+authorization = payload.get("authorization")
+
+if not isinstance(authorization, dict):
+    raise SystemExit(
+        "cutover execute authorization object missing"
+    )
+
+report_digest = str(
+    authorization.get("digest")
+    or ""
+).strip()
+
+if report_digest != expected_digest:
+    raise SystemExit(
+        "cutover execute authorization.digest mismatch"
+    )
+
+print("CUTOVER_EXECUTE_REPORT=PASS")
+print(
+    f"CUTOVER_EXECUTE_AUTHORIZED_DIGEST={authorized_digest}"
+)
+PYEXEC
+
+rm -f "$CUTOVER_EXECUTE_JSON"
+CUTOVER_EXECUTE_JSON=""
+
+echo "FOUR_ARTIFACT_CUTOVER=PASS"
 
 echo
 echo "----- PHASE 1: MASTER PIPELINE -----"

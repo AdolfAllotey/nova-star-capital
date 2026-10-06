@@ -5,6 +5,7 @@ import re
 from datetime import datetime, timezone
 from typing import Optional
 
+from .market_clock import fx_open_seconds_between
 from .models import FXRate
 
 
@@ -67,17 +68,23 @@ def market_age_seconds(
         else datetime.now(timezone.utc)
     )
 
-    age = (
+    wall_age = (
         reference - market_ts
     ).total_seconds()
 
-    if age < -300.0:
+    if wall_age < -300.0:
         raise FXValidationError(
             f"Future FX market timestamp for "
-            f"{rate.pair}: age_seconds={age}"
+            f"{rate.pair}: age_seconds={wall_age}"
         )
 
-    return max(0.0, age)
+    if wall_age <= 0.0:
+        return 0.0
+
+    return fx_open_seconds_between(
+        market_ts,
+        reference,
+    )
 
 
 def validate_market_freshness(

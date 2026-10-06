@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import tempfile
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -811,11 +812,23 @@ def atomic_write_bytes(
     )
 
     existing_mode: int | None = None
+    existing_uid: int | None = None
+    existing_gid: int | None = None
 
     if path.exists():
+        existing_stat = path.stat()
+
         existing_mode = (
-            path.stat().st_mode
+            existing_stat.st_mode
             & 0o7777
+        )
+
+        existing_uid = (
+            existing_stat.st_uid
+        )
+
+        existing_gid = (
+            existing_stat.st_gid
         )
 
     fd, temporary_raw = (
@@ -846,6 +859,16 @@ def atomic_write_bytes(
             if mode is not None
             else existing_mode
         )
+
+        if (
+            existing_uid is not None
+            and existing_gid is not None
+        ):
+            os.chown(
+                temporary,
+                existing_uid,
+                existing_gid,
+            )
 
         if final_mode is not None:
             os.chmod(
@@ -1865,7 +1888,8 @@ def main() -> int:
                 "a+"
             ) as provider_lock:
                 print(
-                    "PROVIDER_LOCK=WAIT_SHARED"
+                    "PROVIDER_LOCK=WAIT_SHARED",
+                    file=sys.stderr,
                 )
 
                 fcntl.flock(
@@ -1874,7 +1898,8 @@ def main() -> int:
                 )
 
                 print(
-                    "PROVIDER_LOCK=ACQUIRED_SHARED"
+                    "PROVIDER_LOCK=ACQUIRED_SHARED",
+                    file=sys.stderr,
                 )
 
                 try:
@@ -1882,7 +1907,8 @@ def main() -> int:
                         "a+"
                     ) as canonical_lock:
                         print(
-                            "CANONICAL_LOCK=WAIT_EXCLUSIVE"
+                            "CANONICAL_LOCK=WAIT_EXCLUSIVE",
+                            file=sys.stderr,
                         )
 
                         fcntl.flock(
@@ -1891,7 +1917,8 @@ def main() -> int:
                         )
 
                         print(
-                            "CANONICAL_LOCK=ACQUIRED_EXCLUSIVE"
+                            "CANONICAL_LOCK=ACQUIRED_EXCLUSIVE",
+                            file=sys.stderr,
                         )
 
                         try:
@@ -1964,7 +1991,8 @@ def main() -> int:
                             )
 
                             print(
-                                "CANONICAL_LOCK=RELEASED_EXCLUSIVE"
+                                "CANONICAL_LOCK=RELEASED_EXCLUSIVE",
+                                file=sys.stderr,
                             )
 
                 finally:
@@ -1974,7 +2002,8 @@ def main() -> int:
                     )
 
                     print(
-                        "PROVIDER_LOCK=RELEASED_SHARED"
+                        "PROVIDER_LOCK=RELEASED_SHARED",
+                        file=sys.stderr,
                     )
 
         except Exception as exc:
@@ -2040,7 +2069,8 @@ def main() -> int:
             "a+"
         ) as provider_lock:
             print(
-                "PROVIDER_LOCK=WAIT_SHARED"
+                "PROVIDER_LOCK=WAIT_SHARED",
+                file=sys.stderr,
             )
 
             fcntl.flock(
@@ -2049,7 +2079,8 @@ def main() -> int:
             )
 
             print(
-                "PROVIDER_LOCK=ACQUIRED_SHARED"
+                "PROVIDER_LOCK=ACQUIRED_SHARED",
+                file=sys.stderr,
             )
 
             try:
@@ -2057,7 +2088,8 @@ def main() -> int:
                     "a+"
                 ) as canonical_lock:
                     print(
-                        "CANONICAL_LOCK=WAIT_EXCLUSIVE"
+                        "CANONICAL_LOCK=WAIT_EXCLUSIVE",
+                        file=sys.stderr,
                     )
 
                     fcntl.flock(
@@ -2066,7 +2098,8 @@ def main() -> int:
                     )
 
                     print(
-                        "CANONICAL_LOCK=ACQUIRED_EXCLUSIVE"
+                        "CANONICAL_LOCK=ACQUIRED_EXCLUSIVE",
+                        file=sys.stderr,
                     )
 
                     try:
@@ -2082,7 +2115,8 @@ def main() -> int:
                         )
 
                         print(
-                            "CANONICAL_LOCK=RELEASED_EXCLUSIVE"
+                            "CANONICAL_LOCK=RELEASED_EXCLUSIVE",
+                            file=sys.stderr,
                         )
 
             finally:
@@ -2092,7 +2126,8 @@ def main() -> int:
                 )
 
                 print(
-                    "PROVIDER_LOCK=RELEASED_SHARED"
+                    "PROVIDER_LOCK=RELEASED_SHARED",
+                    file=sys.stderr,
                 )
 
     except Exception as exc:

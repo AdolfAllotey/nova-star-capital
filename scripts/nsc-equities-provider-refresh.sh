@@ -26,8 +26,9 @@ chmod 0660 "$LOCK_FILE"
 exec 9<>"$LOCK_FILE"
 
 if ! flock -n 9; then
-  echo "STATUS=SKIPPED_ALREADY_RUNNING"
-  exit 0
+  echo "STATUS=BLOCKED_ALREADY_RUNNING"
+  echo "ERROR=provider_refresh_lock_contention"
+  exit 75
 fi
 
 echo "CONTROL=RC1_02B_EQUITIES_PROVIDER_REFRESH"

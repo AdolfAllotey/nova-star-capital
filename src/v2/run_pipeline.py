@@ -26,6 +26,61 @@ from src.v2.analysis.strategy_pnl_engine import save_strategy_pnl_state
 from src.v2.analysis.equity_curve_engine import save_equity_curve_state
 from src.v2.analysis.trade_journal_engine import save_trade_journal_state
 log = get_logger("nsc.pipeline")
+
+PORTFOLIO_WRITER_LOCK_PATH = (
+    get_data_dir() / "state" / "nsc-portfolio-writer.lock"
+)
+
+
+def _acquire_portfolio_writer_lock(
+    timeout_seconds: float = 30.0,
+) -> int:
+    """
+    Acquire the canonical shared Portfolio writer lock with a bounded wait.
+
+    The Portfolio capital allocator writes portfolio/pockets.json and transfer
+    instruction journals. It must serialize with the other PREPROD Portfolio
+    writers. Failure to acquire the lock is fatal: the pipeline must never
+    execute this writer concurrently or continue as if allocation succeeded.
+    """
+    import fcntl
+    import time
+
+    PORTFOLIO_WRITER_LOCK_PATH.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    fd = os.open(
+        str(PORTFOLIO_WRITER_LOCK_PATH),
+        os.O_CREAT | os.O_RDWR,
+        0o664,
+    )
+
+    deadline = time.monotonic() + timeout_seconds
+
+    try:
+        while True:
+            try:
+                fcntl.flock(
+                    fd,
+                    fcntl.LOCK_EX | fcntl.LOCK_NB,
+                )
+                return fd
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        "timed out after "
+                        f"{timeout_seconds:g}s waiting for shared "
+                        "Portfolio writer lock "
+                        f"{PORTFOLIO_WRITER_LOCK_PATH}"
+                    )
+                time.sleep(0.1)
+    except Exception:
+        os.close(fd)
+        raise
+
+
 def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -215,14 +270,28 @@ def _run_preprod() -> int:
 
     # 2) Portfolio capital authority.
     # This writer owns portfolio/pockets.json for the current cycle.
-    # Failure must invalidate the pipeline instead of degrading to a
-    # synthetic no-profit allocation.
+    # Serialize only this write transaction with the canonical shared
+    # Portfolio writer lock. Failure must invalidate the pipeline instead of
+    # degrading to a synthetic no-profit allocation.
+    portfolio_lock_fd = None
     try:
         from src.v2.portfolio.capital_allocator import run as run_capital_allocator
-        alloc = run_capital_allocator(regime)
+
+        portfolio_lock_fd = _acquire_portfolio_writer_lock()
+        log.info(
+            "portfolio_capital_allocator=shared_lock_acquired path=%s",
+            PORTFOLIO_WRITER_LOCK_PATH,
+        )
+
+        # capital_allocator.run() takes no positional arguments. Market regime
+        # is resolved by the allocator's governed policy/data inputs.
+        alloc = run_capital_allocator()
     except Exception:
         log.exception("portfolio_capital_allocator=critical_failure")
         return 1
+    finally:
+        if portfolio_lock_fd is not None:
+            os.close(portfolio_lock_fd)
 
     if alloc is None:
         log.error("portfolio_capital_allocator=invalid_none_result")

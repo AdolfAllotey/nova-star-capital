@@ -9,8 +9,10 @@ export NSC_ENV=PREPROD
 export NSC_DATA_DIR="${NSC_DATA_DIR:-/opt/nsc/data/preprod}"
 export DATA_ROOT="$NSC_DATA_DIR"
 export NSC_DATA_ROOT="$NSC_DATA_DIR"
+export NSC_PORTFOLIO_WRITER_LOCK="${NSC_PORTFOLIO_WRITER_LOCK:-$NSC_DATA_DIR/state/nsc-portfolio-writer.lock}"
 
 echo "[run_precious_metals_preprod] start $(date -Is)"
+echo "[run_precious_metals_preprod] Portfolio writer lock: $NSC_PORTFOLIO_WRITER_LOCK"
 
 # 1. Collect/provision certified macro inputs through the existing
 # FRED runtime, then build the fresh Precious Metals signal and
@@ -33,6 +35,17 @@ execute_precious_metals_runtime(
     certified_input_authorized=False,
 )
 PY_RUNTIME
+
+# Steps 2-9 form one governed Portfolio transaction:
+# target -> pre-execution state -> simulated broker -> authoritative state
+# -> final Portfolio state -> rebalance/coherence -> capital allocation.
+# Keep the network/FRED phase above outside this lock.
+exec 9>"$NSC_PORTFOLIO_WRITER_LOCK"
+if ! flock -x -w 30 9; then
+      echo "ERROR: timed out after 30s waiting for shared Portfolio writer lock" >&2
+      exit 75
+    fi
+echo "[run_precious_metals_preprod] acquired shared Portfolio writer lock"
 
 # 2. Refresh the governed Portfolio target from the fresh Metals input.
 echo "[run_precious_metals_preprod] step 2/9: governed target refresh"

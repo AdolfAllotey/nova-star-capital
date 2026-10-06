@@ -54,31 +54,83 @@ def _install_openai_blockers() -> None:
         pass
 
 # ----------------------------
-# Lock (non-blocking)
+# Locks
 # ----------------------------
 LOCK_PATH = get_data_dir() / "state" / "nsc-preprod-pipeline.lock"
+PORTFOLIO_WRITER_LOCK_PATH = (
+    get_data_dir() / "state" / "nsc-portfolio-writer.lock"
+)
 
 def _acquire_lock_nonblocking() -> int | None:
     """
-    Returns an OS fd if lock acquired, else None.
+    Return an OS fd when the pipeline lock is acquired.
+
+    None means another pipeline instance currently owns the lock.
+    Any lock-initialization or flock error is fatal: PREPROD must never
+    execute the pipeline without its concurrency guard.
     """
+    import fcntl
+
     LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(LOCK_PATH), os.O_CREAT | os.O_RDWR, 0o664)
+
     try:
-        import fcntl
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return fd
-        except BlockingIOError:
-            os.close(fd)
-            return None
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        return None
     except Exception:
-        # If fcntl unavailable (unlikely on Linux), close and run without lock
-        try:
-            os.close(fd)
-        except Exception:
-            pass
-        return -1  # sentinel: no lock mechanism
+        os.close(fd)
+        raise
+
+    return fd
+
+
+def _acquire_portfolio_writer_lock(
+    timeout_seconds: float = 30.0,
+) -> int:
+    """
+    Acquire the canonical shared Portfolio writer lock with a bounded wait.
+
+    Master-layer reconstruction must serialize with Kernel/Bonds/Defensive/
+    Precious-Metals writers. Failure to acquire the lock within the bounded
+    interval is fatal; PREPROD must never continue without serialization.
+    """
+    import fcntl
+    import time
+
+    PORTFOLIO_WRITER_LOCK_PATH.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    fd = os.open(
+        str(PORTFOLIO_WRITER_LOCK_PATH),
+        os.O_CREAT | os.O_RDWR,
+        0o664,
+    )
+
+    deadline = time.monotonic() + timeout_seconds
+
+    try:
+        while True:
+            try:
+                fcntl.flock(
+                    fd,
+                    fcntl.LOCK_EX | fcntl.LOCK_NB,
+                )
+                return fd
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        "timed out after "
+                        f"{timeout_seconds:g}s waiting for shared "
+                        "Portfolio writer lock "
+                        f"{PORTFOLIO_WRITER_LOCK_PATH}"
+                    )
+                time.sleep(0.1)
+    except Exception:
+        os.close(fd)
+        raise
 
 
 
@@ -166,13 +218,21 @@ def main() -> int:
         from src.v2.run_pipeline import main as pipeline_main
         rc = int(pipeline_main() or 0)
         if rc == 0:
-            _refresh_master_layer()
+            portfolio_lock_fd = _acquire_portfolio_writer_lock()
+            try:
+                print(
+                    "[wrapper][master] acquired shared Portfolio writer lock: "
+                    f"{PORTFOLIO_WRITER_LOCK_PATH}"
+                )
+                _refresh_master_layer()
+            finally:
+                os.close(portfolio_lock_fd)
         else:
             print(f"[wrapper][master] skipped because pipeline rc={rc}")
         return rc
     finally:
-        # keep fd open during run; close at end
-        if fd not in (-1, None):
+        # Keep the pipeline fd open for the complete wrapper run.
+        if fd is not None:
             try:
                 os.close(fd)
             except Exception:

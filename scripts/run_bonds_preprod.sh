@@ -9,8 +9,10 @@ export NSC_ENV=PREPROD
 export NSC_DATA_DIR="${NSC_DATA_DIR:-/opt/nsc/data/preprod}"
 export DATA_ROOT="$NSC_DATA_DIR"
 export NSC_DATA_ROOT="$NSC_DATA_DIR"
+export NSC_PORTFOLIO_WRITER_LOCK="${NSC_PORTFOLIO_WRITER_LOCK:-$NSC_DATA_DIR/state/nsc-portfolio-writer.lock}"
 
 echo "[run_bonds_preprod] start $(date -Is)"
+echo "[run_bonds_preprod] Portfolio writer lock: $NSC_PORTFOLIO_WRITER_LOCK"
 
 # 1. Build the fresh Bonds macro signal and Portfolio input.
 #
@@ -20,6 +22,17 @@ echo "[run_bonds_preprod] start $(date -Is)"
 echo "[run_bonds_preprod] step 1/9: signal + portfolio input"
 /opt/nsc/.venv/bin/python \
   -m src.v2.bonds.run_bonds_pipeline
+
+# Steps 2-9 form one governed Portfolio transaction:
+# target -> pre-execution state -> simulated broker -> authoritative state
+# -> final Portfolio state -> rebalance/coherence -> capital allocation.
+# Serialize this complete sequence against every other Portfolio writer.
+exec 9>"$NSC_PORTFOLIO_WRITER_LOCK"
+if ! flock -x -w 30 9; then
+      echo "ERROR: timed out after 30s waiting for shared Portfolio writer lock" >&2
+      exit 75
+    fi
+echo "[run_bonds_preprod] acquired shared Portfolio writer lock"
 
 # 2. Refresh the governed Portfolio target from the fresh Bonds input.
 echo "[run_bonds_preprod] step 2/9: governed target refresh"

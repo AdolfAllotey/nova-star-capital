@@ -6,8 +6,10 @@ export NSC_DATA_ROOT="$NSC_DATA_DIR"
 export DATA_ROOT="$NSC_DATA_DIR"
 export DATA_DIR="$NSC_DATA_DIR"
 export NSC_KERNEL_LOCK="${NSC_KERNEL_LOCK:-$NSC_DATA_DIR/state/nsc-kernel.lock}"
+export NSC_PORTFOLIO_WRITER_LOCK="${NSC_PORTFOLIO_WRITER_LOCK:-$NSC_DATA_DIR/state/nsc-portfolio-writer.lock}"
 
 echo "[run_kernel_preprod] using lock: $NSC_KERNEL_LOCK"
+echo "[run_kernel_preprod] using Portfolio writer lock: $NSC_PORTFOLIO_WRITER_LOCK"
 echo "[run_kernel_preprod] using data dir: $NSC_DATA_DIR"
 
 run_all() {
@@ -53,16 +55,23 @@ run_all() {
   /opt/nsc/.venv/bin/python -m src.v2.portfolio.waterfall_runtime --write
 
   echo "[run_kernel_preprod] step 9/9: refresh master portfolio layer"
-  /opt/nsc/.venv/bin/python -m src.v2.portfolio.adapters.run_all_portfolio_adapters
-  /opt/nsc/.venv/bin/python /opt/nsc/app/src/v2/portfolio/portfolio_engine_v1.py
-  /opt/nsc/.venv/bin/python /opt/nsc/app/src/v2/portfolio/portfolio_state_builder.py
-  /opt/nsc/.venv/bin/python /opt/nsc/app/src/v2/portfolio/master_rebalance_builder.py
-  /opt/nsc/.venv/bin/python /opt/nsc/app/src/v2/portfolio/master_coherence_audit.py
-  /opt/nsc/.venv/bin/python /opt/nsc/app/src/v2/portfolio/orchestration_status_builder.py
-  /opt/nsc/.venv/bin/python /opt/nsc/app/src/v2/portfolio/check_orchestration_consistency.py
-  /opt/nsc/.venv/bin/python /opt/nsc/app/src/v2/portfolio/global_orchestration_audit.py
-  /opt/nsc/.venv/bin/python /opt/nsc/app/src/v2/portfolio/supervision_gate_builder.py
-  /opt/nsc/.venv/bin/python /opt/nsc/app/src/v2/portfolio/institutional_supervision_summary.py
+  (
+    if ! flock -x -w 30 9; then
+      echo "ERROR: timed out after 30s waiting for shared Portfolio writer lock" >&2
+      exit 75
+    fi
+    echo "[run_kernel_preprod] acquired shared Portfolio writer lock"
+    /opt/nsc/.venv/bin/python -m src.v2.portfolio.adapters.run_all_portfolio_adapters
+    /opt/nsc/.venv/bin/python /opt/nsc/app/src/v2/portfolio/portfolio_engine_v1.py
+    /opt/nsc/.venv/bin/python /opt/nsc/app/src/v2/portfolio/portfolio_state_builder.py
+    /opt/nsc/.venv/bin/python /opt/nsc/app/src/v2/portfolio/master_rebalance_builder.py
+    /opt/nsc/.venv/bin/python /opt/nsc/app/src/v2/portfolio/master_coherence_audit.py
+    /opt/nsc/.venv/bin/python /opt/nsc/app/src/v2/portfolio/orchestration_status_builder.py
+    /opt/nsc/.venv/bin/python /opt/nsc/app/src/v2/portfolio/check_orchestration_consistency.py
+    /opt/nsc/.venv/bin/python /opt/nsc/app/src/v2/portfolio/global_orchestration_audit.py
+    /opt/nsc/.venv/bin/python /opt/nsc/app/src/v2/portfolio/supervision_gate_builder.py
+    /opt/nsc/.venv/bin/python /opt/nsc/app/src/v2/portfolio/institutional_supervision_summary.py
+  ) 9>"$NSC_PORTFOLIO_WRITER_LOCK"
 }
 
 if flock -n "$NSC_KERNEL_LOCK" /bin/bash -c "set -euo pipefail; $(declare -f run_all); run_all"; then
