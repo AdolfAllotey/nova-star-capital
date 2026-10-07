@@ -46,57 +46,124 @@ echo "$STARTED_AT"
 echo
 echo "----- PHASE 0A: OFFENSIVE PROVIDER REFRESH -----"
 
-PROVIDER_INVOCATION_BEFORE="$(
-    systemctl show         nsc-equities-provider-refresh.service         -p InvocationID         --value         2>/dev/null || true
-)"
+PROVIDER_VALIDATION="$OFFENSIVE_ROOT/market/providers/provider_validation_run_v1.json"
+PROVIDER_TRIGGERED_AT="$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
+
+PROVIDER_SHA_BEFORE=""
+if [[ -f "$PROVIDER_VALIDATION" ]]; then
+    PROVIDER_SHA_BEFORE="$(sha256sum "$PROVIDER_VALIDATION" | awk '{print $1}')"
+fi
 
 systemctl reset-failed nsc-equities-provider-refresh.service || true
 systemctl start nsc-equities-provider-refresh.service || PROVIDER_RC=$?
 
-PROVIDER_INVOCATION_AFTER="$(
-    systemctl show         nsc-equities-provider-refresh.service         -p InvocationID         --value         2>/dev/null || true
-)"
-
 PROVIDER_RESULT="$(
-    systemctl show nsc-equities-provider-refresh.service         -p Result         --value         2>/dev/null || echo unknown
+    systemctl show nsc-equities-provider-refresh.service \
+        -p Result --value 2>/dev/null || echo unknown
 )"
 
 PROVIDER_EXEC_STATUS="$(
-    systemctl show nsc-equities-provider-refresh.service         -p ExecMainStatus         --value         2>/dev/null || echo 1
+    systemctl show nsc-equities-provider-refresh.service \
+        -p ExecMainStatus --value 2>/dev/null || echo 1
 )"
 
 PROVIDER_ACTIVE_STATE="$(
-    systemctl show nsc-equities-provider-refresh.service         -p ActiveState         --value         2>/dev/null || echo unknown
+    systemctl show nsc-equities-provider-refresh.service \
+        -p ActiveState --value 2>/dev/null || echo unknown
 )"
 
-echo "provider_invocation_before=$PROVIDER_INVOCATION_BEFORE"
-echo "provider_invocation_after=$PROVIDER_INVOCATION_AFTER"
+PROVIDER_SHA_AFTER=""
+if [[ -f "$PROVIDER_VALIDATION" ]]; then
+    PROVIDER_SHA_AFTER="$(sha256sum "$PROVIDER_VALIDATION" | awk '{print $1}')"
+fi
+
+echo "provider_triggered_at=$PROVIDER_TRIGGERED_AT"
+echo "provider_sha_before=$PROVIDER_SHA_BEFORE"
+echo "provider_sha_after=$PROVIDER_SHA_AFTER"
 echo "provider_start_rc=$PROVIDER_RC"
 echo "provider_result=$PROVIDER_RESULT"
 echo "provider_exec_status=$PROVIDER_EXEC_STATUS"
 echo "provider_active_state=$PROVIDER_ACTIVE_STATE"
 
-if [[ -z "$PROVIDER_INVOCATION_AFTER" ]]; then
-    echo "ERROR: provider refresh InvocationID is empty"
-    exit 1
-fi
-
-if [[ "$PROVIDER_INVOCATION_AFTER" == "$PROVIDER_INVOCATION_BEFORE" ]]; then
-    echo "ERROR: provider refresh did not create a new systemd invocation"
-    exit 1
-fi
-
-if [[ "$PROVIDER_RC" -ne 0 ]]    || [[ "$PROVIDER_RESULT" != "success" ]]    || [[ "$PROVIDER_EXEC_STATUS" != "0" ]]; then
+if [[ "$PROVIDER_RC" -ne 0 ]] \
+    || [[ "$PROVIDER_RESULT" != "success" ]] \
+    || [[ "$PROVIDER_EXEC_STATUS" != "0" ]]; then
     echo "ERROR: provider refresh did not complete technically"
     exit 1
 fi
 
-if [[ "$PROVIDER_ACTIVE_STATE" == "activating" ]]    || [[ "$PROVIDER_ACTIVE_STATE" == "active" ]]; then
+if [[ "$PROVIDER_ACTIVE_STATE" == "activating" ]] \
+    || [[ "$PROVIDER_ACTIVE_STATE" == "active" ]]; then
     echo "ERROR: provider refresh still running after synchronous start"
     exit 1
 fi
 
-echo "PROVIDER_NEW_INVOCATION=PASS"
+if [[ -z "$PROVIDER_SHA_AFTER" ]]; then
+    echo "ERROR: provider validation artefact missing"
+    exit 1
+fi
+
+if [[ "$PROVIDER_SHA_AFTER" == "$PROVIDER_SHA_BEFORE" ]]; then
+    echo "ERROR: provider validation artefact was not regenerated"
+    exit 1
+fi
+
+"$PYTHON" - "$PROVIDER_VALIDATION" "$PROVIDER_TRIGGERED_AT" <<'PY_PROVIDER'
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+path = Path(sys.argv[1])
+
+triggered_at = datetime.fromisoformat(
+    sys.argv[2].replace("Z", "+00:00")
+).astimezone(timezone.utc)
+
+payload = json.loads(path.read_text(encoding="utf-8"))
+
+started_at = datetime.fromisoformat(
+    payload["started_at"].replace("Z", "+00:00")
+).astimezone(timezone.utc)
+
+generated_at = datetime.fromisoformat(
+    payload["generated_at"].replace("Z", "+00:00")
+).astimezone(timezone.utc)
+
+if started_at < triggered_at:
+    raise SystemExit(
+        "provider artefact predates this Global provider trigger"
+    )
+
+if generated_at < started_at:
+    raise SystemExit(
+        "provider generated_at predates provider started_at"
+    )
+
+if payload.get("status") != "quality_gate_passed":
+    raise SystemExit(
+        f"unexpected provider status: {payload.get('status')!r}"
+    )
+
+if payload.get("quality_gate_decision") != "PASS":
+    raise SystemExit(
+        "provider quality gate decision is not PASS"
+    )
+
+if payload.get("canonical_files_modified") is not False:
+    raise SystemExit(
+        "provider reports canonical files modified"
+    )
+
+if payload.get("promotion_executed") is not False:
+    raise SystemExit(
+        "provider reports promotion executed"
+    )
+
+print("PROVIDER_DURABLE_CAUSAL_EVIDENCE=PASS")
+PY_PROVIDER
+
+echo "PROVIDER_NEW_ARTIFACT=PASS"
 echo "PROVIDER_SYNCHRONOUS_COMPLETION=PASS"
 
 echo
@@ -276,6 +343,133 @@ rm -f "$CUTOVER_EXECUTE_JSON"
 CUTOVER_EXECUTE_JSON=""
 
 echo "FOUR_ARTIFACT_CUTOVER=PASS"
+
+echo
+echo "----- PHASE 0D: CRYPTO CAPITAL PRE-MASTER PREPARATION -----"
+
+# The Master consumes the Crypto portfolio input before the Kernel runs.
+# Refresh the Crypto capital allocation here so the Master never depends on
+# a stale artifact from a previous Kernel cycle.
+#
+# Fail closed if the static V1 Crypto config diverges from the governed
+# capital_pools authority.  Do not silently refresh a semantically stale
+# allocation.
+
+"$PYTHON" - <<'PYCRYPTOAUTH'
+import json
+from pathlib import Path
+
+root = Path("/opt/nsc/data/preprod")
+cfg_path = root / "trading/capital_config.json"
+pools_path = root / "capital/capital_pools.json"
+
+cfg = json.loads(cfg_path.read_text())
+pools = json.loads(pools_path.read_text())
+
+assert pools.get("env") == "PREPROD", "capital pools env is not PREPROD"
+assert pools.get("real_money_enabled") is False, "real money unexpectedly enabled"
+assert pools.get("broker_connection_enabled") is False, "broker connection unexpectedly enabled"
+
+crypto = pools["pools"]["crypto_exchange_pool"]
+
+cfg_total = float(cfg["total_budget"])
+pool_total = float(crypto["total_eur"])
+
+assert cfg.get("capital_source") == \
+    "capital_pools.crypto_exchange_pool.total_eur", \
+    "unexpected Crypto capital source"
+
+assert abs(cfg_total - pool_total) < 0.01, \
+    f"Crypto capital mismatch: config={cfg_total} pool={pool_total}"
+
+assert cfg.get("broker_split") == crypto.get("brokers"), \
+    "Crypto broker split diverges from capital pools"
+
+assert float(cfg.get("trading_ratio", 0)) > 0, \
+    "invalid Crypto trading_ratio"
+
+assert int(cfg.get("max_positions", 0)) > 0, \
+    "invalid Crypto max_positions"
+
+print(f"CRYPTO_CAPITAL_AUTHORITY=PASS total_eur={pool_total:.2f}")
+PYCRYPTOAUTH
+
+CRYPTO_ALLOC="$DATA_DIR/trading/capital_allocation.json"
+CRYPTO_ALLOC_MTIME_BEFORE="$(
+    stat -c '%y' "$CRYPTO_ALLOC" 2>/dev/null || true
+)"
+
+"$PYTHON" -m src.v2.analysis.capital_allocator
+
+if [[ ! -f "$CRYPTO_ALLOC" ]]; then
+    echo "ERROR: Crypto capital allocation was not produced"
+    exit 1
+fi
+
+CRYPTO_ALLOC_MTIME_AFTER="$(
+    stat -c '%y' "$CRYPTO_ALLOC"
+)"
+
+if [[ -n "$CRYPTO_ALLOC_MTIME_BEFORE" ]] \
+   && [[ "$CRYPTO_ALLOC_MTIME_AFTER" == "$CRYPTO_ALLOC_MTIME_BEFORE" ]]; then
+    echo "ERROR: Crypto capital allocation mtime did not advance"
+    exit 1
+fi
+
+echo "CRYPTO_CAPITAL_ALLOCATION_REGENERATED=PASS"
+
+"$PYTHON" - <<'PYCRYPTOALLOC'
+import json
+from pathlib import Path
+
+root = Path("/opt/nsc/data/preprod")
+
+cfg = json.loads(
+    (root / "trading/capital_config.json").read_text()
+)
+pools = json.loads(
+    (root / "capital/capital_pools.json").read_text()
+)
+d = json.loads(
+    (root / "trading/capital_allocation.json").read_text()
+)
+
+crypto = pools["pools"]["crypto_exchange_pool"]
+
+expected_total = float(crypto["total_eur"])
+expected_ratio = float(cfg["trading_ratio"])
+expected_positions = int(cfg["max_positions"])
+expected_trading = round(expected_total * expected_ratio, 2)
+expected_per_trade = (
+    round(expected_trading / expected_positions, 2)
+    if expected_positions > 0 else 0.0
+)
+
+assert abs(float(d["total_budget"]) - expected_total) < 0.01
+assert abs(float(d["trading_budget"]) - expected_trading) < 0.01
+assert abs(float(d["capital_per_trade"]) - expected_per_trade) < 0.01
+assert int(d["max_positions"]) == expected_positions
+
+assert set(d["strategy_weights"]) == {
+    "momentum", "sniper", "whale"
+}
+
+assert d["strategy_weights_source"] == \
+    "static_v1_legacy_portfolio_observation_contract"
+
+assert d["emotional_regime"] == "not_applicable"
+assert d["emotional_action"] == "not_applicable"
+
+print(
+    "CRYPTO_CAPITAL_ALLOCATION_CONTRACT=PASS "
+    f"total={expected_total:.2f} "
+    f"trading={expected_trading:.2f} "
+    f"per_trade={expected_per_trade:.2f} "
+    f"max_positions={expected_positions}"
+)
+PYCRYPTOALLOC
+
+echo "CRYPTO_PREMASTER_PREPARATION=PASS"
 
 echo
 echo "----- PHASE 1: MASTER PIPELINE -----"

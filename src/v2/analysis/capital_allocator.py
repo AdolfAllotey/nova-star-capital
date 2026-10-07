@@ -41,55 +41,37 @@ def main() -> Dict[str, Any]:
 
     capital_config_path = trading_dir / "capital_config.json"
     market_regime_path = analysis_dir / "market_regime_detector.json"
-    emotional_regime_path = analysis_dir / "emotional_regime_light.json"
-    strategy_weights_path = trading_dir / "strategy_weights.json"
     output_path = trading_dir / "capital_allocation.json"
 
     capital_config = _read_json(capital_config_path, {}) or {}
     market_regime = _read_json(market_regime_path, {}) or {}
-    emotional_regime = _read_json(emotional_regime_path, {}) or {}
-    strategy_weights = _read_json(strategy_weights_path, {}) or {}
+
+    # Legacy portfolio-observation contract only.
+    #
+    # These are NOT the dynamic Strategy Selector V2 weights.  The selector
+    # emits sizing multipliers in analysis/strategy_weights.json and is
+    # consumed independently by position sizing.
+    #
+    # Keep the historical three-strategy allocation explicit for V1
+    # compatibility without pretending it came from a runtime authority.
+    strategy_weights = {
+        "momentum": 1 / 3,
+        "sniper": 1 / 3,
+        "whale": 1 / 3,
+    }
 
     total_budget = _safe_float(capital_config.get("total_budget"), 1000.0)
     trading_ratio = _safe_float(capital_config.get("trading_ratio"), 0.45)
     max_positions = int(capital_config.get("max_positions", 10) or 10)
 
     regime = str(market_regime.get("regime") or "neutral")
-    emotional_regime_name = str(emotional_regime.get("regime") or "calm")
-    emotional_action = str(emotional_regime.get("recommended_action") or "normal")
+    # Emotional governance is handled by its dedicated governance engines.
+    # capital_allocation.json is not an emotional-state authority.
+    emotional_regime_name = "not_applicable"
+    emotional_action = "not_applicable"
 
     trading_budget = round(total_budget * trading_ratio, 2)
     capital_per_trade = round(trading_budget / max_positions, 2) if max_positions > 0 else 0.0
-
-    if not isinstance(strategy_weights, dict) or not strategy_weights:
-        strategy_weights = {
-            "momentum": 1 / 3,
-            "sniper": 1 / 3,
-            "whale": 1 / 3,
-        }
-    else:
-        cleaned: Dict[str, float] = {}
-        for k, v in strategy_weights.items():
-            try:
-                cleaned[str(k)] = float(v)
-            except Exception:
-                continue
-        if cleaned:
-            total_w = sum(cleaned.values())
-            if total_w > 0:
-                strategy_weights = {k: v / total_w for k, v in cleaned.items()}
-            else:
-                strategy_weights = {
-                    "momentum": 1 / 3,
-                    "sniper": 1 / 3,
-                    "whale": 1 / 3,
-                }
-        else:
-            strategy_weights = {
-                "momentum": 1 / 3,
-                "sniper": 1 / 3,
-                "whale": 1 / 3,
-            }
 
     strategy_budgets = {
         k: round(trading_budget * float(v), 2)
@@ -115,8 +97,8 @@ def main() -> Dict[str, Any]:
         "strategy_budgets": strategy_budgets,
         "config_source": str(capital_config_path),
         "market_regime_source": str(market_regime_path),
-        "emotional_regime_source": str(emotional_regime_path),
-        "strategy_weights_source": str(strategy_weights_path),
+        "emotional_regime_source": "not_applicable_to_capital_allocator",
+        "strategy_weights_source": "static_v1_legacy_portfolio_observation_contract",
     }
 
     _write_json(output_path, result)
